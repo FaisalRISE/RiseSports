@@ -18,11 +18,11 @@ if (regStart < 0 || engStart < 0 || engEnd < 0) { console.error("could not extra
 const api = eval(
   src.slice(regStart, engStart) + src.slice(engStart, engEnd) +
   "\n;({ resolveRules, rallyOver, rallyGolden, rallyGamePoint, replayRallies, rallyStats," +
-  " buildScoring, goldenInfo," +
+  " buildScoring, goldenInfo, parseScorePair," +
   " emptyTiming, timerStart, timerPause, timerResume, timerStop, timerElapsed, fmtClock })"
 );
 const { resolveRules, rallyOver, rallyGolden, rallyGamePoint, replayRallies, rallyStats,
-        buildScoring, goldenInfo, emptyTiming, timerStart, timerPause, timerResume, timerStop, timerElapsed, fmtClock } = api;
+        buildScoring, goldenInfo, parseScorePair, emptyTiming, timerStart, timerPause, timerResume, timerStop, timerElapsed, fmtClock } = api;
 
 let pass = 0, fail = 0;
 const check = (name, cond, extra) => cond ? (pass++, console.log("  PASS  " + name))
@@ -224,6 +224,29 @@ check("golden point is described differently", /First to 11/.test(goldenInfo(11,
 check("the summary names the scoring type",
   /Service points/.test(goldenInfo(11, true, "auto", "service")) &&
   /Rally scoring/.test(goldenInfo(11, true, "auto", "rally")));
+
+console.log("\ninline score entry (typed straight into the fixture list)");
+{
+  const fresh = { played: false };
+  const done = { played: true, scoreA: 15, scoreB: 9 };
+  const J = v => JSON.stringify(v);
+  check("both boxes filled commits", J(parseScorePair({ a: "15", b: "9" }, fresh)) === '{"a":15,"b":9}');
+  check("half-typed does not commit", parseScorePair({ a: "15" }, fresh) === null);
+  check("empty does not commit", parseScorePair({ a: "", b: "" }, fresh) === null);
+  check("no pending entry does not commit", parseScorePair(undefined, fresh) === null);
+  check("a draw does not commit", parseScorePair({ a: "11", b: "11" }, fresh) === null);
+  check("rubbish does not commit", parseScorePair({ a: "abc", b: "3" }, fresh) === null);
+  check("negatives do not commit", parseScorePair({ a: "-2", b: "3" }, fresh) === null);
+  check("0 is a legal score", J(parseScorePair({ a: "11", b: "0" }, fresh)) === '{"a":11,"b":0}');
+  // editing ONE box of an already-scored match must keep the other
+  check("editing one box keeps the other", J(parseScorePair({ a: "17" }, done)) === '{"a":17,"b":9}');
+  check("editing the second keeps the first", J(parseScorePair({ b: "13" }, done)) === '{"a":15,"b":13}');
+  check("clearing a box falls back and so commits nothing", parseScorePair({ a: "" }, done) === null);
+  // the guard that matters: re-committing would re-apply the rating change
+  check("an unchanged score is a no-op", parseScorePair({ a: "15", b: "9" }, done) === null);
+  check("blurring an untouched scored match is a no-op", parseScorePair({}, done) === null);
+  check("a genuine correction still commits", JSON.stringify(parseScorePair({ a: "15", b: "11" }, done)) === '{"a":15,"b":11}');
+}
 
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

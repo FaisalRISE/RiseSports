@@ -232,6 +232,28 @@ const goldenInfo = (target, winBy2, goldenAt, scoreType) => {
   return `${ how }To ${ t }, won by 2. The two-point rule stops at ${ sc.golden }: if both sides reach ${ sc.golden } the next rally is the golden point, so no score passes ${ sc.cap }.`;
 };
 
+/* Decide whether a pair of typed score boxes is ready to commit.
+   `pend` is what has been typed but not yet saved; anything absent falls back
+   to the score already on the match, so editing one box of a finished match
+   does not wipe the other. Returns null when the pair is not yet committable —
+   half-typed, non-numeric, or a draw, none of which should raise an alert
+   while someone is still mid-entry. */
+const parseScorePair = (pend, match) => {
+  const has = v => v !== void 0 && v !== null && v !== "";
+  const prevA = match && match.played ? String(match.scoreA) : "";
+  const prevB = match && match.played ? String(match.scoreB) : "";
+  const av = has(pend && pend.a) ? pend.a : prevA;
+  const bv = has(pend && pend.b) ? pend.b : prevB;
+  if (!has(av) || !has(bv)) return null;
+  const a = parseInt(av, 10), b = parseInt(bv, 10);
+  if (isNaN(a) || isNaN(b) || a < 0 || b < 0 || a === b) return null;
+  /* Unchanged is a no-op. Without this, blurring an already-scored match — or
+     clearing a box and tabbing away, which falls back to the stored score —
+     would re-commit it, and committing applies the rating change again. */
+  if (match && match.played && a === match.scoreA && b === match.scoreB) return null;
+  return { a, b };
+};
+
 const rallyOver = (a, b, r) => !!r && (
   ((a >= r.target || b >= r.target) && Math.abs(a - b) >= r.winBy) ||
   (r.cap != null && (a >= r.cap || b >= r.cap)));
@@ -4473,7 +4495,7 @@ const Ic = ({
     setTab: r,
     setActiveTourney: l
   }) => {
-    const [n, R] = useState(m), [S, v] = useState(0), [M, z] = useState(0), [g, f] = useState(null), [u, k] = useState(null), [refM, setRefM] = useState(null), [printOpen, setPrintOpen] = useState(!1), [G, O] = useState(""), [K, J] = useState(""), [swapMode, setSwapMode] = useState(!1), [swapSel, setSwapSel] = useState(null), [amSel, setAmSel] = useState(null), D = useRef(null);
+    const [n, R] = useState(m), [S, v] = useState(0), [M, z] = useState(0), [g, f] = useState(null), [u, k] = useState(null), [refM, setRefM] = useState(null), [printOpen, setPrintOpen] = useState(!1), [entryMode, setEntryMode] = useState("score"), pend = useRef({}), [G, O] = useState(""), [K, J] = useState(""), [swapMode, setSwapMode] = useState(!1), [swapSel, setSwapSel] = useState(null), [amSel, setAmSel] = useState(null), D = useRef(null);
     if (useEffect(() => {
         (g || u) && setTimeout(() => {
           D.current && D.current.focus();
@@ -4635,6 +4657,24 @@ const Ic = ({
           }
           return $;
         }));
+      }, commitScore = (mt, grp, o, t) => {
+        if (!mt || isNaN(o) || isNaN(t) || o === t) return !1;
+        const a = mt.id, W = mt.teamA, q = mt.teamB, E = o > t ? W.id : q.id, ie = o > t ? W : q, V = o > t ? q : W;
+        Y(ie, V, Math.max(o, t), Math.min(o, t));
+        const X = grp.label, j = grp.catId, $ = {
+            ...n,
+            groups: n.groups.map(T => T.catId !== j || T.label !== X ? T : {
+              ...T,
+              matches: T.matches.map(A => A.id === a ? {
+                ...A,
+                scoreA: o,
+                scoreB: t,
+                winner: E,
+                played: !0
+              } : A)
+            })
+          };
+        return R($), l($), e(T => T.map(A => A.id === $.id ? $ : A)), $;
       }, ee = (i = !1) => {
         if (!g || G === "" || K === "")
           return;
@@ -5522,64 +5562,113 @@ const Ic = ({
         flexDirection: "column",
         gap: 5
       }
-    }, w.matches.map(i => React.createElement("div", {
-      key: i.id,
-      onClick: () => {
-        if (n.trackScores === !1)
-          return;
-        f(i), i.played ? (O(String(i.scoreA)), J(String(i.scoreB))) : (O(""), J(""));
-      },
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "9px 12px",
-        background: C.card,
-        borderRadius: 10,
-        border: `1px solid ${ i.played ? C.lime + "33" : C.border }`,
-        cursor: n.trackScores === !1 ? "default" : "pointer"
-      }
     }, React.createElement("div", {
+      style: { display: "flex", gap: 6, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }
+    }, [
+      { v: "score", label: "\u2328 Score entry" },
+      { v: "ref", label: "\u25B6 Referee" }
+    ].map(opt => React.createElement("button", {
+      key: opt.v,
+      onClick: () => setEntryMode(opt.v),
       style: {
-        width: 24,
-        height: 24,
-        borderRadius: 6,
-        background: i.played ? `${ C.lime }22` : C.cardAlt,
+        minHeight: 38, padding: "0 12px", borderRadius: 20, cursor: "pointer", fontFamily: "inherit",
+        fontSize: 11.5, fontWeight: 700,
+        border: `1px solid ${ entryMode === opt.v ? C.lime : C.border }`,
+        background: entryMode === opt.v ? C.lime : C.card,
+        color: entryMode === opt.v ? "#fff" : C.text
+      }
+    }, opt.label)), React.createElement("span", {
+      style: { fontSize: 10, color: C.textDim }
+    }, entryMode === "score" ? "Type the scores straight into the list." : "Tap SCORE on a match to open the live court.")),
+    React.createElement("div", {
+      style: {
         display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontSize: 9,
-        fontWeight: 800,
-        color: i.played ? C.lime : C.textDim
+        flexDirection: "column",
+        gap: 5
       }
-    }, "M", i.matchNum), React.createElement("div", { style: { flex: 1 } }, React.createElement("div", {
-      style: {
-        fontSize: 11,
-        fontWeight: i.winner === i.teamA.id ? 700 : 500,
-        color: i.winner === i.teamA.id ? C.lime : C.text
-      }
-    }, i.teamA.fullName), React.createElement("div", {
-      style: {
-        fontSize: 11,
-        fontWeight: i.winner === i.teamB.id ? 700 : 500,
-        color: i.winner === i.teamB.id ? C.lime : C.text
-      }
-    }, i.teamB.fullName)), i.played ? React.createElement("div", { style: { textAlign: "right" } }, React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 800,
-        color: i.winner === i.teamA.id ? C.lime : C.textDim
-      }
-    }, i.scoreA), React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 800,
-        color: i.winner === i.teamB.id ? C.lime : C.textDim
-      }
-    }, i.scoreB)) : React.createElement(Badge, {
-      color: C.blue,
-      small: !0
-    }, i.timeStart ? i.timeStart + " \xB7 " : "", "Court ", i.court))))), le && React.createElement("div", {
+    }, w.matches.map(i => {
+      const box = side => React.createElement("input", {
+        type: "number",
+        inputMode: "numeric",
+        "aria-label": side === "a" ? "Score for " + i.teamA.fullName : "Score for " + i.teamB.fullName,
+        defaultValue: i.played ? (side === "a" ? i.scoreA : i.scoreB) : "",
+        disabled: n.trackScores === !1 || entryMode !== "score",
+        onChange: ev => {
+          const p = pend.current[i.id] || (pend.current[i.id] = {});
+          p[side] = ev.target.value;
+        },
+        onKeyDown: ev => {
+          ev.key === "Enter" && ev.target.blur();
+        },
+        onBlur: () => {
+          const ok = parseScorePair(pend.current[i.id], i);
+          if (!ok) return;
+          delete pend.current[i.id];
+          commitScore(i, w, ok.a, ok.b);
+        },
+        style: {
+          width: 46, height: 38, textAlign: "center", borderRadius: 8,
+          border: `1px solid ${ i.played ? C.lime + "55" : C.border }`,
+          background: n.trackScores === !1 || entryMode !== "score" ? C.cardAlt : C.surface,
+          color: C.text, fontSize: 15, fontWeight: 800, fontFamily: "inherit", outline: "none"
+        }
+      });
+      const teamCell = (tm, right) => React.createElement("div", {
+        style: {
+          flex: 1, minWidth: 82, textAlign: right ? "left" : "right",
+          fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          fontWeight: i.winner === tm.id ? 800 : 500,
+          color: i.winner === tm.id ? C.lime : C.text
+        }
+      }, tm.fullName);
+      return React.createElement("div", {
+        key: i.id,
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          padding: "7px 10px",
+          background: C.card,
+          borderRadius: 10,
+          border: `1px solid ${ i.played ? C.lime + "33" : C.border }`
+        }
+      }, React.createElement("div", {
+        style: {
+          width: 26, height: 26, borderRadius: 6, flexShrink: 0,
+          background: i.played ? `${ C.lime }22` : C.cardAlt,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 9, fontWeight: 800,
+          color: i.played ? C.lime : C.textDim
+        },
+        title: i.timeStart ? i.timeStart + " \xB7 Court " + i.court : "Court " + i.court
+      }, "M", i.matchNum),
+        teamCell(i.teamA, !1),
+        box("a"),
+        React.createElement("span", { style: { fontSize: 11, color: C.textDim, fontWeight: 700 } }, "\u2013"),
+        box("b"),
+        teamCell(i.teamB, !0),
+        React.createElement("button", {
+          onClick: () => setRefM({
+            match: { log: [], server: "a", posA: 0, posB: 0, timing: emptyTiming() },
+            rules: resolveRules(n.sport, { target: n.pointsToWin, ...n.scoring || {} }),
+            title: `${ i.teamA.fullName } v ${ i.teamB.fullName }`,
+            subtitle: `Court ${ i.court } \xB7 Group ${ w.label }`,
+            teamA: i.teamA.fullName,
+            teamB: i.teamB.fullName,
+            namesA: [i.teamA?.p1?.firstName || i.teamA?.fullName || "", i.teamA?.p2?.firstName || ""].filter(Boolean),
+            namesB: [i.teamB?.p1?.firstName || i.teamB?.fullName || "", i.teamB?.p2?.firstName || ""].filter(Boolean),
+            onDone: st => commitScore(i, w, st.a, st.b)
+          }),
+          disabled: n.trackScores === !1,
+          style: {
+            minHeight: 34, padding: "0 10px", borderRadius: 8, flexShrink: 0, cursor: "pointer",
+            fontFamily: "inherit", fontSize: 9.5, fontWeight: 800, letterSpacing: .06,
+            border: `1px solid ${ entryMode === "ref" ? C.teal : C.border }`,
+            background: entryMode === "ref" ? C.teal : C.card,
+            color: entryMode === "ref" ? "#fff" : C.teal
+          }
+        }, "SCORE"));
+    })))), le && React.createElement("div", {
       style: {
         display: "flex",
         gap: 6,
@@ -6041,7 +6130,10 @@ const Ic = ({
       namesB: refM.namesB,
       onChange: mm => setRefM(p => ({ ...p, match: mm })),
       onFinish: st => {
-        O(String(st.a)), J(String(st.b)), setRefM(null);
+        /* Opened from a fixture row: commit straight to the match, no modal.
+           Opened from the score modal: fill its inputs and let the organiser
+           press Save, which is the path that was already there. */
+        refM.onDone ? refM.onDone(st) : (O(String(st.a)), J(String(st.b))), setRefM(null);
       },
       onClose: () => setRefM(null)
     }), g && React.createElement(Modal, {
@@ -11650,115 +11742,162 @@ const CommunityTab = ({
     }, a.confirmed.length, "/", W, " confirmed", a.waitlist.length ? ` \xB7 ${ a.waitlist.length } waiting` : "")));
   })));
 };
-/* ---------- print pack ----------
-   Fixture sheets and standings, for paper or "Save as PDF".
+/* ---------- print pack (OSL format) ----------
+   Fixture sheets, results and score-margin grids, for paper or "Save as PDF".
 
-   Follows Format/pickleboss-35split 12.html:2210-2312: build plain HTML into a
-   hidden #printArea, then call window.print(). Deliberately NOT window.open —
-   a popup is blocked on most phones, and an organiser printing court sheets is
-   usually on a phone.
+   Laid out after Format/OSL-2026-tournament-app_24.html's print system: a
+   branded bar with the sport set large, one table per match with the score
+   boxes BETWEEN the two team names, and a score-margin grid per group.
 
-   Every sheet comes in two modes. BLANK is the one that gets used in practice:
-   printed before play and filled in by hand at the court, because paper does
-   not run out of battery. FILLED is for afterwards. */
+   Built into a hidden #printArea then window.print(), rather than window.open —
+   popups are blocked on most phones, and an organiser printing court sheets is
+   usually holding one.
+
+   Two modes. BLANK is the one that actually gets used: printed before play and
+   filled in by hand at the court, because paper does not run out of battery. */
 const printEsc = s => String(s == null ? "" : s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
-const printHead = (tourney, title, right) =>
-  `<div class="brandbar">${ brandLogo() ? `<img src="${ brandLogo() }" alt="RISE Sports" style="height:28px">` : `<span class="mark">⚡ RISE SPORTS</span>` }
-     <span style="font-size:11px;font-weight:700">${ printEsc(tourney.name || "Tournament") }</span>
-     <span class="meta">${ printEsc([tourney.venue, tourney.tournamentDate, tourney.startTime].filter(Boolean).join(" · ")) }</span></div>
-   <div class="ph"><span class="t">${ title }</span><span class="r">${ right || "" }</span></div>`;
+const printHead = (tourney, kind) => {
+  const sp = sportOf(tourney.sport);
+  const meta = [
+    tourney.name,
+    kind,
+    tourney.startTime,
+    tourney.numCourts ? `${ tourney.numCourts } courts` : null
+  ].filter(Boolean).map(printEsc).join(" &middot; ");
+  const logo = brandLogo();
+  return `<div class="brandbar">
+      ${ logo ? `<img class="blogo" src="${ logo }" alt="RISE Sports">` : "" }
+      <div class="btitle">
+        <div class="sport">${ printEsc(sp.name) }</div>
+        <div class="meta">${ meta }</div>
+      </div>
+      <div class="printed">Printed ${ printEsc(new Date().toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })) }</div>
+    </div>`;
+};
 
-const printFoot = note =>
-  `<div class="foot">${ note ? printEsc(note) + " · " : "" }Generated ${ new Date().toLocaleString("en-IN") } · RISE Sports</div>`;
+/* One match, laid out as OSL does it: court, then the two teams either side of
+   their score boxes. No winner column — the higher score says it. */
+const matchTable = (mt, withData, label) => {
+  const played = withData && mt.played;
+  const winA = played && mt.scoreA > mt.scoreB, winB = played && mt.scoreB > mt.scoreA;
+  return `${ label ? `<div class="mlabel">${ printEsc(label) }</div>` : "" }
+    <table class="mt">
+      <tr><th class="c" style="width:44px">Court</th><th>Team</th>
+          <th class="c" style="width:52px">Score</th><th class="c" style="width:52px">Score</th><th>Team</th></tr>
+      <tr>
+        <td class="c">${ printEsc(mt.court || "") }</td>
+        <td class="${ winA ? "win" : "" }">${ printEsc(teamName(mt.teamA || mt.p1) || "TBD") }</td>
+        <td class="c sbox">${ played ? printEsc(mt.scoreA != null ? mt.scoreA : mt.s1) : "" }</td>
+        <td class="c sbox">${ played ? printEsc(mt.scoreB != null ? mt.scoreB : mt.s2) : "" }</td>
+        <td class="${ winB ? "win" : "" }">${ printEsc(teamName(mt.teamB || mt.p2) || "TBD") }</td>
+      </tr>
+    </table>
+    <div class="cap">Left score box belongs to the team on the left, right box to the team on the right. The higher score wins &mdash; no separate winner column.</div>`;
+};
 
-/* One sheet per category: every group's fixtures, with a score box per match. */
+/* The score-margin grid. This is the part of the OSL sheets worth copying: it
+   shows every result at a glance AND explains the tie-break, because the row
+   total IS the point difference that separates teams level on wins. */
+const marginGrid = (group, withData) => {
+  const teams = group.teams || [];
+  if (teams.length < 2) return "";
+  const played = (group.matches || []).filter(m => m.played);
+  const marginOf = (row, col) => {
+    const m = played.find(x =>
+      (x.teamA.id === row.id && x.teamB.id === col.id) ||
+      (x.teamA.id === col.id && x.teamB.id === row.id));
+    if (!m || !withData) return null;
+    return m.teamA.id === row.id ? m.scoreA - m.scoreB : m.scoreB - m.scoreA;
+  };
+  const rows = teams.map(t => {
+    const cells = teams.map(o => (o.id === t.id ? null : marginOf(t, o)));
+    const wins = cells.filter(v => v != null && v > 0).length;
+    const diff = cells.reduce((s2, v) => s2 + (v || 0), 0);
+    return { t, cells, wins, diff };
+  });
+  const ranked = [...rows].sort((a, b) => b.wins - a.wins || b.diff - a.diff);
+  const rankOf = r => ranked.indexOf(r) + 1;
+  /* Head-to-head is only shown where it is actually doing work: two teams level
+     on both wins and difference. */
+  const needsH2H = r => ranked.some(o => o !== r && o.wins === r.wins && o.diff === r.diff);
+
+  return `<div class="grp">Score margin &middot; Group ${ printEsc(group.label) }</div>
+    <table class="mg">
+      <tr><th style="width:19%">Group ${ printEsc(group.label) }</th>
+        ${ teams.map(t => `<th class="c">${ printEsc(teamName(t)) }</th>`).join("") }
+        <th class="c" style="width:44px">Wins</th><th class="c" style="width:44px">Diff</th>
+        <th class="c" style="width:42px">Rank</th><th class="c" style="width:38px">H2H</th></tr>
+      ${ rows.map(r => `<tr>
+        <td class="nm">${ printEsc(teamName(r.t)) }</td>
+        ${ /* the diagonal is identified by POSITION, not by being null — an
+              unplayed match is null too, and indexOf would find that first */
+           r.cells.map((v, ci) => teams[ci].id === r.t.id
+            ? `<td class="self"></td>`
+            : `<td class="c">${ v == null ? "" : (v > 0 ? "+" : "") + v }</td>`).join("") }
+        <td class="c b">${ withData ? r.wins : "" }</td>
+        <td class="c b">${ withData ? (r.diff > 0 ? "+" : "") + r.diff : "" }</td>
+        <td class="c b">${ withData ? rankOf(r) : "" }</td>
+        <td class="c">${ withData && needsH2H(r) ? "&#9679;" : "" }</td></tr>`).join("") }
+    </table>
+    <div class="cap">Row team's margin against the column team. A 25&ndash;20 win is <b>+5</b> for the winner and <b>&minus;5</b> for the loser. Count the pluses for wins; the row total is the points difference, which separates teams level on wins &mdash; head-to-head only comes into it if the difference is level too.</div>`;
+};
+
+const rulesLine = tourney => {
+  const r = resolveRules(tourney.sport, { target: tourney.pointsToWin, ...tourney.scoring || {} });
+  if (!r) return "";
+  return `<div class="rules">One game to ${ r.target }.` +
+    (r.sideOut ? " Service points — only the serving side scores." : " Rally scoring — every rally is a point.") +
+    (r.winBy > 1 ? ` Won by ${ r.winBy } clear points.` : "") +
+    (r.cap ? ` Golden point at ${ r.golden }–${ r.golden }, so no score passes ${ r.cap }.` : "") +
+    (r.switchAt ? ` Ends change at ${ r.switchAt }.` : "") + `</div>`;
+};
+
 const fixturesSheet = (tourney, withData) => {
   const groups = tourney.groups || [];
   if (!groups.length) return "";
-  const rules = resolveRules(tourney.sport, { target: tourney.pointsToWin, ...tourney.scoring || {} });
-  const ruleLine = rules
-    ? `Game to ${ rules.target }` + (rules.winBy > 1 ? `, win by ${ rules.winBy }` : ", sudden death") +
-      (rules.cap ? `, golden point ${ rules.cap }–${ rules.golden }` : "")
-    : "";
-  let h = `<div class="psheet">${ printHead(tourney, withData ? "Fixtures &amp; results" : "Fixture sheet", ruleLine) }`;
+  let h = `<div class="psheet">${ printHead(tourney, withData ? "Results" : "Fixtures") }`;
   groups.forEach(g => {
-    h += `<div class="grp">Group ${ printEsc(g.label) } &middot; ${ printEsc(g.catName || "") }` +
-         (g.court ? ` &middot; Court ${ printEsc(g.court) }` : "") + `</div>`;
-    h += `<table><tr><th style="width:34px">#</th><th>Team A</th><th>Team B</th>` +
-         `<th style="width:52px">Court</th><th style="width:52px">Time</th>` +
-         `<th style="width:64px">Score</th><th style="width:64px">Winner</th></tr>`;
+    h += `<div class="grp">Group ${ printEsc(g.label) } &middot; ${ printEsc(g.catName || "") }</div>`;
     (g.matches || []).forEach(mt => {
-      const played = withData && mt.played;
-      h += `<tr><td class="c">M${ printEsc(mt.matchNum) }</td>` +
-        `<td>${ printEsc(teamName(mt.teamA)) }</td>` +
-        `<td>${ printEsc(teamName(mt.teamB)) }</td>` +
-        `<td class="c">${ mt.court ? printEsc(mt.court) : "" }</td>` +
-        `<td class="c">${ printEsc(mt.timeStart || "") }</td>` +
-        `<td class="c sbox">${ played ? printEsc(mt.scoreA + "–" + mt.scoreB) : "" }</td>` +
-        `<td class="c sbox">${ played ? printEsc(teamName(mt.scoreA > mt.scoreB ? mt.teamA : mt.teamB)) : "" }</td></tr>`;
+      h += matchTable(mt, withData, `Match ${ mt.matchNum }${ mt.timeStart ? " · " + mt.timeStart : "" }`);
     });
-    h += `</table>`;
   });
-  return h + printFoot(withData ? "" : "Print before play and fill in at the court.") + `</div>`;
+  return h + rulesLine(tourney) + `</div>`;
 };
 
-/* The sheet people actually want once the last match is in. */
 const standingsSheet = (tourney, withData) => {
   const groups = tourney.groups || [];
   if (!groups.length) return "";
-  let h = `<div class="psheet">${ printHead(tourney, "Standings", `${ groups.length } group${ groups.length > 1 ? "s" : "" }`) }`;
-  groups.forEach(g => {
-    const rows = leagueStandings([g]);
-    h += `<div class="grp">Group ${ printEsc(g.label) } &middot; ${ printEsc(g.catName || "") }</div>`;
-    h += `<table><tr><th style="width:30px">#</th><th>Team</th><th style="width:34px">P</th>` +
-         `<th style="width:34px">W</th><th style="width:34px">L</th><th style="width:40px">PF</th>` +
-         `<th style="width:40px">PA</th><th style="width:44px">±</th></tr>`;
-    rows.forEach((r, i) => {
-      const played = (g.matches || []).filter(mt => mt.played &&
-        (mt.teamA.id === r.team.id || mt.teamB.id === r.team.id));
-      const w = played.filter(mt => (mt.teamA.id === r.team.id ? mt.scoreA > mt.scoreB : mt.scoreB > mt.scoreA)).length;
-      const pf = r.gPF, pa = r.gPF - r.gD;
-      h += `<tr><td class="c">${ i + 1 }</td><td>${ printEsc(teamName(r.team)) }</td>` +
-        `<td class="c">${ withData ? played.length : "" }</td>` +
-        `<td class="c">${ withData ? w : "" }</td>` +
-        `<td class="c">${ withData ? played.length - w : "" }</td>` +
-        `<td class="c">${ withData ? pf : "" }</td>` +
-        `<td class="c">${ withData ? pa : "" }</td>` +
-        `<td class="c">${ withData ? (r.gD > 0 ? "+" : "") + r.gD : "" }</td></tr>`;
-    });
-    h += `</table>`;
-  });
+  let h = `<div class="psheet">${ printHead(tourney, "Standings") }`;
+  groups.forEach(g => { h += marginGrid(g, withData); });
   const champs = Object.values(tourney.champions || {}).filter(Boolean);
   if (withData && champs.length) {
-    h += `<table style="width:auto;margin-top:4px"><tr><th>Champion${ champs.length > 1 ? "s" : "" }</th>` +
-      `<td>${ champs.map(printEsc).join(", ") }</td></tr></table>`;
+    h += `<table class="mt" style="width:auto;margin-top:6px"><tr><th>Champion${ champs.length > 1 ? "s" : "" }</th>` +
+      `<td class="win">${ champs.map(printEsc).join(", ") }</td></tr></table>`;
   }
-  return h + printFoot("Wins, then point difference, then points scored.") + `</div>`;
+  return h + rulesLine(tourney) + `</div>`;
 };
 
-/* Knockout rounds, if the tournament has reached them. */
 const bracketSheet = (tourney, withData) => {
   const kb = tourney.knockoutBrackets || {};
   const keys = Object.keys(kb).filter(k => (kb[k] || []).length);
   if (!keys.length) return "";
-  let h = `<div class="psheet">${ printHead(tourney, "Knockout draw", "") }`;
+  let h = `<div class="psheet">${ printHead(tourney, "Knockout") }`;
   keys.forEach(k => {
     const cat = (tourney.categories || [])[k];
     h += `<div class="grp">${ printEsc(cat ? cat.name : "Category " + k) }</div>`;
     (kb[k] || []).forEach((round, ri) => {
-      h += `<table><tr><th colspan="4">Round ${ ri + 1 }</th></tr>`;
-      round.forEach(mt => {
-        const played = withData && mt.played;
-        h += `<tr><td>${ printEsc(mt.p1 ? teamName(mt.p1) : "TBD") }</td>` +
-          `<td class="c sbox">${ played ? printEsc(mt.s1) : "" }</td>` +
-          `<td>${ printEsc(mt.p2 ? teamName(mt.p2) : "TBD") }</td>` +
-          `<td class="c sbox">${ played ? printEsc(mt.s2) : "" }</td></tr>`;
+      const names = ["Final", "Semi-final", "Quarter-final"];
+      const fromEnd = (kb[k] || []).length - 1 - ri;
+      const label = names[fromEnd] || `Round ${ ri + 1 }`;
+      round.forEach((mt, mi) => {
+        h += matchTable({ ...mt, teamA: mt.p1, teamB: mt.p2, scoreA: mt.s1, scoreB: mt.s2, played: mt.played },
+          withData, `${ label }${ round.length > 1 ? " " + String.fromCharCode(65 + mi) : "" }`);
       });
-      h += `</table>`;
     });
   });
-  return h + printFoot("") + `</div>`;
+  return h + rulesLine(tourney) + `</div>`;
 };
 
 /* only: "fixtures" | "standings" | "bracket" | undefined for the whole book */
@@ -11915,7 +12054,7 @@ const RefConsole = ({ match, rules, title, subtitle, teamA, teamB, namesA, names
     }
   },
     React.createElement("div", {
-      style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: `1px solid ${ C.border }`, background: C.surface }
+      style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: `1px solid ${ C.border }`, background: C.surface, width: "100%", maxWidth: 560, margin: "0 auto", boxSizing: "border-box" }
     },
       React.createElement("button", {
         onClick: onClose,
@@ -11935,7 +12074,11 @@ const RefConsole = ({ match, rules, title, subtitle, teamA, teamB, namesA, names
         style: { fontSize: 15, fontWeight: 800, color: paused ? C.orange : C.textDim, fontVariantNumeric: "tabular-nums", minWidth: 50, textAlign: "right" }
       }, fmtClock(timerElapsed(timing)))),
 
-    React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: 12 } },
+    /* Capped width: on a laptop the court and the score strip would otherwise
+       stretch across the whole screen, which reads as empty and puts the two
+       tap targets an arm's width apart. A referee holds a phone; this keeps the
+       same proportions on a desktop. */
+    React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: 12, width: "100%", maxWidth: 560, margin: "0 auto" } },
       st.over && React.createElement("div", {
         style: { background: C.lime, color: "#fff", borderRadius: 10, padding: "10px 12px", marginBottom: 10, fontWeight: 800, fontSize: 13, textAlign: "center" }
       }, `🏆 ${ nameOf(st.winner) } win ${ lead }–${ Math.min(st.a, st.b) }` +
