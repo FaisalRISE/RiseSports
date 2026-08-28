@@ -18,10 +18,11 @@ if (regStart < 0 || engStart < 0 || engEnd < 0) { console.error("could not extra
 const api = eval(
   src.slice(regStart, engStart) + src.slice(engStart, engEnd) +
   "\n;({ resolveRules, rallyOver, rallyGolden, rallyGamePoint, replayRallies, rallyStats," +
+  " buildScoring, goldenInfo," +
   " emptyTiming, timerStart, timerPause, timerResume, timerStop, timerElapsed, fmtClock })"
 );
 const { resolveRules, rallyOver, rallyGamePoint, replayRallies, rallyStats,
-        emptyTiming, timerStart, timerPause, timerResume, timerStop, timerElapsed, fmtClock } = api;
+        buildScoring, goldenInfo, emptyTiming, timerStart, timerPause, timerResume, timerStop, timerElapsed, fmtClock } = api;
 
 let pass = 0, fail = 0;
 const check = (name, cond, extra) => cond ? (pass++, console.log("  PASS  " + name))
@@ -178,6 +179,35 @@ console.log("\nmatch timer");
 }
 check("clock formats as m:ss", fmtClock(0) === "0:00" && fmtClock(61000) === "1:01" && fmtClock(600000) === "10:00");
 check("clock never shows a negative", fmtClock(-5000) === "0:00");
+
+console.log("\ntournament scoring rules (the CreateTab controls)");
+{
+  // pickleboss ran to 15, win by 2, golden at 17, cap 18 — the exact shape
+  const pboss = buildScoring(15, true, "17", "8");
+  check("reproduces the pickleboss rule set", pboss.winBy === 2 && pboss.golden === 17 && pboss.cap === 18,
+    JSON.stringify(pboss));
+  check("ends change is carried through", pboss.switchAt === 8);
+
+  const auto = buildScoring(11, true, "auto", "");
+  check("auto cap is target + 2", auto.golden === 13 && auto.cap === 14, JSON.stringify(auto));
+
+  const sudden = buildScoring(11, false, "auto", "");
+  check("sudden death is win by 1 with no cap", sudden.winBy === 1 && sudden.cap === null);
+
+  const nocap = buildScoring(21, true, "none", "");
+  check("no-cap keeps win by 2 and drops the ceiling",
+    nocap.winBy === 2 && nocap.cap === null && nocap.golden === null);
+
+  // and the rules must actually reach the engine
+  const r = resolveRules("pb", { target: 15, ...pboss });
+  check("engine honours the tournament cap", rallyOver(18, 17, r) && !rallyOver(17, 16, r));
+  check("17-17 is the golden point", rallyGamePoint(17, 17, r).length === 2);
+  const sd = resolveRules("pb", { target: 11, ...sudden });
+  check("sudden death ends at the target", rallyOver(11, 10, sd));
+}
+check("the rule summary reads as plain English",
+  /two-point rule stops at 17/i.test(goldenInfo(15, true, "17")), goldenInfo(15, true, "17"));
+check("sudden death is described differently", /First to 11/.test(goldenInfo(11, false, "auto")));
 
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

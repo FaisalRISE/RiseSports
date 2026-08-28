@@ -547,6 +547,27 @@ const resolveRules = (sportId, over) => {
   };
 };
 
+/* Turn the CreateTab controls into a scoring override for resolveRules.
+   goldenAt is the score at which both sides being level means the next rally
+   decides it; the cap sits one above. "none" means the two-point rule runs on
+   with no ceiling, which is the traditional rule but can strand a schedule. */
+const buildScoring = (target, winBy2, goldenAt, switchAt) => {
+  const t = Number(target) || 11;
+  if (!winBy2) return { winBy: 1, golden: null, cap: null, switchAt: Number(switchAt) || null };
+  if (goldenAt === "none") return { winBy: 2, golden: null, cap: null, switchAt: Number(switchAt) || null };
+  const g = goldenAt === "auto" || !goldenAt ? t + 2 : Number(goldenAt);
+  return { winBy: 2, golden: g, cap: g + 1, switchAt: Number(switchAt) || null };
+};
+
+/* One line of plain English describing the ending, shown under the controls. */
+const goldenInfo = (target, winBy2, goldenAt) => {
+  const sc = buildScoring(target, winBy2, goldenAt, "");
+  const t = Number(target) || 11;
+  if (!winBy2) return `First to ${ t } wins. A tie at ${ t - 1 } is decided by the next rally.`;
+  if (!sc.cap) return `To ${ t }, won by 2 clear points, with no ceiling — a tight game can run well past ${ t }.`;
+  return `To ${ t }, won by 2. The two-point rule stops at ${ sc.golden }: if both sides reach ${ sc.golden } the next rally takes it, so no score passes ${ sc.cap }.`;
+};
+
 const rallyOver = (a, b, r) => !!r && (
   ((a >= r.target || b >= r.target) && Math.abs(a - b) >= r.winBy) ||
   (r.cap != null && (a >= r.cap || b >= r.cap)));
@@ -3530,7 +3551,7 @@ const Ic = ({
     currentUser: R,
     setTab: S
   }) => {
-    const [v, M] = useState(1), [z, g] = useState(""), [f, u] = useState(["md_open"]), [k, G] = useState("4"), [O, K] = useState("4"), [J, D] = useState("100"), [I, ae] = useState("15"), [w, P] = useState("2"), [ne, Y] = useState("4"), [ee, L] = useState("09:00"), [se, ge] = useState(new Date().toISOString().split("T")[0]), [ce, le] = useState(""), [i, o] = useState(""), [t, a] = useState([]), [W, q] = useState(""), [E, ie] = useState({}), [V, X] = useState(0), [tourFormat, setTourFormat] = useState("group_ko"), [sport, setSport] = useState(DEFAULT_SPORT), [trackScores, setTrackScores] = useState(true), [useSchedule, setUseSchedule] = useState(false), [matchMins, setMatchMins] = useState("20"), j = Math.min(20, Math.max(1, parseInt(k) || 4)), $ = Math.max(2, parseInt(O) || 4), T = parseInt(J) || 100, A = parseInt(ne) || 4, x = l.find(h => h.id === f[V]) || l[0], U = x ? [
+    const [v, M] = useState(1), [z, g] = useState(""), [f, u] = useState(["md_open"]), [k, G] = useState("4"), [O, K] = useState("4"), [J, D] = useState("100"), [I, ae] = useState("15"), [w, P] = useState("2"), [ne, Y] = useState("4"), [ee, L] = useState("09:00"), [se, ge] = useState(new Date().toISOString().split("T")[0]), [ce, le] = useState(""), [i, o] = useState(""), [t, a] = useState([]), [W, q] = useState(""), [E, ie] = useState({}), [V, X] = useState(0), [tourFormat, setTourFormat] = useState("group_ko"), [sport, setSport] = useState(DEFAULT_SPORT), [winBy2, setWinBy2] = useState(!0), [goldenAt, setGoldenAt] = useState("auto"), [switchAt, setSwitchAt] = useState(""), [trackScores, setTrackScores] = useState(true), [useSchedule, setUseSchedule] = useState(false), [matchMins, setMatchMins] = useState("20"), j = Math.min(20, Math.max(1, parseInt(k) || 4)), $ = Math.max(2, parseInt(O) || 4), T = parseInt(J) || 100, A = parseInt(ne) || 4, x = l.find(h => h.id === f[V]) || l[0], U = x ? [
         "md",
         "wd",
         "mx",
@@ -3783,6 +3804,7 @@ const Ic = ({
           groups: groups0,
           phase: phase0,
           sport: sport,
+          scoring: buildScoring(I, winBy2, goldenAt, switchAt),
           tourFormat: tourFormat,
           americano: am0,
           loserBrackets: lb0,
@@ -4133,7 +4155,93 @@ const Ic = ({
         label: String(h)
       })),
       style: { marginTop: 5 }
-    })), React.createElement("div", null, React.createElement("label", {
+    }), React.createElement("div", {
+      style: {
+        marginTop: 8,
+        padding: 8,
+        borderRadius: 9,
+        background: C.cardAlt,
+        border: `1px solid ${ C.border }`
+      }
+    }, React.createElement("div", {
+      style: { display: "flex", gap: 6, marginBottom: goldenInfo(I, winBy2, goldenAt) ? 6 : 0 }
+    }, [
+      { on: !0, label: "Win by 2" },
+      { on: !1, label: "Sudden death" }
+    ].map(opt => React.createElement("button", {
+      key: String(opt.on),
+      onClick: () => setWinBy2(opt.on),
+      style: {
+        flex: 1,
+        minHeight: 38,
+        borderRadius: 8,
+        fontFamily: "inherit",
+        fontSize: 11.5,
+        fontWeight: 700,
+        cursor: "pointer",
+        border: `1px solid ${ winBy2 === opt.on ? C.lime : C.border }`,
+        background: winBy2 === opt.on ? C.lime : C.card,
+        color: winBy2 === opt.on ? "#fff" : C.text
+      }
+    }, opt.label))), winBy2 && React.createElement("div", {
+      style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }
+    }, React.createElement("span", {
+      style: { fontSize: 10, color: C.textDim, fontWeight: 700 }
+    }, "Two-point rule stops at"), React.createElement(Select, {
+      value: goldenAt,
+      onChange: setGoldenAt,
+      options: [
+        {
+          value: "auto",
+          label: `${ Number(I) + 2 } (default)`
+        },
+        ...[
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          9
+        ].map(d => ({
+          value: String(Number(I) + d),
+          label: String(Number(I) + d)
+        })),
+        {
+          value: "none",
+          label: "No cap \u2014 play on"
+        }
+      ],
+      style: { flex: 1, minWidth: 110 }
+    })), React.createElement("div", {
+      style: { fontSize: 10, color: C.textDim, marginTop: 6, lineHeight: 1.45 }
+    }, goldenInfo(I, winBy2, goldenAt))), React.createElement("div", { style: { marginTop: 10 } }, React.createElement("label", {
+      style: {
+        fontSize: 10,
+        color: C.textDim,
+        textTransform: "uppercase",
+        fontWeight: 700
+      }
+    }, "Change ends at"), React.createElement(Select, {
+      value: switchAt,
+      onChange: setSwitchAt,
+      options: [
+        {
+          value: "",
+          label: "No ends change"
+        },
+        ...[
+          Math.ceil(Number(I) / 2),
+          6,
+          8,
+          11
+        ].filter((x2, i2, ar) => x2 < Number(I) && ar.indexOf(x2) === i2).sort((x2, y2) => x2 - y2).map(x2 => ({
+          value: String(x2),
+          label: `When a side reaches ${ x2 }`
+        }))
+      ],
+      style: { marginTop: 5 }
+    }))), React.createElement("div", null, React.createElement("label", {
       style: {
         fontSize: 10,
         color: C.textDim,
@@ -6265,7 +6373,7 @@ const Ic = ({
     }, React.createElement("button", {
       onClick: () => setRefM({
         match: { log: [], server: "a", posA: 0, posB: 0, timing: emptyTiming() },
-        rules: resolveRules(n.sport, { target: n.pointsToWin }),
+        rules: resolveRules(n.sport, { target: n.pointsToWin, ...n.scoring || {} }),
         title: `${ g.teamA.fullName } v ${ g.teamB.fullName }`,
         teamA: g.teamA.fullName,
         teamB: g.teamB.fullName,
@@ -6394,7 +6502,7 @@ const Ic = ({
     }, React.createElement("button", {
       onClick: () => setRefM({
         match: { log: [], server: "a", posA: 0, posB: 0, timing: emptyTiming() },
-        rules: resolveRules(n.sport, { target: n.pointsToWin }),
+        rules: resolveRules(n.sport, { target: n.pointsToWin, ...n.scoring || {} }),
         title: `${ u.match.p1?.fullName || "TBD" } v ${ u.match.p2?.fullName || "TBD" }`,
         teamA: u.match.p1?.fullName || "Team A",
         teamB: u.match.p2?.fullName || "Team B",
