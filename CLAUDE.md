@@ -136,10 +136,30 @@ Three deliberate reversals, decided 2026-08-27:
   Uses `performance.now()`, **never** a difference of wall-clock stamps: a device that sleeps
   or re-syncs its clock mid-match would otherwise report nonsense. One record per match, no
   aggregates, and no feed into the rating — the spec is firm about that.
-- **`RefConsole` + `CourtDiagram`** — the referee UI, rendered as a sibling of the two score
-  modals in `TourneyTab`. Typed entry stays the default; refereeing is an alternative route to
-  the same number, and `onFinish` fills the *same two inputs* the typed path uses, so there is
-  exactly **one** save path and none of the rating or bracket-advance logic is duplicated.
+- **`RefConsole` + `CourtBox`** — the referee UI, laid out after
+  `Format/pickleboss-35split 12.html:965-1065`, which was built for and used at real events.
+  The load-bearing idea there is that **the court is the input**: a referee standing courtside
+  taps the half belonging to the side that won the rally, rather than hunting for a labelled
+  button. Service boxes show who stands where ("Right / even"), the ball marks the server, and
+  a +/- row underneath is the fallback for corrections. "Flip my view" matters more than it
+  looks — the referee may be at either end, and a court drawn the wrong way round guarantees
+  mis-taps.
+  - Rendered as a sibling of the two score modals in `TourneyTab`. Typed entry stays the
+    default; refereeing is another route to the same number, and `onFinish` fills the *same two
+    inputs* the typed path uses — so there is exactly **one** save path and no duplicated
+    rating or bracket-advance logic.
+- **Scoring rules per tournament** — `buildScoring(target, winBy2, goldenAt, switchAt)` turns
+  the CreateTab controls into the `{winBy, golden, cap, switchAt}` override `resolveRules`
+  already understood. Models the pickleboss rule set exactly: to 15, win by 2, the two-point
+  rule stopping at 17, cap 18. `goldenInfo()` states it back in plain English under the
+  controls so it cannot be misread.
+- **Print pack** — `printPack(tourney, withData, only)` fills the hidden `#printArea` in the
+  shell and calls `window.print()`; the browser's own "Save as PDF" does the rest.
+  Deliberately **not** `window.open` — popups are blocked on most phones, and an organiser
+  printing court sheets is usually on a phone. Sheets: fixtures, knockout draw, standings.
+  Every sheet has a **blank** and a **filled** mode; blank is the one that gets used, printed
+  before play and filled in by hand, because paper does not run out of battery.
+  The `@media print` rules live in `rise-sports.html`, not in the palette.
 - **Palette `C`** — every color flows through this object (currently a light theme).
   Re-theming = editing `C` + the two `<style>` blocks in `rise-sports.html`.
 - **`ROLES`** — PLAYER(1) / ORGANIZER(2) / ADMIN(4); persisted in `rs_r`; switcher on Home.

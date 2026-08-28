@@ -351,8 +351,42 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
 #root > div{animation:fadeUp .25s ease;}
 @keyframes pulse{0%{opacity:1;}50%{opacity:.35;}100%{opacity:1;}}
 </style>
+<style>
+/* ---------- print pack ----------
+   Modelled on Format/pickleboss-35split 12.html:313-395, which was used to run
+   real events. #printArea is filled with plain HTML sheets and window.print()
+   is called; the browser's own "Save as PDF" does the rest. No popup window,
+   which is what makes this work on a phone where popups are blocked. */
+#printArea{display:none}
+@media print{
+  @page{size:A4;margin:12mm}
+  body>#root{display:none!important}
+  #printArea{display:block;font-family:'Sora',Arial,sans-serif;color:#000}
+  #printArea .psheet{page-break-after:always}
+  #printArea .psheet:last-child{page-break-after:auto}
+  #printArea .brandbar{display:flex;align-items:center;gap:10px;
+    border-bottom:2px solid #000;padding-bottom:6px;margin-bottom:10px}
+  #printArea .brandbar .mark{font-size:15px;font-weight:900;letter-spacing:-.02em}
+  #printArea .brandbar .meta{margin-left:auto;font-size:9px;color:#555;text-align:right}
+  #printArea .ph{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+  #printArea .ph .t{font-size:14px;font-weight:800}
+  #printArea .ph .r{font-size:9.5px;color:#555}
+  #printArea table{border-collapse:collapse;width:100%;margin-bottom:10px}
+  #printArea th{border:1px solid #000;background:#eee;padding:4px 6px;
+    font-size:8.5px;text-transform:uppercase;letter-spacing:.06em;text-align:left}
+  #printArea td{border:1px solid #666;padding:5px 6px;font-size:10.5px}
+  #printArea td.c{text-align:center}
+  #printArea td.sbox{min-width:56px;height:20px}
+  #printArea .grp{font-size:10px;font-weight:800;text-transform:uppercase;
+    letter-spacing:.1em;margin:10px 0 4px}
+  #printArea .foot{margin-top:8px;font-size:8px;color:#777;border-top:1px solid #ccc;padding-top:4px}
+  #printArea .cols{display:flex;gap:12px;align-items:flex-start}
+  #printArea .cols>div{flex:1;min-width:0}
+}
+</style>
 </head>
 <body>
+<div id="printArea"></div>
     <div id="root"><div id="loading-screen" style="display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px"><div style="font-size:48px">⚡</div><div style="font-size:20px;font-weight:800;color:#65a30d">RISE Sports</div><div style="font-size:12px;color:#566a86">Loading...</div></div></div>
     <script>/* ---------- storage keys ----------
    Every localStorage key flows through lsKey(). The prefix changed from the old
@@ -4783,7 +4817,7 @@ const Ic = ({
     setTab: r,
     setActiveTourney: l
   }) => {
-    const [n, R] = useState(m), [S, v] = useState(0), [M, z] = useState(0), [g, f] = useState(null), [u, k] = useState(null), [refM, setRefM] = useState(null), [G, O] = useState(""), [K, J] = useState(""), [swapMode, setSwapMode] = useState(!1), [swapSel, setSwapSel] = useState(null), [amSel, setAmSel] = useState(null), D = useRef(null);
+    const [n, R] = useState(m), [S, v] = useState(0), [M, z] = useState(0), [g, f] = useState(null), [u, k] = useState(null), [refM, setRefM] = useState(null), [printOpen, setPrintOpen] = useState(!1), [G, O] = useState(""), [K, J] = useState(""), [swapMode, setSwapMode] = useState(!1), [swapSel, setSwapSel] = useState(null), [amSel, setAmSel] = useState(null), D = useRef(null);
     if (useEffect(() => {
         (g || u) && setTimeout(() => {
           D.current && D.current.focus();
@@ -5408,7 +5442,7 @@ const Ic = ({
     }, React.createElement(Btn, {
       small: !0,
       color: C.red,
-      onClick: () => exportSchedulePDF(n)
+      onClick: () => setPrintOpen(!0)
     }, React.createElement(Ic, {
       t: "download",
       s: 12
@@ -6261,7 +6295,87 @@ const Ic = ({
         color: C.text,
         marginTop: 4
       }
-    }, n.champions[S])), refM && React.createElement(RefConsole, {
+    }, n.champions[S])), printOpen && React.createElement(Modal, {
+      onClose: () => setPrintOpen(!1)
+    }, React.createElement("div", { style: { padding: 20 } }, React.createElement("h3", {
+      style: {
+        fontSize: 15,
+        fontWeight: 800,
+        color: C.text,
+        margin: "0 0 4px",
+        textAlign: "center"
+      }
+    }, "Print / Save as PDF"), React.createElement("p", {
+      style: {
+        fontSize: 10,
+        color: C.textDim,
+        textAlign: "center",
+        margin: "0 0 14px"
+      }
+    }, "Choose \"Save as PDF\" in the print dialog to get a file."), [
+      {
+        label: "Fixture sheets \u2014 blank",
+        hint: "Print before play and fill in at the court",
+        only: "fixtures",
+        data: !1
+      },
+      {
+        label: "Fixtures + results",
+        hint: "Everything scored so far",
+        only: "fixtures",
+        data: !0
+      },
+      {
+        label: "Standings",
+        hint: "The table people ask for after the last match",
+        only: "standings",
+        data: !0
+      },
+      {
+        label: "Knockout draw",
+        hint: "Bracket sheets, blank slots where undecided",
+        only: "bracket",
+        data: !0
+      },
+      {
+        label: "Everything",
+        hint: "Fixtures, draw and standings in one book",
+        only: null,
+        data: !0
+      }
+    ].map(opt => React.createElement("button", {
+      key: opt.label,
+      onClick: () => {
+        setPrintOpen(!1), setTimeout(() => printPack(n, opt.data, opt.only), 60);
+      },
+      style: {
+        width: "100%",
+        minHeight: 52,
+        marginBottom: 8,
+        padding: "8px 12px",
+        borderRadius: 10,
+        cursor: "pointer",
+        textAlign: "left",
+        fontFamily: "inherit",
+        border: `1px solid ${ C.border }`,
+        background: C.card
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 800,
+        color: C.text
+      }
+    }, opt.label), React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.textDim,
+        marginTop: 1
+      }
+    }, opt.hint))), React.createElement(Btn, {
+      full: !0,
+      onClick: () => setPrintOpen(!1)
+    }, "Cancel"))), refM && React.createElement(RefConsole, {
       match: refM.match,
       rules: refM.rules,
       title: refM.title,
@@ -11880,108 +11994,204 @@ const CommunityTab = ({
     }, a.confirmed.length, "/", W, " confirmed", a.waitlist.length ? ` \xB7 ${ a.waitlist.length } waiting` : "")));
   })));
 };
-/* ---------- referee console ----------
-   Live rally-by-rally scoring. Everything shown here is derived from the
-   match's rally log by replayRallies(), so Undo is just "drop the last entry"
-   and the display can never disagree with the court.
+/* ---------- print pack ----------
+   Fixture sheets and standings, for paper or "Save as PDF".
 
-   Built touch-first on purpose: the point buttons get tapped a few hundred
-   times per match, often outdoors, sometimes with wet hands. They are the
-   largest thing on the screen and nothing important sits within a thumb's
-   width of them. */
+   Follows Format/pickleboss-35split 12.html:2210-2312: build plain HTML into a
+   hidden #printArea, then call window.print(). Deliberately NOT window.open —
+   a popup is blocked on most phones, and an organiser printing court sheets is
+   usually on a phone.
 
-/* Top-down court. Team A near, team B far, net across the middle.
-   The ball marks the server; the highlighted service box shows where the
-   serve must be delivered from. */
-const CourtDiagram = ({ st, rules, namesA, namesB, height }) => {
-  const W = 200, H = 300, mid = H / 2, kitchen = 34, pad = 10;
-  const singles = rules && rules.perCourt <= 2;
-  const isPickle = rules && rules.sport === "pb";
-  const line = { stroke: C.border, strokeWidth: 1.5, fill: "none" };
+   Every sheet comes in two modes. BLANK is the one that gets used in practice:
+   printed before play and filled in by hand at the court, because paper does
+   not run out of battery. FILLED is for afterwards. */
+const printEsc = s => String(s == null ? "" : s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
-  /* seat[i] = x position of the player standing right(0) / left(1), per side.
-     "Right" is from that side's own point of view, so the near and far teams
-     mirror each other. */
-  const seat = (team, slot) => {
-    const right = team === "a" ? W - pad - 42 : pad + 42;
-    const left = team === "a" ? pad + 42 : W - pad - 42;
-    return slot === 0 ? right : left;
-  };
-  const rowY = team => (team === "a" ? mid + 78 : mid - 78);
+const printHead = (tourney, title, right) =>
+  `<div class="brandbar"><span class="mark">⚡ RISE SPORTS</span>
+     <span style="font-size:11px;font-weight:700">${ printEsc(tourney.name || "Tournament") }</span>
+     <span class="meta">${ printEsc([tourney.venue, tourney.tournamentDate, tourney.startTime].filter(Boolean).join(" · ")) }</span></div>
+   <div class="ph"><span class="t">${ title }</span><span class="r">${ right || "" }</span></div>`;
 
-  const dot = (team, slot) => {
-    const names = team === "a" ? namesA : namesB;
-    const idx = st.pos[team][slot];
-    const serving = st.serving === team && st.serverIdx === idx;
-    const x = seat(team, slot), y = rowY(team);
-    return React.createElement("g", { key: team + slot },
-      React.createElement("circle", {
-        cx: x, cy: y, r: 17,
-        fill: serving ? C.lime : C.cardAlt,
-        stroke: serving ? C.lime : C.border, strokeWidth: 2
-      }),
-      React.createElement("text", {
-        x: x, y: y + 4, textAnchor: "middle",
-        style: { fontSize: 13, fontWeight: 800, fill: serving ? "#fff" : C.textDim, fontFamily: "inherit" }
-      }, ((names || [])[idx] || "").slice(0, 2).toUpperCase() || (idx + 1)),
-      serving && React.createElement("circle", { cx: x + 21, cy: y - 15, r: 5, fill: C.gold, stroke: "#fff", strokeWidth: 1.5 })
-    );
-  };
+const printFoot = note =>
+  `<div class="foot">${ note ? printEsc(note) + " · " : "" }Generated ${ new Date().toLocaleString("en-IN") } · RISE Sports</div>`;
 
-  return React.createElement("svg", {
-    viewBox: `0 0 ${ W } ${ H }`,
-    style: { width: "100%", height: height || 210, display: "block" },
-    role: "img",
-    "aria-label": `Court. ${ st.serving === "a" ? namesA : namesB } serving from the ${ st.servePos === "R" ? "right" : "left" }.`
-  },
-    React.createElement("rect", { x: pad, y: pad, width: W - pad * 2, height: H - pad * 2, rx: 3, fill: C.surface, ...line }),
-    /* service boxes: the half the serve must come from is filled */
-    ["a", "b"].map(team => {
-      const near = team === "a";
-      const boxY = near ? mid + (isPickle ? kitchen : 4) : pad;
-      const boxH = near ? H - pad - (mid + (isPickle ? kitchen : 4)) : mid - (isPickle ? kitchen : 4) - pad;
-      const rightX = near ? W / 2 : pad, leftX = near ? pad : W / 2;
-      const live = st.serving === team;
-      return React.createElement("g", { key: "box" + team },
-        React.createElement("rect", {
-          x: st.servePos === "R" ? rightX : leftX, y: boxY, width: W / 2 - pad, height: boxH,
-          fill: live ? C.lime : "transparent", opacity: live ? 0.13 : 0
-        }));
-    }),
-    /* non-volley zone — pickleball only */
-    isPickle && React.createElement("g", null,
-      React.createElement("rect", { x: pad, y: mid - kitchen, width: W - pad * 2, height: kitchen, fill: C.teal, opacity: 0.07 }),
-      React.createElement("rect", { x: pad, y: mid, width: W - pad * 2, height: kitchen, fill: C.teal, opacity: 0.07 }),
-      React.createElement("line", { x1: pad, y1: mid - kitchen, x2: W - pad, y2: mid - kitchen, ...line }),
-      React.createElement("line", { x1: pad, y1: mid + kitchen, x2: W - pad, y2: mid + kitchen, ...line })),
-    /* centre line splitting the service boxes */
-    !singles && React.createElement("g", null,
-      React.createElement("line", { x1: W / 2, y1: pad, x2: W / 2, y2: mid - (isPickle ? kitchen : 0), ...line }),
-      React.createElement("line", { x1: W / 2, y1: mid + (isPickle ? kitchen : 0), x2: W / 2, y2: H - pad, ...line })),
-    /* net */
-    React.createElement("line", { x1: pad - 4, y1: mid, x2: W - pad + 4, y2: mid, stroke: C.text, strokeWidth: 3 }),
-    singles ? [dot("a", 0), dot("b", 0)] : [dot("b", 0), dot("b", 1), dot("a", 0), dot("a", 1)]
-  );
+/* One sheet per category: every group's fixtures, with a score box per match. */
+const fixturesSheet = (tourney, withData) => {
+  const groups = tourney.groups || [];
+  if (!groups.length) return "";
+  const rules = resolveRules(tourney.sport, { target: tourney.pointsToWin, ...tourney.scoring || {} });
+  const ruleLine = rules
+    ? `Game to ${ rules.target }` + (rules.winBy > 1 ? `, win by ${ rules.winBy }` : ", sudden death") +
+      (rules.cap ? `, golden point ${ rules.cap }–${ rules.golden }` : "")
+    : "";
+  let h = `<div class="psheet">${ printHead(tourney, withData ? "Fixtures &amp; results" : "Fixture sheet", ruleLine) }`;
+  groups.forEach(g => {
+    h += `<div class="grp">Group ${ printEsc(g.label) } &middot; ${ printEsc(g.catName || "") }` +
+         (g.court ? ` &middot; Court ${ printEsc(g.court) }` : "") + `</div>`;
+    h += `<table><tr><th style="width:34px">#</th><th>Team A</th><th>Team B</th>` +
+         `<th style="width:52px">Court</th><th style="width:52px">Time</th>` +
+         `<th style="width:64px">Score</th><th style="width:64px">Winner</th></tr>`;
+    (g.matches || []).forEach(mt => {
+      const played = withData && mt.played;
+      h += `<tr><td class="c">M${ printEsc(mt.matchNum) }</td>` +
+        `<td>${ printEsc(teamName(mt.teamA)) }</td>` +
+        `<td>${ printEsc(teamName(mt.teamB)) }</td>` +
+        `<td class="c">${ mt.court ? printEsc(mt.court) : "" }</td>` +
+        `<td class="c">${ printEsc(mt.timeStart || "") }</td>` +
+        `<td class="c sbox">${ played ? printEsc(mt.scoreA + "–" + mt.scoreB) : "" }</td>` +
+        `<td class="c sbox">${ played ? printEsc(teamName(mt.scoreA > mt.scoreB ? mt.teamA : mt.teamB)) : "" }</td></tr>`;
+    });
+    h += `</table>`;
+  });
+  return h + printFoot(withData ? "" : "Print before play and fill in at the court.") + `</div>`;
 };
 
+/* The sheet people actually want once the last match is in. */
+const standingsSheet = (tourney, withData) => {
+  const groups = tourney.groups || [];
+  if (!groups.length) return "";
+  let h = `<div class="psheet">${ printHead(tourney, "Standings", `${ groups.length } group${ groups.length > 1 ? "s" : "" }`) }`;
+  groups.forEach(g => {
+    const rows = leagueStandings([g]);
+    h += `<div class="grp">Group ${ printEsc(g.label) } &middot; ${ printEsc(g.catName || "") }</div>`;
+    h += `<table><tr><th style="width:30px">#</th><th>Team</th><th style="width:34px">P</th>` +
+         `<th style="width:34px">W</th><th style="width:34px">L</th><th style="width:40px">PF</th>` +
+         `<th style="width:40px">PA</th><th style="width:44px">±</th></tr>`;
+    rows.forEach((r, i) => {
+      const played = (g.matches || []).filter(mt => mt.played &&
+        (mt.teamA.id === r.team.id || mt.teamB.id === r.team.id));
+      const w = played.filter(mt => (mt.teamA.id === r.team.id ? mt.scoreA > mt.scoreB : mt.scoreB > mt.scoreA)).length;
+      const pf = r.gPF, pa = r.gPF - r.gD;
+      h += `<tr><td class="c">${ i + 1 }</td><td>${ printEsc(teamName(r.team)) }</td>` +
+        `<td class="c">${ withData ? played.length : "" }</td>` +
+        `<td class="c">${ withData ? w : "" }</td>` +
+        `<td class="c">${ withData ? played.length - w : "" }</td>` +
+        `<td class="c">${ withData ? pf : "" }</td>` +
+        `<td class="c">${ withData ? pa : "" }</td>` +
+        `<td class="c">${ withData ? (r.gD > 0 ? "+" : "") + r.gD : "" }</td></tr>`;
+    });
+    h += `</table>`;
+  });
+  const champs = Object.values(tourney.champions || {}).filter(Boolean);
+  if (withData && champs.length) {
+    h += `<table style="width:auto;margin-top:4px"><tr><th>Champion${ champs.length > 1 ? "s" : "" }</th>` +
+      `<td>${ champs.map(printEsc).join(", ") }</td></tr></table>`;
+  }
+  return h + printFoot("Wins, then point difference, then points scored.") + `</div>`;
+};
+
+/* Knockout rounds, if the tournament has reached them. */
+const bracketSheet = (tourney, withData) => {
+  const kb = tourney.knockoutBrackets || {};
+  const keys = Object.keys(kb).filter(k => (kb[k] || []).length);
+  if (!keys.length) return "";
+  let h = `<div class="psheet">${ printHead(tourney, "Knockout draw", "") }`;
+  keys.forEach(k => {
+    const cat = (tourney.categories || [])[k];
+    h += `<div class="grp">${ printEsc(cat ? cat.name : "Category " + k) }</div>`;
+    (kb[k] || []).forEach((round, ri) => {
+      h += `<table><tr><th colspan="4">Round ${ ri + 1 }</th></tr>`;
+      round.forEach(mt => {
+        const played = withData && mt.played;
+        h += `<tr><td>${ printEsc(mt.p1 ? teamName(mt.p1) : "TBD") }</td>` +
+          `<td class="c sbox">${ played ? printEsc(mt.s1) : "" }</td>` +
+          `<td>${ printEsc(mt.p2 ? teamName(mt.p2) : "TBD") }</td>` +
+          `<td class="c sbox">${ played ? printEsc(mt.s2) : "" }</td></tr>`;
+      });
+      h += `</table>`;
+    });
+  });
+  return h + printFoot("") + `</div>`;
+};
+
+/* only: "fixtures" | "standings" | "bracket" | undefined for the whole book */
+const printPack = (tourney, withData, only) => {
+  const area = document.getElementById("printArea");
+  if (!area) return;
+  let html = "";
+  if (only === "fixtures") html = fixturesSheet(tourney, withData);
+  else if (only === "standings") html = standingsSheet(tourney, withData);
+  else if (only === "bracket") html = bracketSheet(tourney, withData);
+  else html = fixturesSheet(tourney, withData) + bracketSheet(tourney, withData) + standingsSheet(tourney, withData);
+  if (!html) { alert("Nothing to print yet — create some groups first."); return; }
+  area.innerHTML = html;
+  window.print();
+};
+
+/* ---------- referee console ----------
+   Live rally-by-rally scoring. Everything shown is derived from the match's
+   rally log by replayRallies(), so Undo is just "drop the last entry" and the
+   display can never disagree with the court.
+
+   The layout follows Format/pickleboss-35split 12.html:965-1065, which was
+   built for and used at real events. The important idea there is that THE
+   COURT IS THE INPUT: a referee standing courtside taps the half belonging to
+   the side that won the rally, rather than hunting for a labelled button. The
+   service boxes show who is standing where, the ball marks the server, and the
+   +/- row underneath is the fallback for corrections.
+
+   "Flip my view" matters more than it looks: the referee may be standing at
+   either end, and a court drawn the wrong way round guarantees mis-taps. */
+
 const PAUSE_REASONS = ["timeout", "injury", "weather", "other"];
+
+/* One service box. Tapping it scores for that side, exactly like tapping the
+   half — the whole court surface is live. */
+const CourtBox = ({ team, posSide, st, names, over, onScore, colour }) => {
+  const idx = st.pos[team][posSide === "R" ? 0 : 1];
+  const serving = st.serving === team && st.servePos === posSide && !over;
+  return React.createElement("button", {
+    onClick: over ? undefined : e => { e.stopPropagation(); onScore(team); },
+    disabled: over,
+    style: {
+      flex: 1, minHeight: 76, display: "flex", flexDirection: "column",
+      justifyContent: "center", gap: 3, padding: 8, cursor: over ? "default" : "pointer",
+      border: `1px solid ${ serving ? colour : C.border }`,
+      background: serving ? `${ colour }1f` : C.card,
+      borderRadius: 8, fontFamily: "inherit", textAlign: "left",
+      WebkitTapHighlightColor: "transparent", touchAction: "manipulation"
+    }
+  },
+    React.createElement("div", { style: { fontSize: 8.5, fontWeight: 800, letterSpacing: .08, textTransform: "uppercase", color: C.textDim } },
+      posSide === "R" ? "Right / even" : "Left / odd"),
+    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5 } },
+      serving && React.createElement("span", { style: { fontSize: 13 } }, "🎾"),
+      React.createElement("span", { style: { fontSize: 9, fontWeight: 800, color: C.textDim } }, team.toUpperCase() + (idx + 1)),
+      React.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+        (names || [])[idx] || "—")),
+    serving && React.createElement("div", { style: { fontSize: 9, fontWeight: 700, color: colour } },
+      `serving from the ${ posSide === "R" ? "right" : "left" }`));
+};
 
 const RefConsole = ({ match, rules, title, subtitle, teamA, teamB, namesA, namesB, onChange, onFinish, onClose }) => {
   const [, forceTick] = useState(0);
   const st = replayRallies(match, rules);
   const timing = match.timing || emptyTiming();
   const paused = timing.pauseMono != null;
+  const fresh = !(match.log || []).length;
+  const lead = Math.max(st.a, st.b);
+  const ends = rules.switchAt ? lead >= rules.switchAt : false;
 
-  /* Repaint once a second so the clock advances. Nothing else depends on it,
-     and it stops as soon as the match is over or paused. */
+  /* Which team is drawn on the left. Ends change flips it, and the referee can
+     flip the whole view again to match the end they are standing at. */
+  let leftK = (match.startLeft === "b") ? "b" : "a";
+  if (ends) leftK = leftK === "a" ? "b" : "a";
+  if (match.invert) leftK = leftK === "a" ? "b" : "a";
+  const rightK = leftK === "a" ? "b" : "a";
+
+  const nameOf = k => (k === "a" ? teamA : teamB);
+  const namesOf = k => (k === "a" ? namesA : namesB);
+  const scoreOf = k => (k === "a" ? st.a : st.b);
+  const colourOf = k => (k === "a" ? C.teal : C.purple);
+
   useEffect(() => {
     if (!timing.startedAt || timing.endedAt || paused) return;
     const h = setInterval(() => forceTick(n => n + 1), 1000);
     return () => clearInterval(h);
   }, [timing.startedAt, timing.endedAt, paused]);
 
-  /* Keep the screen awake while refereeing where the browser allows it. A
-     referee should never have to wake the phone between rallies. */
+  /* Keep the screen awake while refereeing, where the browser allows it. */
   useEffect(() => {
     let lock = null, dead = false;
     navigator.wakeLock && navigator.wakeLock.request &&
@@ -11990,149 +12200,233 @@ const RefConsole = ({ match, rules, title, subtitle, teamA, teamB, namesA, names
   }, []);
 
   const commit = next => onChange({ ...match, ...next });
-
-  const point = side => {
-    if (st.over) return;
-    const log = (match.log || []).concat([side]);
+  const applyLog = log => {
     const after = replayRallies({ ...match, log }, rules);
-    let timingNext = timerStart(timing);
-    if (after.over) timingNext = timerStop(timingNext);
-    commit({ log, sa: after.a, sb: after.b, timing: timingNext });
-  };
-  const undo = () => {
-    if (!(match.log || []).length) return;
-    const log = match.log.slice(0, -1);
-    const after = replayRallies({ ...match, log }, rules);
-    /* Reopening a finished match clears the end stamp, or the clock would stay
-       frozen while play carries on. */
-    const t = { ...timing };
-    if (t.endedAt && !after.over) { t.endedAt = null; t.playingMs = 0; }
+    let t = { ...timing };
+    if (log.length && !t.startedAt) t = timerStart(t);
+    if (after.over && !t.endedAt) t = timerStop(t);
+    /* Reopening a finished match restarts the clock, or it would sit frozen
+       while play carries on. */
+    if (!after.over && t.endedAt) { t.endedAt = null; t.playingMs = 0; }
     commit({ log, sa: after.a, sb: after.b, timing: t });
   };
-
-  const side = (team, name, score) => {
-    const serving = st.serving === team;
-    const onGamePoint = st.gamePoint.includes(team);
-    return React.createElement("button", {
-      onClick: () => point(team),
-      disabled: st.over,
-      style: {
-        flex: 1, minHeight: 132, borderRadius: 14, cursor: st.over ? "default" : "pointer",
-        border: `2px solid ${ serving ? C.lime : C.border }`,
-        background: st.over ? C.cardAlt : C.card,
-        opacity: st.over ? 0.6 : 1,
-        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2,
-        fontFamily: "inherit", padding: 8,
-        WebkitTapHighlightColor: "transparent", touchAction: "manipulation"
-      }
-    },
-      React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: .4 } },
-        serving ? "● serving" : " "),
-      React.createElement("div", { style: { fontSize: 52, fontWeight: 900, lineHeight: 1, color: serving ? C.lime : C.text } }, score),
-      React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.text, textAlign: "center" } }, name),
-      onGamePoint && React.createElement("div", { style: { fontSize: 10, fontWeight: 800, color: C.orange } }, "GAME POINT"));
+  const point = team => { if (!st.over) applyLog((match.log || []).concat([team])); };
+  const undo = () => { if ((match.log || []).length) applyLog(match.log.slice(0, -1)); };
+  /* Walk back to the last rally that gave this side a point — the referee
+     thinks "take one off them", not "undo the Nth rally". */
+  const minus = team => {
+    const log = (match.log || []).slice();
+    for (let i = log.length; i > 0; i--) {
+      const before = replayRallies({ ...match, log: log.slice(0, i - 1) }, rules);
+      const after = replayRallies({ ...match, log: log.slice(0, i) }, rules);
+      if (after[team] > before[team]) { applyLog(log.slice(0, i - 1)); return; }
+    }
   };
+
+  const scoreCell = k => React.createElement("div", {
+    style: { flex: 1, textAlign: k === leftK ? "left" : "right", minWidth: 0 }
+  },
+    React.createElement("div", { style: { height: 3, borderRadius: 2, background: colourOf(k), marginBottom: 6 } }),
+    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, nameOf(k)),
+    React.createElement("div", { style: { fontSize: 46, fontWeight: 900, lineHeight: 1.05, color: colourOf(k), fontVariantNumeric: "tabular-nums" } }, scoreOf(k)));
+
+  const setupRow = (label, children, hint) => React.createElement("div", {
+    style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "6px 0", borderTop: `1px solid ${ C.border }` }
+  },
+    React.createElement("span", { style: { fontSize: 9, fontWeight: 800, letterSpacing: .09, textTransform: "uppercase", color: C.textDim, minWidth: 96 } }, label),
+    children,
+    hint && React.createElement("span", { style: { fontSize: 10, color: C.textDim } }, hint));
+
+  const smallBtn = (label, onClick, active) => React.createElement("button", {
+    key: label, onClick,
+    style: {
+      minHeight: 36, padding: "0 10px", borderRadius: 8, cursor: "pointer", fontFamily: "inherit",
+      fontSize: 11.5, fontWeight: 700,
+      border: `1px solid ${ active ? C.lime : C.border }`,
+      background: active ? C.lime : C.card, color: active ? "#fff" : C.text
+    }
+  }, label);
 
   return React.createElement("div", {
     style: {
-      position: "fixed", inset: 0, zIndex: 300, background: C.bg,
-      display: "flex", flexDirection: "column",
-      paddingTop: "env(safe-area-inset-top, 0px)",
-      paddingBottom: "env(safe-area-inset-bottom, 0px)"
+      position: "fixed", inset: 0, zIndex: 300, background: C.bg, display: "flex", flexDirection: "column",
+      paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)"
     }
   },
-    /* header */
     React.createElement("div", {
-      style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: `1px solid ${ C.border }`, background: C.surface }
+      style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: `1px solid ${ C.border }`, background: C.surface }
     },
       React.createElement("button", {
         onClick: onClose,
-        style: { minWidth: 44, minHeight: 44, border: "none", background: "transparent", color: C.textDim, cursor: "pointer", fontFamily: "inherit" }
-      }, React.createElement(Ic, { t: "back", s: 20 })),
+        style: { minWidth: 44, minHeight: 44, border: "none", background: "transparent", color: C.textDim, cursor: "pointer", fontFamily: "inherit", fontSize: 18 }
+      }, "✕"),
       React.createElement("div", { style: { flex: 1, minWidth: 0 } },
         React.createElement("div", { style: { fontSize: 13, fontWeight: 800, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, title || "Referee"),
-        React.createElement("div", { style: { fontSize: 10, color: C.textDim } },
-          subtitle || `to ${ rules.target } · win by ${ rules.winBy }${ rules.sideOut ? " · side-out" : " · rally scoring" }`)),
+        React.createElement("div", { style: { fontSize: 9.5, color: C.textDim } },
+          [
+            subtitle,
+            rules.sideOut ? "side-out" : "rally scoring",
+            `to ${ rules.target }`,
+            rules.winBy > 1 ? `win by ${ rules.winBy }` : "sudden death",
+            rules.cap ? `golden point ${ rules.cap }–${ rules.golden }` : null
+          ].filter(Boolean).join(" \xB7 "))),
       React.createElement("div", {
-        style: { fontSize: 15, fontWeight: 800, color: paused ? C.orange : C.textDim, fontVariantNumeric: "tabular-nums", minWidth: 52, textAlign: "right" }
+        style: { fontSize: 15, fontWeight: 800, color: paused ? C.orange : C.textDim, fontVariantNumeric: "tabular-nums", minWidth: 50, textAlign: "right" }
       }, fmtClock(timerElapsed(timing)))),
 
-    /* body */
     React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: 12 } },
       st.over && React.createElement("div", {
         style: { background: C.lime, color: "#fff", borderRadius: 10, padding: "10px 12px", marginBottom: 10, fontWeight: 800, fontSize: 13, textAlign: "center" }
-      }, `${ st.winner === "a" ? teamA : teamB } wins ${ Math.max(st.a, st.b) }–${ Math.min(st.a, st.b) }`),
-      st.golden && !st.over && React.createElement("div", {
+      }, `🏆 ${ nameOf(st.winner) } win ${ lead }–${ Math.min(st.a, st.b) }` +
+         (rules.cap && lead === rules.cap && Math.min(st.a, st.b) === rules.golden ? " on the golden point" : "")),
+      !st.over && st.golden && React.createElement("div", {
         style: { background: C.gold, color: C.black, borderRadius: 10, padding: "8px 12px", marginBottom: 10, fontWeight: 800, fontSize: 12, textAlign: "center" }
-      }, `⚡ Golden point — the next rally takes it`),
+      }, `⚡ Golden point — the next rally wins it at ${ rules.cap }–${ rules.golden }.`),
+      !st.over && !st.golden && st.gamePoint.length > 0 && React.createElement("div", {
+        style: { background: C.cardAlt, border: `1px solid ${ C.orange }`, color: C.orange, borderRadius: 10, padding: "7px 12px", marginBottom: 10, fontWeight: 800, fontSize: 12, textAlign: "center" }
+      }, `Game point \xB7 ${ st.gamePoint.map(nameOf).join(" & ") }`),
       paused && React.createElement("div", {
         style: { background: C.orange, color: "#fff", borderRadius: 10, padding: "8px 12px", marginBottom: 10, fontWeight: 800, fontSize: 12, textAlign: "center" }
       }, `Paused — ${ timing.pauseReason }. The clock is stopped.`),
 
-      React.createElement("div", { style: { display: "flex", gap: 10, marginBottom: 12 } },
-        side("a", teamA, st.a), side("b", teamB, st.b)),
+      /* score strip: teams laid out as they stand, serve indicator between */
+      React.createElement("div", {
+        style: { display: "flex", alignItems: "center", gap: 10, background: C.card, border: `1px solid ${ C.border }`, borderRadius: 12, padding: "10px 12px", marginBottom: 10 }
+      }, scoreCell(leftK),
+        React.createElement("div", { style: { textAlign: "center", minWidth: 46 } },
+          React.createElement("div", { style: { fontSize: 15 } },
+            st.over ? "—" : (st.serving === leftK ? "🎾◀" : "▶🎾")),
+          React.createElement("div", { style: { fontSize: 8.5, fontWeight: 800, letterSpacing: .1, textTransform: "uppercase", color: C.textDim, marginTop: 2 } }, "Serve")),
+        scoreCell(rightK)),
 
-      React.createElement("div", { style: { background: C.card, border: `1px solid ${ C.border }`, borderRadius: 12, padding: 8, marginBottom: 12 } },
-        React.createElement(CourtDiagram, { st, rules, namesA, namesB }),
-        React.createElement("div", { style: { fontSize: 10, color: C.textDim, textAlign: "center", paddingTop: 4 } },
-          `${ st.serving === "a" ? teamA : teamB } serving from the ${ st.servePos === "R" ? "right" : "left" }`,
-          rules.sideOut && rules.perCourt > 2 ? ` · server ${ st.serverNum }` : "",
-          ` · ${ st.rallies } ${ st.rallies === 1 ? "rally" : "rallies" }`)),
+      /* pre-match setup, locked the moment the first rally is recorded */
+      fresh && !st.over && React.createElement("div", {
+        style: { background: C.card, border: `1px solid ${ C.border }`, borderRadius: 12, padding: "2px 12px 8px", marginBottom: 10 }
+      },
+        setupRow("Serves first", [leftK, rightK].map(k =>
+          smallBtn((match.server || "a") === k ? "● " + nameOf(k) : nameOf(k), () => commit({ server: k }), (match.server || "a") === k)),
+          "first server starts on the right"),
+        setupRow("Court sides",
+          React.createElement("span", { style: { fontSize: 11.5, fontWeight: 700, color: C.text } },
+            `${ nameOf(leftK) } left \xB7 ${ nameOf(rightK) } right`),
+          null),
+        setupRow("", smallBtn("⇄ Swap", () => commit({ startLeft: (match.startLeft === "b") ? "a" : "b" })),
+          "set this to match where the teams actually stand"),
+        setupRow("Start positions", [leftK, rightK].map(k =>
+          React.createElement("span", { key: k, style: { fontSize: 11, fontWeight: 700, color: C.text, display: "inline-flex", alignItems: "center", gap: 4 } },
+            `${ nameOf(k) }: `,
+            React.createElement("span", { style: { color: C.textDim } }, (namesOf(k) || [])[st.pos[k][0]] || "—", " right"),
+            smallBtn("⇄", () => commit(k === "a" ? { posA: match.posA ? 0 : 1 } : { posB: match.posB ? 0 : 1 })))),
+          "the pair chooses its starting server")),
 
-      /* controls */
-      React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
-        React.createElement("button", {
-          onClick: undo,
-          disabled: !(match.log || []).length,
+      /* the court — tapping a half scores for that side */
+      React.createElement("div", { style: { display: "flex", gap: 0, marginBottom: 6 } },
+        [leftK, rightK].map((k, half) => React.createElement("div", {
+          key: k,
+          onClick: st.over ? undefined : () => point(k),
           style: {
-            flex: "1 1 130px", minHeight: 46, borderRadius: 10, border: `1px solid ${ C.border }`,
-            background: C.card, color: (match.log || []).length ? C.text : C.textDim,
-            fontWeight: 700, fontSize: 13, cursor: (match.log || []).length ? "pointer" : "default", fontFamily: "inherit"
+            flex: 1, display: "flex", flexDirection: "column", gap: 5, padding: 6,
+            background: C.surface, cursor: st.over ? "default" : "pointer",
+            borderRadius: half === 0 ? "12px 0 0 12px" : "0 12px 12px 0",
+            border: `1px solid ${ C.border }`,
+            borderRight: half === 0 ? `2px solid ${ C.text }` : `1px solid ${ C.border }`
           }
-        }, "↶ Undo rally"),
+        },
+          /* the near box of each half sits against the net */
+          (half === 0 ? ["L", "R"] : ["R", "L"]).map(side2 =>
+            React.createElement(CourtBox, {
+              key: side2, team: k, posSide: side2, st, names: namesOf(k),
+              over: st.over, onScore: point, colour: colourOf(k)
+            })),
+          React.createElement("div", {
+            style: { height: 4, borderRadius: 2, background: C.teal, opacity: .22 }
+          }),
+          React.createElement("div", {
+            style: { fontSize: 9.5, fontWeight: 700, textAlign: "center", color: C.textDim, paddingTop: 2 }
+          }, st.over ? "—" : `tap = +1 ${ nameOf(k) }`)))),
+
+      React.createElement("div", {
+        style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10, flexWrap: "wrap" }
+      },
+        React.createElement("span", { style: { fontSize: 10, color: C.textDim } },
+          ends ? `⇄ Ends changed at ${ rules.switchAt } — ${ nameOf(leftK) } now on the left` : ""),
+        smallBtn(match.invert ? "⇄ View flipped" : "⇄ Flip my view", () => commit({ invert: !match.invert }), !!match.invert)),
+
+      /* +/- fallback for corrections */
+      React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 } },
+        [leftK, rightK].map(k => React.createElement("div", {
+          key: k, style: { display: "flex", alignItems: "center", gap: 8 }
+        },
+          React.createElement("button", {
+            onClick: () => minus(k), disabled: scoreOf(k) === 0,
+            style: {
+              width: 52, minHeight: 44, borderRadius: 9, fontFamily: "inherit", fontSize: 20, fontWeight: 800,
+              cursor: scoreOf(k) ? "pointer" : "default", border: `1px solid ${ C.border }`,
+              background: C.card, color: scoreOf(k) ? C.text : C.textDim
+            }
+          }, "−"),
+          React.createElement("div", { style: { flex: 1, fontSize: 12, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, nameOf(k)),
+          React.createElement("button", {
+            onClick: () => point(k), disabled: st.over,
+            style: {
+              width: 52, minHeight: 44, borderRadius: 9, fontFamily: "inherit", fontSize: 20, fontWeight: 800,
+              cursor: st.over ? "default" : "pointer", border: "none",
+              background: st.over ? C.cardAlt : colourOf(k), color: "#fff"
+            }
+          }, "+")))),
+
+      React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } },
+        React.createElement("button", {
+          onClick: undo, disabled: fresh,
+          style: {
+            flex: "1 1 120px", minHeight: 46, borderRadius: 10, border: `1px solid ${ C.border }`,
+            background: C.card, color: fresh ? C.textDim : C.text, fontWeight: 700, fontSize: 13,
+            cursor: fresh ? "default" : "pointer", fontFamily: "inherit"
+          }
+        }, "↶ Undo last rally"),
         React.createElement("button", {
           onClick: () => commit({ timing: paused ? timerResume(timing) : timerPause(timing, "timeout") }),
           disabled: !timing.startedAt || !!timing.endedAt,
           style: {
-            flex: "1 1 130px", minHeight: 46, borderRadius: 10, border: `1px solid ${ paused ? C.orange : C.border }`,
+            flex: "1 1 100px", minHeight: 46, borderRadius: 10,
+            border: `1px solid ${ paused ? C.orange : C.border }`,
             background: paused ? C.orange : C.card, color: paused ? "#fff" : C.text,
             fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit"
           }
         }, paused ? "Resume" : "Pause"),
-        paused && React.createElement("div", { style: { flex: "1 1 100%", display: "flex", gap: 6, flexWrap: "wrap" } },
-          PAUSE_REASONS.map(reason => React.createElement("button", {
-            key: reason,
-            onClick: () => commit({ timing: { ...timing, pauseReason: reason } }),
-            style: {
-              flex: 1, minHeight: 40, borderRadius: 8, fontFamily: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer",
-              border: `1px solid ${ timing.pauseReason === reason ? C.orange : C.border }`,
-              background: timing.pauseReason === reason ? C.orange : C.card,
-              color: timing.pauseReason === reason ? "#fff" : C.textDim
-            }
-          }, reason))),
-        st.over && onFinish && React.createElement("button", {
-          onClick: () => onFinish(st),
+        React.createElement("button", {
+          onClick: () => { if (window.confirm("Clear this match back to 0–0?")) applyLog([]); },
           style: {
-            flex: "1 1 100%", minHeight: 48, borderRadius: 10, border: "none", background: C.lime, color: "#fff",
-            fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "inherit"
+            flex: "1 1 90px", minHeight: 46, borderRadius: 10, border: `1px solid ${ C.red }`,
+            background: C.card, color: C.red, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit"
           }
-        }, "Save result"))),
+        }, "Clear"),
+        onFinish && React.createElement("button", {
+          onClick: () => onFinish(st), disabled: !st.rallies,
+          style: {
+            flex: "1 1 100%", minHeight: 48, borderRadius: 10, border: "none",
+            background: st.over ? C.lime : C.cardAlt, color: st.over ? "#fff" : C.textDim,
+            fontWeight: 800, fontSize: 14, cursor: st.rallies ? "pointer" : "default", fontFamily: "inherit"
+          }
+        }, st.over ? "Save & close" : "Save current score & close")),
 
-    /* pre-match setup, locked once the first rally is recorded */
-    !(match.log || []).length && React.createElement("div", {
-      style: { borderTop: `1px solid ${ C.border }`, background: C.surface, padding: "8px 12px", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }
-    },
-      React.createElement("span", { style: { fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" } }, "First serve"),
-      ["a", "b"].map(t => React.createElement("button", {
-        key: t,
-        onClick: () => commit({ server: t }),
-        style: {
-          minHeight: 40, padding: "0 12px", borderRadius: 8, fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer",
-          border: `1px solid ${ (match.server || "a") === t ? C.lime : C.border }`,
-          background: (match.server || "a") === t ? C.lime : C.card,
-          color: (match.server || "a") === t ? "#fff" : C.text
-        }
-      }, t === "a" ? teamA : teamB))));
+      paused && React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 } },
+        PAUSE_REASONS.map(reason => smallBtn(reason,
+          () => commit({ timing: { ...timing, pauseReason: reason } }), timing.pauseReason === reason))),
+
+      React.createElement("div", {
+        style: { background: C.card, border: `1px solid ${ C.border }`, borderRadius: 12, padding: 12 }
+      },
+        React.createElement("div", { style: { fontSize: 9, fontWeight: 800, letterSpacing: .1, textTransform: "uppercase", color: C.textDim, marginBottom: 6 } }, "Reading the court"),
+        React.createElement("p", { style: { fontSize: 11, color: C.textDim, margin: 0, lineHeight: 1.5 } },
+          rules.sideOut
+            ? "Side-out scoring — only the serving side can score. Tap the half of the court belonging to the side that won the rally. If the receiving side wins, no point is scored and the serve moves on. The ball marks the server, who always serves from the right when their own score is even, so partners swap sides each time they score."
+            : "Rally scoring — every rally is a point, whoever served. Tap the half of the court belonging to the side that won it. If the receiving side wins, the serve crosses with the point. The ball marks the server, who always serves from the right when their own score is even."),
+        React.createElement("p", { style: { fontSize: 11, color: C.textDim, margin: "8px 0 0", lineHeight: 1.5 } },
+          `Game to ${ rules.target }`,
+          rules.winBy > 1 ? `, won by ${ rules.winBy } clear points` : ", sudden death",
+          rules.cap ? `. The two-point rule stops at ${ rules.golden }: if both sides reach ${ rules.golden } the very next rally takes it, so no score can go past ${ rules.cap }.` : ".",
+          ` ${ st.rallies } ${ st.rallies === 1 ? "rally" : "rallies" } recorded — ${ st.a }+${ st.b }=${ st.a + st.b }.`))));
 };
 
 function RiseSports() {
