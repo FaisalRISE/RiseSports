@@ -96,6 +96,15 @@ const DEFAULT_SPORT = "pb", SPORTS = {
     tags: ["Opening Prep", "Tactician", "Endgame Grinder", "Blitz Specialist", "Solid", "Wall", "Consistent", "Clutch Player", "Positional", "Fast Calculator", "Quiet Mover", "Attacker", "Great Sport", "Board General", "Comeback King"]
   }
 };
+/* The RISE Sports wordmark, injected by build.js from brand/logo-inline.json.
+   Returns null when the asset is absent (an un-built template, or a copy taken
+   without the brand folder), so every caller falls back rather than rendering
+   a broken image. Pass true for the inverted mark on a dark surface. */
+const brandLogo = dark => {
+  const b = typeof window !== "undefined" && window.RISE_LOGO;
+  return b ? (dark ? b.wordmarkLight : b.wordmark) : null;
+};
+
 /* A record written before the rebrand has no sport field; treat it as pickleball. */
 const sportOf = x => SPORTS[(x && (x.sport || x)) || DEFAULT_SPORT] || SPORTS[DEFAULT_SPORT],
   skillsFor = x => sportOf(x).skills,
@@ -195,21 +204,32 @@ const resolveRules = (sportId, over) => {
    goldenAt is the score at which both sides being level means the next rally
    decides it; the cap sits one above. "none" means the two-point rule runs on
    with no ceiling, which is the traditional rule but can strand a schedule. */
-const buildScoring = (target, winBy2, goldenAt, switchAt) => {
+const buildScoring = (target, winBy2, goldenAt, switchAt, scoreType) => {
   const t = Number(target) || 11;
-  if (!winBy2) return { winBy: 1, golden: null, cap: null, switchAt: Number(switchAt) || null };
-  if (goldenAt === "none") return { winBy: 2, golden: null, cap: null, switchAt: Number(switchAt) || null };
+  const base = {
+    switchAt: Number(switchAt) || null,
+    /* "" means follow the sport's own convention; resolveRules treats an empty
+       override as absent. Pickleball is traditionally service points, but many
+       clubs run rally scoring to keep a day on schedule, so it is a choice. */
+    sideOut: scoreType === "service" ? !0 : scoreType === "rally" ? !1 : void 0
+  };
+  /* Golden point: first to the target takes it, so the target point IS the
+     golden point — there is no two-point rule to cap. */
+  if (!winBy2) return { ...base, winBy: 1, golden: t - 1, cap: t };
+  if (goldenAt === "none") return { ...base, winBy: 2, golden: null, cap: null };
   const g = goldenAt === "auto" || !goldenAt ? t + 2 : Number(goldenAt);
-  return { winBy: 2, golden: g, cap: g + 1, switchAt: Number(switchAt) || null };
+  return { ...base, winBy: 2, golden: g, cap: g + 1 };
 };
 
 /* One line of plain English describing the ending, shown under the controls. */
-const goldenInfo = (target, winBy2, goldenAt) => {
-  const sc = buildScoring(target, winBy2, goldenAt, "");
+const goldenInfo = (target, winBy2, goldenAt, scoreType) => {
+  const sc = buildScoring(target, winBy2, goldenAt, "", scoreType);
   const t = Number(target) || 11;
-  if (!winBy2) return `First to ${ t } wins. A tie at ${ t - 1 } is decided by the next rally.`;
-  if (!sc.cap) return `To ${ t }, won by 2 clear points, with no ceiling — a tight game can run well past ${ t }.`;
-  return `To ${ t }, won by 2. The two-point rule stops at ${ sc.golden }: if both sides reach ${ sc.golden } the next rally takes it, so no score passes ${ sc.cap }.`;
+  const how = sc.sideOut === !0 ? "Service points — only the serving side scores. "
+    : sc.sideOut === !1 ? "Rally scoring — every rally is a point. " : "";
+  if (!winBy2) return `${ how }First to ${ t } takes it. At ${ t - 1 }–${ t - 1 } the next rally is the golden point.`;
+  if (!sc.cap) return `${ how }To ${ t }, won by 2 clear points, with no ceiling — a tight game can run well past ${ t }.`;
+  return `${ how }To ${ t }, won by 2. The two-point rule stops at ${ sc.golden }: if both sides reach ${ sc.golden } the next rally is the golden point, so no score passes ${ sc.cap }.`;
 };
 
 const rallyOver = (a, b, r) => !!r && (
@@ -3195,7 +3215,7 @@ const Ic = ({
     currentUser: R,
     setTab: S
   }) => {
-    const [v, M] = useState(1), [z, g] = useState(""), [f, u] = useState(["md_open"]), [k, G] = useState("4"), [O, K] = useState("4"), [J, D] = useState("100"), [I, ae] = useState("15"), [w, P] = useState("2"), [ne, Y] = useState("4"), [ee, L] = useState("09:00"), [se, ge] = useState(new Date().toISOString().split("T")[0]), [ce, le] = useState(""), [i, o] = useState(""), [t, a] = useState([]), [W, q] = useState(""), [E, ie] = useState({}), [V, X] = useState(0), [tourFormat, setTourFormat] = useState("group_ko"), [sport, setSport] = useState(DEFAULT_SPORT), [winBy2, setWinBy2] = useState(!0), [goldenAt, setGoldenAt] = useState("auto"), [switchAt, setSwitchAt] = useState(""), [trackScores, setTrackScores] = useState(true), [useSchedule, setUseSchedule] = useState(false), [matchMins, setMatchMins] = useState("20"), j = Math.min(20, Math.max(1, parseInt(k) || 4)), $ = Math.max(2, parseInt(O) || 4), T = parseInt(J) || 100, A = parseInt(ne) || 4, x = l.find(h => h.id === f[V]) || l[0], U = x ? [
+    const [v, M] = useState(1), [z, g] = useState(""), [f, u] = useState(["md_open"]), [k, G] = useState("4"), [O, K] = useState("4"), [J, D] = useState("100"), [I, ae] = useState("15"), [w, P] = useState("2"), [ne, Y] = useState("4"), [ee, L] = useState("09:00"), [se, ge] = useState(new Date().toISOString().split("T")[0]), [ce, le] = useState(""), [i, o] = useState(""), [t, a] = useState([]), [W, q] = useState(""), [E, ie] = useState({}), [V, X] = useState(0), [tourFormat, setTourFormat] = useState("group_ko"), [sport, setSport] = useState(DEFAULT_SPORT), [winBy2, setWinBy2] = useState(!0), [goldenAt, setGoldenAt] = useState("auto"), [switchAt, setSwitchAt] = useState(""), [scoreType, setScoreType] = useState(""), [trackScores, setTrackScores] = useState(true), [useSchedule, setUseSchedule] = useState(false), [matchMins, setMatchMins] = useState("20"), j = Math.min(20, Math.max(1, parseInt(k) || 4)), $ = Math.max(2, parseInt(O) || 4), T = parseInt(J) || 100, A = parseInt(ne) || 4, x = l.find(h => h.id === f[V]) || l[0], U = x ? [
         "md",
         "wd",
         "mx",
@@ -3448,7 +3468,7 @@ const Ic = ({
           groups: groups0,
           phase: phase0,
           sport: sport,
-          scoring: buildScoring(I, winBy2, goldenAt, switchAt),
+          scoring: buildScoring(I, winBy2, goldenAt, switchAt, scoreType),
           tourFormat: tourFormat,
           americano: am0,
           loserBrackets: lb0,
@@ -3808,10 +3828,36 @@ const Ic = ({
         border: `1px solid ${ C.border }`
       }
     }, React.createElement("div", {
-      style: { display: "flex", gap: 6, marginBottom: goldenInfo(I, winBy2, goldenAt) ? 6 : 0 }
+      style: { fontSize: 9, fontWeight: 800, letterSpacing: .09, textTransform: "uppercase", color: C.textDim, marginBottom: 5 }
+    }, "How points are scored"), React.createElement("div", {
+      style: { display: "flex", gap: 6, marginBottom: 8 }
+    }, [
+      { v: "rally", label: "Rally points", hint: "every rally scores" },
+      { v: "service", label: "Service points", hint: "only the server scores" }
+    ].map(opt => React.createElement("button", {
+      key: opt.v,
+      onClick: () => setScoreType(opt.v),
+      style: {
+        flex: 1,
+        minHeight: 44,
+        borderRadius: 8,
+        fontFamily: "inherit",
+        cursor: "pointer",
+        padding: "4px 6px",
+        border: `1px solid ${ scoreType === opt.v ? C.lime : C.border }`,
+        background: scoreType === opt.v ? C.lime : C.card,
+        color: scoreType === opt.v ? "#fff" : C.text
+      }
+    }, React.createElement("div", { style: { fontSize: 11.5, fontWeight: 800 } }, opt.label),
+      React.createElement("div", {
+        style: { fontSize: 9, fontWeight: 600, opacity: .8 }
+      }, opt.hint)))), React.createElement("div", {
+      style: { fontSize: 9, fontWeight: 800, letterSpacing: .09, textTransform: "uppercase", color: C.textDim, marginBottom: 5 }
+    }, "How the game ends"), React.createElement("div", {
+      style: { display: "flex", gap: 6, marginBottom: 6 }
     }, [
       { on: !0, label: "Win by 2" },
-      { on: !1, label: "Sudden death" }
+      { on: !1, label: "Golden point" }
     ].map(opt => React.createElement("button", {
       key: String(opt.on),
       onClick: () => setWinBy2(opt.on),
@@ -3859,7 +3905,7 @@ const Ic = ({
       style: { flex: 1, minWidth: 110 }
     })), React.createElement("div", {
       style: { fontSize: 10, color: C.textDim, marginTop: 6, lineHeight: 1.45 }
-    }, goldenInfo(I, winBy2, goldenAt))), React.createElement("div", { style: { marginTop: 10 } }, React.createElement("label", {
+    }, goldenInfo(I, winBy2, goldenAt, scoreType))), React.createElement("div", { style: { marginTop: 10 } }, React.createElement("label", {
       style: {
         fontSize: 10,
         color: C.textDim,
@@ -11618,7 +11664,7 @@ const CommunityTab = ({
 const printEsc = s => String(s == null ? "" : s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
 const printHead = (tourney, title, right) =>
-  `<div class="brandbar"><span class="mark">⚡ RISE SPORTS</span>
+  `<div class="brandbar">${ brandLogo() ? `<img src="${ brandLogo() }" alt="RISE Sports" style="height:28px">` : `<span class="mark">⚡ RISE SPORTS</span>` }
      <span style="font-size:11px;font-weight:700">${ printEsc(tourney.name || "Tournament") }</span>
      <span class="meta">${ printEsc([tourney.venue, tourney.tournamentDate, tourney.startTime].filter(Boolean).join(" · ")) }</span></div>
    <div class="ph"><span class="t">${ title }</span><span class="r">${ right || "" }</span></div>`;
@@ -11748,29 +11794,34 @@ const PAUSE_REASONS = ["timeout", "injury", "weather", "other"];
 
 /* One service box. Tapping it scores for that side, exactly like tapping the
    half — the whole court surface is live. */
-const CourtBox = ({ team, posSide, st, names, over, onScore, colour }) => {
+/* Real pickleball court colours: a blue playing surface with the rust-coloured
+   non-volley zone ("kitchen") either side of the net. A referee glancing down
+   should recognise the court, not read a diagram. */
+const COURT = { blue: "#31637f", blueLit: "#3f7ba0", kitchen: "#b4571f", line: "rgba(255,255,255,.55)", slot: "#ffd24a" };
+
+const CourtBox = ({ team, posSide, st, names, over, onScore }) => {
   const idx = st.pos[team][posSide === "R" ? 0 : 1];
   const serving = st.serving === team && st.servePos === posSide && !over;
   return React.createElement("button", {
     onClick: over ? undefined : e => { e.stopPropagation(); onScore(team); },
     disabled: over,
     style: {
-      flex: 1, minHeight: 76, display: "flex", flexDirection: "column",
-      justifyContent: "center", gap: 3, padding: 8, cursor: over ? "default" : "pointer",
-      border: `1px solid ${ serving ? colour : C.border }`,
-      background: serving ? `${ colour }1f` : C.card,
-      borderRadius: 8, fontFamily: "inherit", textAlign: "left",
+      flex: 1, minHeight: 84, display: "flex", flexDirection: "column",
+      justifyContent: "center", gap: 3, padding: "8px 10px", cursor: over ? "default" : "pointer",
+      border: "none", borderBottom: `1px solid ${ COURT.line }`,
+      background: serving ? COURT.blueLit : COURT.blue,
+      fontFamily: "inherit", textAlign: "left", opacity: over ? .65 : 1,
       WebkitTapHighlightColor: "transparent", touchAction: "manipulation"
     }
   },
-    React.createElement("div", { style: { fontSize: 8.5, fontWeight: 800, letterSpacing: .08, textTransform: "uppercase", color: C.textDim } },
+    React.createElement("div", { style: { fontSize: 8.5, fontWeight: 800, letterSpacing: .1, textTransform: "uppercase", color: "rgba(255,255,255,.7)" } },
       posSide === "R" ? "Right / even" : "Left / odd"),
     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5 } },
       serving && React.createElement("span", { style: { fontSize: 13 } }, "🎾"),
-      React.createElement("span", { style: { fontSize: 9, fontWeight: 800, color: C.textDim } }, team.toUpperCase() + (idx + 1)),
-      React.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+      React.createElement("span", { style: { fontSize: 9.5, fontWeight: 800, color: COURT.slot } }, team.toUpperCase() + (idx + 1)),
+      React.createElement("span", { style: { fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
         (names || [])[idx] || "—")),
-    serving && React.createElement("div", { style: { fontSize: 9, fontWeight: 700, color: colour } },
+    serving && React.createElement("div", { style: { fontSize: 8.5, fontWeight: 800, letterSpacing: .06, textTransform: "uppercase", color: COURT.slot } },
       `serving from the ${ posSide === "R" ? "right" : "left" }`));
 };
 
@@ -11929,31 +11980,56 @@ const RefConsole = ({ match, rules, title, subtitle, teamA, teamB, namesA, names
             smallBtn("⇄", () => commit(k === "a" ? { posA: match.posA ? 0 : 1 } : { posB: match.posB ? 0 : 1 })))),
           "the pair chooses its starting server")),
 
-      /* the court — tapping a half scores for that side */
-      React.createElement("div", { style: { display: "flex", gap: 0, marginBottom: 6 } },
-        [leftK, rightK].map((k, half) => React.createElement("div", {
-          key: k,
-          onClick: st.over ? undefined : () => point(k),
-          style: {
-            flex: 1, display: "flex", flexDirection: "column", gap: 5, padding: 6,
-            background: C.surface, cursor: st.over ? "default" : "pointer",
-            borderRadius: half === 0 ? "12px 0 0 12px" : "0 12px 12px 0",
-            border: `1px solid ${ C.border }`,
-            borderRight: half === 0 ? `2px solid ${ C.text }` : `1px solid ${ C.border }`
-          }
-        },
-          /* the near box of each half sits against the net */
-          (half === 0 ? ["L", "R"] : ["R", "L"]).map(side2 =>
-            React.createElement(CourtBox, {
-              key: side2, team: k, posSide: side2, st, names: namesOf(k),
-              over: st.over, onScore: point, colour: colourOf(k)
-            })),
-          React.createElement("div", {
-            style: { height: 4, borderRadius: 2, background: C.teal, opacity: .22 }
-          }),
-          React.createElement("div", {
-            style: { fontSize: 9.5, fontWeight: 700, textAlign: "center", color: C.textDim, paddingTop: 2 }
-          }, st.over ? "—" : `tap = +1 ${ nameOf(k) }`)))),
+      /* The court. Tapping a half scores for that side — the surface IS the
+         input, which is what a referee standing courtside actually reaches for.
+         Kitchen strips sit either side of the net, as on a real court. */
+      React.createElement("div", {
+        style: {
+          display: "flex", marginBottom: 6, borderRadius: 12, overflow: "hidden",
+          border: `3px solid ${ C.surface }`, boxShadow: `0 1px 3px rgba(0,0,0,.18)`
+        }
+      },
+        [leftK, "net", rightK].map((k, i) => k === "net"
+          ? React.createElement("div", {
+              key: "net",
+              style: { display: "flex", alignItems: "stretch", background: COURT.kitchen }
+            },
+              React.createElement("div", {
+                style: {
+                  width: 26, display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 7, fontWeight: 800, letterSpacing: .18, textTransform: "uppercase",
+                  color: "rgba(255,255,255,.45)", writingMode: "vertical-rl", transform: "rotate(180deg)"
+                }
+              }, "Kitchen"),
+              React.createElement("div", { style: { width: 3, background: "#fff", opacity: .95 } }),
+              React.createElement("div", {
+                style: {
+                  width: 26, display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 7, fontWeight: 800, letterSpacing: .18, textTransform: "uppercase",
+                  color: "rgba(255,255,255,.45)", writingMode: "vertical-rl"
+                }
+              }, "Kitchen"))
+          : React.createElement("div", {
+              key: k,
+              onClick: st.over ? undefined : () => point(k),
+              style: {
+                flex: 1, display: "flex", flexDirection: "column",
+                cursor: st.over ? "default" : "pointer", minWidth: 0,
+                background: COURT.blue
+              }
+            },
+              /* the box nearest the net is listed first on the left half */
+              (i === 0 ? ["L", "R"] : ["R", "L"]).map(side2 =>
+                React.createElement(CourtBox, {
+                  key: side2, team: k, posSide: side2, st, names: namesOf(k),
+                  over: st.over, onScore: point
+                })),
+              React.createElement("div", {
+                style: {
+                  fontSize: 8.5, fontWeight: 800, letterSpacing: .08, textTransform: "uppercase",
+                  textAlign: "center", color: "rgba(255,255,255,.6)", padding: "5px 4px"
+                }
+              }, st.over ? "—" : `tap = +1 ${ nameOf(k) }`)))),
 
       React.createElement("div", {
         style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10, flexWrap: "wrap" }
@@ -12194,7 +12270,15 @@ function RiseSports() {
       alignItems: "center",
       gap: 8
     }
-  }, React.createElement("div", {
+  }, brandLogo() ? React.createElement("img", {
+    src: brandLogo(),
+    alt: "RISE Sports",
+    style: {
+      height: 26,
+      width: "auto",
+      display: "block"
+    }
+  }) : React.createElement(React.Fragment, null, React.createElement("div", {
     style: {
       width: 30,
       height: 30,
@@ -12211,7 +12295,7 @@ function RiseSports() {
       fontWeight: 800,
       color: C.text
     }
-  }, "RISE Sports")), l ? React.createElement("div", {
+  }, "RISE Sports"))), l ? React.createElement("div", {
     onClick: () => {
       S(l.id), d("leaderboard");
     },

@@ -68,7 +68,32 @@ if (lastOpen === -1 || lastClose === -1 || lastClose < lastOpen) {
   process.exit(1);
 }
 
-const out = html.slice(0, lastOpen + open.length) + src + html.slice(lastClose);
+let out = html.slice(0, lastOpen + open.length) + src + html.slice(lastClose);
+
+// --- brand assets ---------------------------------------------------------
+// The RISE Sports wordmark is a 2MB PNG; tools/make-logo.js downscales it to
+// ~32KB and writes brand/logo-inline.json. It is injected HERE rather than
+// stored in app.source.js or the template, so neither source file carries a
+// 40KB data URI. Idempotent: the placeholder script's contents are replaced
+// every build, so repeated builds do not accumulate.
+try {
+  const brand = JSON.parse(fs.readFileSync("brand/logo-inline.json", "utf8"));
+  const payload = `window.RISE_LOGO=${JSON.stringify(brand)};`;
+  const slot = /(<script id="rise-brand">)[\s\S]*?(<\/script>)/;
+  // Test for the slot explicitly. Comparing before/after would report a false
+  // "not found" on every rebuild, because re-injecting the same logo yields an
+  // identical string. Note the output IS the next build's template, so after
+  // the first build the payload lives in rise-sports.html — that is fine, the
+  // point of injecting was to keep it out of app.source.js.
+  if (!slot.test(out)) {
+    console.warn('warning: <script id="rise-brand"> slot missing; logo not injected');
+  } else {
+    out = out.replace(slot, `$1${payload}$2`);
+    console.log(`brand: logo injected (${Math.round(payload.length / 1024)} KB)`);
+  }
+} catch (e) {
+  console.warn("warning: brand/logo-inline.json missing; run node tools/make-logo.js");
+}
 
 // The template is also the output, so a bad splice corrupts the file it read.
 // Adding a <script> AFTER the app block would make lastIndexOf pick the wrong
@@ -81,8 +106,13 @@ for (const m of headMarkers) {
     process.exit(1);
   }
 }
-if (out.lastIndexOf(open) !== lastOpen) {
+// Position-independent: the app source must live inside the LAST script block.
+// (Comparing against the template's index breaks as soon as anything is
+// injected earlier in the document, e.g. the brand payload below.)
+const srcProbe = src.slice(0, 60);
+if (out.indexOf(srcProbe, out.lastIndexOf(open)) === -1) {
   console.error("ERROR: the app block is not the last <script> in the output.");
+  console.error("Is there a <script> block AFTER the app block in the template?");
   process.exit(1);
 }
 

@@ -21,7 +21,7 @@ const api = eval(
   " buildScoring, goldenInfo," +
   " emptyTiming, timerStart, timerPause, timerResume, timerStop, timerElapsed, fmtClock })"
 );
-const { resolveRules, rallyOver, rallyGamePoint, replayRallies, rallyStats,
+const { resolveRules, rallyOver, rallyGolden, rallyGamePoint, replayRallies, rallyStats,
         buildScoring, goldenInfo, emptyTiming, timerStart, timerPause, timerResume, timerStop, timerElapsed, fmtClock } = api;
 
 let pass = 0, fail = 0;
@@ -191,8 +191,20 @@ console.log("\ntournament scoring rules (the CreateTab controls)");
   const auto = buildScoring(11, true, "auto", "");
   check("auto cap is target + 2", auto.golden === 13 && auto.cap === 14, JSON.stringify(auto));
 
+  // "Golden point" (was mislabelled sudden death): first to the target takes
+  // it, so the target point IS the golden point and the cap sits on it.
   const sudden = buildScoring(11, false, "auto", "");
-  check("sudden death is win by 1 with no cap", sudden.winBy === 1 && sudden.cap === null);
+  check("golden point is win by 1, capped at the target",
+    sudden.winBy === 1 && sudden.cap === 11 && sudden.golden === 10, JSON.stringify(sudden));
+
+  // scoring type: rally vs service points
+  check("service points sets side-out", buildScoring(11, true, "auto", "", "service").sideOut === true);
+  check("rally points clears side-out", buildScoring(11, true, "auto", "", "rally").sideOut === false);
+  check("unset scoring type defers to the sport", buildScoring(11, true, "auto", "", "").sideOut === undefined);
+  check("resolveRules honours an explicit rally choice",
+    resolveRules("pb", { target: 11, ...buildScoring(11, true, "auto", "", "rally") }).sideOut === false);
+  check("resolveRules falls back to the sport when unset",
+    resolveRules("pb", { target: 11, ...buildScoring(11, true, "auto", "", "") }).sideOut === true);
 
   const nocap = buildScoring(21, true, "none", "");
   check("no-cap keeps win by 2 and drops the ceiling",
@@ -203,11 +215,15 @@ console.log("\ntournament scoring rules (the CreateTab controls)");
   check("engine honours the tournament cap", rallyOver(18, 17, r) && !rallyOver(17, 16, r));
   check("17-17 is the golden point", rallyGamePoint(17, 17, r).length === 2);
   const sd = resolveRules("pb", { target: 11, ...sudden });
-  check("sudden death ends at the target", rallyOver(11, 10, sd));
+  check("golden point ends at the target", rallyOver(11, 10, sd));
+  check("target-1 all is the golden point", rallyGolden(10, 10, sd));
 }
 check("the rule summary reads as plain English",
   /two-point rule stops at 17/i.test(goldenInfo(15, true, "17")), goldenInfo(15, true, "17"));
-check("sudden death is described differently", /First to 11/.test(goldenInfo(11, false, "auto")));
+check("golden point is described differently", /First to 11/.test(goldenInfo(11, false, "auto")));
+check("the summary names the scoring type",
+  /Service points/.test(goldenInfo(11, true, "auto", "service")) &&
+  /Rally scoring/.test(goldenInfo(11, true, "auto", "rally")));
 
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
