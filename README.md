@@ -3,6 +3,8 @@
 A multi-sport community platform — tournaments, community play, player ratings and venue
 bookings — across pickleball, badminton, table tennis, padel, tennis, carrom and chess.
 
+**Live: <https://rise-sports.vercel.app>**
+
 It ships as **one self-contained offline HTML file**. React is inlined, there is no bundler,
 no server and no network request at load. Open it and it runs.
 

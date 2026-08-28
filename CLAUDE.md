@@ -15,7 +15,13 @@ Local working copy: `C:\Users\khanf\Tournament App\Tournament App` (moved off Go
 run, and can duplicate them under a `(1)` suffix mid-write).
 
 **Repo: <https://github.com/FaisalRISE/RiseSports>** (public, `main`).
-**Host: Vercel**, team `FaisalRISE` (`rise18`, hobby plan), project `rise-sports`.
+**Host: Vercel** — live at <https://rise-sports.vercel.app>. Team `FaisalRISE` (`rise18`,
+hobby), project `rise-sports`, auto-deploys on every push to `main`.
+
+> The Vercel MCP tools cannot see this project (`list_projects` returns empty, `get_project`
+> 404s) because a hobby "team" is really a personal account wearing a team id. The project was
+> imported from the dashboard and works fine — verify deploys via the GitHub deployments API
+> or by fetching the URL, not via the Vercel MCP tools.
 
 ### The repo is PUBLIC — what must never be committed
 
@@ -195,7 +201,7 @@ Full plan: `C:\Users\khanf\.claude\plans\i-want-to-develop-stateful-pascal.md`
 | 0.1 | Rebrand to RISE Sports, `rs_` prefix + migration, favicon, test harness | **done** |
 | 0.2 | Multi-sport spine — `SPORTS` registry, sport-keyed skills/tags, `pb:md` rating keys | **done** |
 | 0.3 | Supabase sync + PIN roles, ported from `Format/pickleboss-35split 12.html` | next |
-| 0.4 | Mobile hardening + PWA manifest/service worker | **done** (SW registration unverified on real hardware) |
+| 0.4 | Mobile hardening + PWA manifest/service worker | **done** — SW verified live: registered, activated, controlling, 7 assets cached |
 | 1 | Live scoring / referee mode + match timer | not started |
 | 2 | Cup/Plate, tiered finals, Davis-Cup rubber ties, rolling substitutions | not started |
 | 3 | RISE Rating rebuild (fixes the conservation bug) + GSR→RISE rename | not started |
