@@ -8,18 +8,35 @@ Formerly **Pickle Rank**. Renamed to RISE Sports on 2026-08-27, at which point t
 stopped being pickleball-only. RISE is the parent brand — the rating is **RISE Rating**, the
 community-session certification is **RISE Certified**.
 
-## Location
+## Location and repo
 
-The project lives on a **local drive**: `C:\Users\khanf\Tournament App\Tournament App`.
-Moved off Google Drive on 2026-08-27.
+Local working copy: `C:\Users\khanf\Tournament App\Tournament App` (moved off Google Drive on
+2026-08-27 — Drive sync races with the build, which rewrites several large HTML files on every
+run, and can duplicate them under a `(1)` suffix mid-write).
 
-`Files for claude code/SETUP.md` is explicit about this: *"The repo must live on a local drive
-... Do not create or move the repository inside Google Drive, OneDrive, or Dropbox."* Drive
-sync races with the build (`build.js` rewrites two large HTML files on every run) and can
-resurrect or duplicate files under a `(1)` suffix mid-edit.
+**Repo: <https://github.com/FaisalRISE/RiseSports>** (public, `main`).
+**Host: Vercel**, team `FaisalRISE` (`rise18`, hobby plan), project `rise-sports`.
 
-An older copy may still sit at `G:\My Drive\Faisal\AI\Sport\Tournament App`. It is stale
-— do not edit it, and do not copy it back over this one.
+### The repo is PUBLIC — what must never be committed
+
+`.gitignore` excludes `Format/` and `Files for claude code/` because three files in them carry
+live credentials:
+
+| File | Secret |
+|---|---|
+| `Format/OSL-2026-tournament-app_24.html` | Supabase anon JWT (`:3734`), `ADMIN_DEFAULT` (`:4213`) |
+| `Format/pickleboss-35split 12.html` | Supabase anon JWT (`:1596`), `ADMIN_DEFAULT` (`:472`) |
+| `Files for claude code/claude-code-brief.md` | Supabase key in plaintext (`:63`) |
+
+They are reference material, not build inputs, so excluding them costs the build nothing, and
+they still exist on local disk. **A committed secret is not removed by deleting it later** — it
+stays in history and must be treated as compromised. Before any commit that adds files, check
+the staged tree, not just the working tree:
+
+    git grep -c --cached "eyJhbGciOiJIUzI1NiIs" ; git grep -c --cached "Hello43556"
+
+An older copy may still sit at `G:\My Drive\Faisal\AI\Sport\Tournament App`. It is stale — do
+not edit it, and do not copy it back over this one.
 
 ## Files
 
