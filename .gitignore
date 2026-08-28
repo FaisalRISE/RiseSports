@@ -1,0 +1,48 @@
+# ---------------------------------------------------------------------------
+# SECRETS — this repo is PUBLIC. Nothing below may ever be committed.
+#
+# Format/ and "Files for claude code/" are excluded because three files in them
+# carry live credentials:
+#   Format/OSL-2026-tournament-app_24.html   Supabase anon JWT + ADMIN_DEFAULT
+#   Format/pickleboss-35split 12.html        Supabase anon JWT + ADMIN_DEFAULT
+#   Files for claude code/claude-code-brief.md   Supabase key in plaintext
+#
+# They are reference material, not build inputs (see CLAUDE.md), so excluding
+# them costs the build nothing. Keep them on local disk / a private repo.
+#
+# Committing a secret and deleting it later does NOT remove it — it stays in
+# git history and must be treated as compromised.
+# ---------------------------------------------------------------------------
+Format/
+Files for claude code/
+
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+service-role*
+
+# ---------------------------------------------------------------------------
+# Local / machine-specific
+# ---------------------------------------------------------------------------
+.claude/settings.local.json
+node_modules/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+
+# ---------------------------------------------------------------------------
+# Working files
+# ---------------------------------------------------------------------------
+*.bak
+*.orig
+scratchpad/
+tmp/
+
+# ---------------------------------------------------------------------------
+# Deploy
+# ---------------------------------------------------------------------------
+.vercel
