@@ -118,6 +118,28 @@ Three deliberate reversals, decided 2026-08-27:
     existing call sites did not change.
   - `bestRating` is `max()` across **all** sports. Fine for seeding and display today; revisit
     if a chess rating ever needs to stop flattering a pickleball draw.
+- **Live scoring engine** — `replayRallies(match, rules)` is the heart of referee mode. The
+  match's rally log (`m.log`, one entry per rally, `"a"`/`"b"` for whoever WON it) is the only
+  stored state; score, serving side, player positions and service box are all derived by
+  replaying it. Undo is therefore just "drop the last entry", the display can never disagree
+  with the court, and only the log needs to travel when devices sync.
+  - `resolveRules(sportId, overrides)` merges the sport's `scoring` block with per-tournament
+    overrides (`pointsToWin`). Returns **null** for tennis/padel — they are scored by games and
+    sets, and this console does not cover them.
+  - Serve models: `sideout` (pickleball — **only the serving side scores**; the opening service
+    turn has one server, so the first fault sides out immediately), `rally` (badminton),
+    `alt2` (table tennis — serve every 2 points, every point at deuce), `turns` (board games).
+    **The registry's value is `alt2`, not `every2`** — the engine once checked the wrong string
+    and table tennis silently served to the rally winner. `tests/scoring.test.js` pins it.
+  - `rallyOver` / `rallyGolden` / `rallyGamePoint` / `rallyStats` (serve-hold %, clutch splits).
+- **Match timer** — `timerStart/Pause/Resume/Stop/Elapsed`, per `match-timing-spec.md` v2.0.
+  Uses `performance.now()`, **never** a difference of wall-clock stamps: a device that sleeps
+  or re-syncs its clock mid-match would otherwise report nonsense. One record per match, no
+  aggregates, and no feed into the rating — the spec is firm about that.
+- **`RefConsole` + `CourtDiagram`** — the referee UI, rendered as a sibling of the two score
+  modals in `TourneyTab`. Typed entry stays the default; refereeing is an alternative route to
+  the same number, and `onFinish` fills the *same two inputs* the typed path uses, so there is
+  exactly **one** save path and none of the rating or bracket-advance logic is duplicated.
 - **Palette `C`** — every color flows through this object (currently a light theme).
   Re-theming = editing `C` + the two `<style>` blocks in `rise-sports.html`.
 - **`ROLES`** — PLAYER(1) / ORGANIZER(2) / ADMIN(4); persisted in `rs_r`; switcher on Home.
@@ -202,7 +224,7 @@ Full plan: `C:\Users\khanf\.claude\plans\i-want-to-develop-stateful-pascal.md`
 | 0.2 | Multi-sport spine — `SPORTS` registry, sport-keyed skills/tags, `pb:md` rating keys | **done** |
 | 0.3 | Supabase sync + PIN roles, ported from `Format/pickleboss-35split 12.html` | next |
 | 0.4 | Mobile hardening + PWA manifest/service worker | **done** — SW verified live: registered, activated, controlling, 7 assets cached |
-| 1 | Live scoring / referee mode + match timer | not started |
+| 1 | Live scoring / referee mode + match timer | **done** — engine, court diagram, timer, wired into both score modals |
 | 2 | Cup/Plate, tiered finals, Davis-Cup rubber ties, rolling substitutions | not started |
 | 3 | RISE Rating rebuild (fixes the conservation bug) + GSR→RISE rename | not started |
 | 4 | Capacitor packaging for Play Store / App Store | not started |
@@ -231,6 +253,9 @@ UPI registration, venue booking.
   `communityGames` became a string that crashed the Play tab — all silently. Fixed 28 Aug
   (`K`→`lsKey`, `RK`→`ratingKey`) and guarded by `tests/shadowing.test.js`. `buildTimedSchedule`
   also bound a local `C` over the palette; renamed to `courtCount`.
+- **The rally log is session-local.** `RefConsole` keeps it in `TourneyTab` state, not on the
+  tournament record, so reloading mid-match loses the log (the score can still be typed in).
+  Wave 0.3 moves it into the synced match record, which is where it belongs.
 - In `TourneyTab`, organiser controls use `(q || z)`: `q` = real organiser, `z` = the
   demo-able "Organiser View" toggle. Keep that pattern for new organiser features.
 - The `T[q] !== void 0` trap in the rating applier `Y()` (a player with no entry for that

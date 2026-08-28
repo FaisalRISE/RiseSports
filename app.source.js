@@ -150,6 +150,222 @@ const sportOf = x => SPORTS[(x && (x.sport || x)) || DEFAULT_SPORT] || SPORTS[DE
   } catch (e) {
   }
 })();
+/* ---------- live scoring engine ----------
+   The rally log is the single source of truth. m.log holds one entry per rally
+   — "a" or "b", whoever WON it — and the score, serving side, player positions
+   and service box are all DERIVED by replaying it from scratch.
+
+   That design is the reason to keep it: undo is exact (drop the last entry),
+   the displayed state can never drift out of step with the court, and only the
+   log has to travel when two devices sync a match.
+
+   Ported from Format/pickleboss-35split 12.html:855-874 and generalised so the
+   sport's rules drive it instead of hardcoded constants.
+
+   Serve models:
+     sideout  Pickleball. ONLY THE SERVING SIDE SCORES. Losing a rally passes
+              the serve to the partner, then across the net. The opening
+              service turn of a game has only one server, so the first fault is
+              an immediate side-out.
+     rally    Badminton. Every rally is a point and the winner serves next.
+     alt2     Table tennis. Every rally is a point; serve changes every 2
+              points, and every point once both sides reach target-1.
+     turns    Carrom / chess. Points only, no court geometry.
+   Tennis and padel are scored by games and sets, so resolveRules returns null
+   for them and this console does not cover them. */
+const resolveRules = (sportId, over) => {
+  const sp = sportOf(sportId), base = sp.scoring;
+  if (!base) return null;                       // set-based sport: no point engine
+  const pick = (k, d) => over && over[k] !== undefined && over[k] !== null && over[k] !== "" ? over[k] : d;
+  return {
+    sport: sp.id,
+    target: Number(pick("target", base.target)),
+    winBy: Number(pick("winBy", base.winBy)),
+    cap: pick("cap", base.cap),
+    golden: pick("golden", base.golden),
+    /* Traditional pickleball is side-out; plenty of clubs run rally scoring to
+       keep a day on schedule, so it stays overridable per tournament. */
+    sideOut: pick("sideOut", sp.serveModel === "sideout"),
+    serve: sp.serveModel,
+    perCourt: sp.playersPerCourt
+  };
+};
+
+const rallyOver = (a, b, r) => !!r && (
+  ((a >= r.target || b >= r.target) && Math.abs(a - b) >= r.winBy) ||
+  (r.cap != null && (a >= r.cap || b >= r.cap)));
+
+/* Both sides one rally from the end with the win-by rule spent. */
+const rallyGolden = (a, b, r) =>
+  !!r && r.golden != null && a >= r.golden && b >= r.golden && !rallyOver(a, b, r);
+
+/* Which sides would end the match by winning the next rally. Under side-out
+   only the side holding serve can actually convert, so replayRallies filters
+   this by the serving side. */
+const rallyGamePoint = (a, b, r) => {
+  if (!r || rallyOver(a, b, r)) return [];
+  const out = [];
+  rallyOver(a + 1, b, r) && out.push("a");
+  rallyOver(a, b + 1, r) && out.push("b");
+  return out;
+};
+
+/* Replay the log and return the full derived state.
+   pos[team] = [index of the player standing RIGHT, index standing LEFT]. */
+const replayRallies = (m, r) => {
+  const log = (m && m.log) || [];
+  const first = m && m.server === "b" ? "b" : "a";
+  const pos = {
+    a: m && m.posA === 1 ? [1, 0] : [0, 1],
+    b: m && m.posB === 1 ? [1, 0] : [0, 1]
+  };
+  const other = t => (t === "a" ? "b" : "a");
+  let a = 0, b = 0, serving = first, who = pos[first][0];
+  /* The opening service turn has only one server, so it behaves as though the
+     second server is already up: the first fault hands the serve straight over. */
+  let serverNum = 2;
+
+  log.forEach(w => {
+    if (!r) return;
+    if (r.sideOut) {
+      if (w === serving) {
+        serving === "a" ? a++ : b++;
+        pos[serving] = [pos[serving][1], pos[serving][0]];   // partners swap, same server
+      } else if (serverNum === 1 && r.perCourt > 2) {
+        serverNum = 2;                                       // partner takes the second serve
+        who = pos[serving][0] === who ? pos[serving][1] : pos[serving][0];
+      } else {
+        serving = w;                                         // side-out
+        serverNum = 1;
+        who = pos[serving][(serving === "a" ? a : b) % 2 === 0 ? 0 : 1];
+      }
+      return;
+    }
+    // rally scoring: every rally is a point
+    const was = serving;
+    w === "a" ? a++ : b++;
+    if (r.serve === "alt2") {
+      const total = a + b, deuce = a >= r.target - 1 && b >= r.target - 1;
+      const turns = deuce ? total : Math.floor(total / 2);
+      serving = turns % 2 === 0 ? first : other(first);
+      who = pos[serving][0];
+      return;
+    }
+    if (w === was) {
+      pos[serving] = [pos[serving][1], pos[serving][0]];     // held serve: partners swap
+    } else {
+      serving = w;
+      who = pos[serving][(serving === "a" ? a : b) % 2 === 0 ? 0 : 1];
+    }
+  });
+
+  const over = rallyOver(a, b, r), gp = rallyGamePoint(a, b, r);
+  return {
+    a, b, serving, pos, serverIdx: who, serverNum,
+    servePos: pos[serving][0] === who ? "R" : "L",
+    rallies: log.length,
+    over,
+    winner: over ? (a > b ? "a" : "b") : null,
+    golden: rallyGolden(a, b, r),
+    gamePoint: r && r.sideOut ? gp.filter(t => t === serving) : gp
+  };
+};
+
+/* Per-side and per-player splits from one walk of the log. teamPlayers maps
+   "a"/"b" to an array of player ids in court order. Clutch counts rallies
+   played once either side is within 3 of the target. */
+const rallyStats = (m, r, teamPlayers) => {
+  const log = (m && m.log) || [];
+  if (!r) return null;
+  const clutchFrom = Math.max(0, r.target - 3);
+  const blank = () => ({ won: 0, lost: 0, serveWon: 0, serveLost: 0, clutchWon: 0, clutchLost: 0 });
+  const out = { a: blank(), b: blank(), players: {} };
+  const touch = id => (out.players[id] = out.players[id] || blank());
+  const running = [];
+  log.forEach(w => {
+    const before = replayRallies({ ...m, log: running.slice() }, r);
+    const lose = w === "a" ? "b" : "a";
+    const clutch = before.a >= clutchFrom || before.b >= clutchFrom;
+    out[w].won++; out[lose].lost++;
+    if (clutch) { out[w].clutchWon++; out[lose].clutchLost++; }
+    before.serving === w ? out[w].serveWon++ : out[before.serving].serveLost++;
+    ((teamPlayers && teamPlayers[w]) || []).forEach(id => touch(id).won++);
+    ((teamPlayers && teamPlayers[lose]) || []).forEach(id => touch(id).lost++);
+    const srv = teamPlayers && teamPlayers[before.serving];
+    if (srv && srv[before.serverIdx] !== undefined) {
+      const sid = srv[before.serverIdx];
+      before.serving === w ? touch(sid).serveWon++ : touch(sid).serveLost++;
+    }
+    running.push(w);
+  });
+  const pct = (won, lost) => (won + lost ? Math.round((won / (won + lost)) * 100) : null);
+  out.a.serveHoldPct = pct(out.a.serveWon, out.a.serveLost);
+  out.b.serveHoldPct = pct(out.b.serveWon, out.b.serveLost);
+  Object.values(out.players).forEach(p => { p.serveHoldPct = pct(p.serveWon, p.serveLost); });
+  return out;
+};
+
+/* ---------- match timer ----------
+   Per Files for claude code/match-timing-spec.md (v2.0). Deliberately tiny:
+   one record per match, no segmentation and no derived statistics.
+
+   Elapsed time uses a MONOTONIC clock, never the difference between two
+   wall-clock stamps — the spec calls this out because a device that sleeps,
+   changes timezone or re-syncs its clock mid-match would otherwise report
+   nonsense. Wall-clock is still recorded for the report, but never subtracted.
+
+   Note for the post-event report: PLAYING TIME IS NOT SLOT TIME. Without that
+   caveat an organiser reads "planned 24, actual 19" and shortens their slots,
+   and the day then runs later than before. */
+const nowMs = () => (typeof performance !== "undefined" && performance.now ? performance.now() : Date.now());
+
+const emptyTiming = () => ({
+  startedAt: null, endedAt: null, playingMs: 0, pausedMs: 0,
+  pauseCount: 0, mono: null, pauseMono: null, pauseReason: null
+});
+
+const timerStart = t => {
+  const x = { ...(t || emptyTiming()) };
+  if (x.startedAt) return x;                    // auto-starts on the first rally only
+  x.startedAt = new Date().toISOString();
+  x.mono = nowMs();
+  return x;
+};
+const timerPause = (t, reason) => {
+  const x = { ...(t || emptyTiming()) };
+  if (!x.startedAt || x.endedAt || x.pauseMono != null) return x;
+  x.pauseMono = nowMs();
+  x.pauseCount = (x.pauseCount || 0) + 1;
+  x.pauseReason = reason || "other";
+  return x;
+};
+const timerResume = t => {
+  const x = { ...(t || emptyTiming()) };
+  if (x.pauseMono == null) return x;
+  x.pausedMs = (x.pausedMs || 0) + (nowMs() - x.pauseMono);
+  x.pauseMono = null;
+  x.pauseReason = null;
+  return x;
+};
+const timerStop = t => {
+  const x = timerResume(t || emptyTiming());
+  if (!x.startedAt || x.endedAt) return x;
+  x.endedAt = new Date().toISOString();
+  x.playingMs = Math.max(0, (x.mono != null ? nowMs() - x.mono : 0) - (x.pausedMs || 0));
+  return x;
+};
+/* Live playing time, excluding any pause currently in progress. */
+const timerElapsed = t => {
+  if (!t || !t.startedAt) return 0;
+  if (t.endedAt) return t.playingMs || 0;
+  const paused = (t.pausedMs || 0) + (t.pauseMono != null ? nowMs() - t.pauseMono : 0);
+  return Math.max(0, (t.mono != null ? nowMs() - t.mono : 0) - paused);
+};
+const fmtClock = ms => {
+  const total = Math.floor(Math.max(0, ms) / 1000);
+  return Math.floor(total / 60) + ":" + String(total % 60).padStart(2, "0");
+};
+
 const hideLoading = () => {
     const m = document.getElementById("loading-screen");
     m && (m.style.display = "none");
@@ -4103,7 +4319,7 @@ const Ic = ({
     setTab: r,
     setActiveTourney: l
   }) => {
-    const [n, R] = useState(m), [S, v] = useState(0), [M, z] = useState(0), [g, f] = useState(null), [u, k] = useState(null), [G, O] = useState(""), [K, J] = useState(""), [swapMode, setSwapMode] = useState(!1), [swapSel, setSwapSel] = useState(null), [amSel, setAmSel] = useState(null), D = useRef(null);
+    const [n, R] = useState(m), [S, v] = useState(0), [M, z] = useState(0), [g, f] = useState(null), [u, k] = useState(null), [refM, setRefM] = useState(null), [G, O] = useState(""), [K, J] = useState(""), [swapMode, setSwapMode] = useState(!1), [swapSel, setSwapSel] = useState(null), [amSel, setAmSel] = useState(null), D = useRef(null);
     if (useEffect(() => {
         (g || u) && setTimeout(() => {
           D.current && D.current.focus();
@@ -5581,7 +5797,20 @@ const Ic = ({
         color: C.text,
         marginTop: 4
       }
-    }, n.champions[S])), g && React.createElement(Modal, {
+    }, n.champions[S])), refM && React.createElement(RefConsole, {
+      match: refM.match,
+      rules: refM.rules,
+      title: refM.title,
+      teamA: refM.teamA,
+      teamB: refM.teamB,
+      namesA: refM.namesA,
+      namesB: refM.namesB,
+      onChange: mm => setRefM(p => ({ ...p, match: mm })),
+      onFinish: st => {
+        O(String(st.a)), J(String(st.b)), setRefM(null);
+      },
+      onClose: () => setRefM(null)
+    }), g && React.createElement(Modal, {
       onClose: () => {
         f(null), O(""), J("");
       }
@@ -5677,7 +5906,22 @@ const Ic = ({
         gap: 8,
         marginTop: 16
       }
-    }, React.createElement(Btn, {
+    }, React.createElement("button", {
+      onClick: () => setRefM({
+        match: { log: [], server: "a", posA: 0, posB: 0, timing: emptyTiming() },
+        rules: resolveRules(n.sport, { target: n.pointsToWin }),
+        title: `${ g.teamA.fullName } v ${ g.teamB.fullName }`,
+        teamA: g.teamA.fullName,
+        teamB: g.teamB.fullName,
+        namesA: [g.teamA?.p1?.firstName || g.teamA?.fullName || "", g.teamA?.p2?.firstName || ""].filter(Boolean),
+        namesB: [g.teamB?.p1?.firstName || g.teamB?.fullName || "", g.teamB?.p2?.firstName || ""].filter(Boolean)
+      }),
+      style: {
+        width: "100%", minHeight: 46, marginBottom: 8, borderRadius: 10, cursor: "pointer",
+        border: `1px solid ${ C.teal }`, background: C.card, color: C.teal,
+        fontWeight: 800, fontSize: 13, fontFamily: "inherit"
+      }
+    }, "\u25B6 Referee live \u2014 score rally by rally"), React.createElement(Btn, {
       full: !0,
       onClick: () => {
         f(null), O(""), J("");
@@ -5791,7 +6035,22 @@ const Ic = ({
         gap: 8,
         marginTop: 16
       }
-    }, React.createElement(Btn, {
+    }, React.createElement("button", {
+      onClick: () => setRefM({
+        match: { log: [], server: "a", posA: 0, posB: 0, timing: emptyTiming() },
+        rules: resolveRules(n.sport, { target: n.pointsToWin }),
+        title: `${ u.match.p1?.fullName || "TBD" } v ${ u.match.p2?.fullName || "TBD" }`,
+        teamA: u.match.p1?.fullName || "Team A",
+        teamB: u.match.p2?.fullName || "Team B",
+        namesA: [u.match.p1?.p1?.firstName || u.match.p1?.fullName || "", u.match.p1?.p2?.firstName || ""].filter(Boolean),
+        namesB: [u.match.p2?.p1?.firstName || u.match.p2?.fullName || "", u.match.p2?.p2?.firstName || ""].filter(Boolean)
+      }),
+      style: {
+        width: "100%", minHeight: 46, marginBottom: 8, borderRadius: 10, cursor: "pointer",
+        border: `1px solid ${ C.teal }`, background: C.card, color: C.teal,
+        fontWeight: 800, fontSize: 13, fontFamily: "inherit"
+      }
+    }, "\u25B6 Referee live \u2014 score rally by rally"), React.createElement(Btn, {
       full: !0,
       onClick: () => {
         k(null), O(""), J("");
@@ -11157,6 +11416,261 @@ const CommunityTab = ({
     }, a.confirmed.length, "/", W, " confirmed", a.waitlist.length ? ` \xB7 ${ a.waitlist.length } waiting` : "")));
   })));
 };
+/* ---------- referee console ----------
+   Live rally-by-rally scoring. Everything shown here is derived from the
+   match's rally log by replayRallies(), so Undo is just "drop the last entry"
+   and the display can never disagree with the court.
+
+   Built touch-first on purpose: the point buttons get tapped a few hundred
+   times per match, often outdoors, sometimes with wet hands. They are the
+   largest thing on the screen and nothing important sits within a thumb's
+   width of them. */
+
+/* Top-down court. Team A near, team B far, net across the middle.
+   The ball marks the server; the highlighted service box shows where the
+   serve must be delivered from. */
+const CourtDiagram = ({ st, rules, namesA, namesB, height }) => {
+  const W = 200, H = 300, mid = H / 2, kitchen = 34, pad = 10;
+  const singles = rules && rules.perCourt <= 2;
+  const isPickle = rules && rules.sport === "pb";
+  const line = { stroke: C.border, strokeWidth: 1.5, fill: "none" };
+
+  /* seat[i] = x position of the player standing right(0) / left(1), per side.
+     "Right" is from that side's own point of view, so the near and far teams
+     mirror each other. */
+  const seat = (team, slot) => {
+    const right = team === "a" ? W - pad - 42 : pad + 42;
+    const left = team === "a" ? pad + 42 : W - pad - 42;
+    return slot === 0 ? right : left;
+  };
+  const rowY = team => (team === "a" ? mid + 78 : mid - 78);
+
+  const dot = (team, slot) => {
+    const names = team === "a" ? namesA : namesB;
+    const idx = st.pos[team][slot];
+    const serving = st.serving === team && st.serverIdx === idx;
+    const x = seat(team, slot), y = rowY(team);
+    return React.createElement("g", { key: team + slot },
+      React.createElement("circle", {
+        cx: x, cy: y, r: 17,
+        fill: serving ? C.lime : C.cardAlt,
+        stroke: serving ? C.lime : C.border, strokeWidth: 2
+      }),
+      React.createElement("text", {
+        x: x, y: y + 4, textAnchor: "middle",
+        style: { fontSize: 13, fontWeight: 800, fill: serving ? "#fff" : C.textDim, fontFamily: "inherit" }
+      }, ((names || [])[idx] || "").slice(0, 2).toUpperCase() || (idx + 1)),
+      serving && React.createElement("circle", { cx: x + 21, cy: y - 15, r: 5, fill: C.gold, stroke: "#fff", strokeWidth: 1.5 })
+    );
+  };
+
+  return React.createElement("svg", {
+    viewBox: `0 0 ${ W } ${ H }`,
+    style: { width: "100%", height: height || 210, display: "block" },
+    role: "img",
+    "aria-label": `Court. ${ st.serving === "a" ? namesA : namesB } serving from the ${ st.servePos === "R" ? "right" : "left" }.`
+  },
+    React.createElement("rect", { x: pad, y: pad, width: W - pad * 2, height: H - pad * 2, rx: 3, fill: C.surface, ...line }),
+    /* service boxes: the half the serve must come from is filled */
+    ["a", "b"].map(team => {
+      const near = team === "a";
+      const boxY = near ? mid + (isPickle ? kitchen : 4) : pad;
+      const boxH = near ? H - pad - (mid + (isPickle ? kitchen : 4)) : mid - (isPickle ? kitchen : 4) - pad;
+      const rightX = near ? W / 2 : pad, leftX = near ? pad : W / 2;
+      const live = st.serving === team;
+      return React.createElement("g", { key: "box" + team },
+        React.createElement("rect", {
+          x: st.servePos === "R" ? rightX : leftX, y: boxY, width: W / 2 - pad, height: boxH,
+          fill: live ? C.lime : "transparent", opacity: live ? 0.13 : 0
+        }));
+    }),
+    /* non-volley zone — pickleball only */
+    isPickle && React.createElement("g", null,
+      React.createElement("rect", { x: pad, y: mid - kitchen, width: W - pad * 2, height: kitchen, fill: C.teal, opacity: 0.07 }),
+      React.createElement("rect", { x: pad, y: mid, width: W - pad * 2, height: kitchen, fill: C.teal, opacity: 0.07 }),
+      React.createElement("line", { x1: pad, y1: mid - kitchen, x2: W - pad, y2: mid - kitchen, ...line }),
+      React.createElement("line", { x1: pad, y1: mid + kitchen, x2: W - pad, y2: mid + kitchen, ...line })),
+    /* centre line splitting the service boxes */
+    !singles && React.createElement("g", null,
+      React.createElement("line", { x1: W / 2, y1: pad, x2: W / 2, y2: mid - (isPickle ? kitchen : 0), ...line }),
+      React.createElement("line", { x1: W / 2, y1: mid + (isPickle ? kitchen : 0), x2: W / 2, y2: H - pad, ...line })),
+    /* net */
+    React.createElement("line", { x1: pad - 4, y1: mid, x2: W - pad + 4, y2: mid, stroke: C.text, strokeWidth: 3 }),
+    singles ? [dot("a", 0), dot("b", 0)] : [dot("b", 0), dot("b", 1), dot("a", 0), dot("a", 1)]
+  );
+};
+
+const PAUSE_REASONS = ["timeout", "injury", "weather", "other"];
+
+const RefConsole = ({ match, rules, title, subtitle, teamA, teamB, namesA, namesB, onChange, onFinish, onClose }) => {
+  const [, forceTick] = useState(0);
+  const st = replayRallies(match, rules);
+  const timing = match.timing || emptyTiming();
+  const paused = timing.pauseMono != null;
+
+  /* Repaint once a second so the clock advances. Nothing else depends on it,
+     and it stops as soon as the match is over or paused. */
+  useEffect(() => {
+    if (!timing.startedAt || timing.endedAt || paused) return;
+    const h = setInterval(() => forceTick(n => n + 1), 1000);
+    return () => clearInterval(h);
+  }, [timing.startedAt, timing.endedAt, paused]);
+
+  /* Keep the screen awake while refereeing where the browser allows it. A
+     referee should never have to wake the phone between rallies. */
+  useEffect(() => {
+    let lock = null, dead = false;
+    navigator.wakeLock && navigator.wakeLock.request &&
+      navigator.wakeLock.request("screen").then(l => { dead ? l.release() : (lock = l); }).catch(() => {});
+    return () => { dead = true; lock && lock.release().catch(() => {}); };
+  }, []);
+
+  const commit = next => onChange({ ...match, ...next });
+
+  const point = side => {
+    if (st.over) return;
+    const log = (match.log || []).concat([side]);
+    const after = replayRallies({ ...match, log }, rules);
+    let timingNext = timerStart(timing);
+    if (after.over) timingNext = timerStop(timingNext);
+    commit({ log, sa: after.a, sb: after.b, timing: timingNext });
+  };
+  const undo = () => {
+    if (!(match.log || []).length) return;
+    const log = match.log.slice(0, -1);
+    const after = replayRallies({ ...match, log }, rules);
+    /* Reopening a finished match clears the end stamp, or the clock would stay
+       frozen while play carries on. */
+    const t = { ...timing };
+    if (t.endedAt && !after.over) { t.endedAt = null; t.playingMs = 0; }
+    commit({ log, sa: after.a, sb: after.b, timing: t });
+  };
+
+  const side = (team, name, score) => {
+    const serving = st.serving === team;
+    const onGamePoint = st.gamePoint.includes(team);
+    return React.createElement("button", {
+      onClick: () => point(team),
+      disabled: st.over,
+      style: {
+        flex: 1, minHeight: 132, borderRadius: 14, cursor: st.over ? "default" : "pointer",
+        border: `2px solid ${ serving ? C.lime : C.border }`,
+        background: st.over ? C.cardAlt : C.card,
+        opacity: st.over ? 0.6 : 1,
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2,
+        fontFamily: "inherit", padding: 8,
+        WebkitTapHighlightColor: "transparent", touchAction: "manipulation"
+      }
+    },
+      React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: .4 } },
+        serving ? "● serving" : " "),
+      React.createElement("div", { style: { fontSize: 52, fontWeight: 900, lineHeight: 1, color: serving ? C.lime : C.text } }, score),
+      React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.text, textAlign: "center" } }, name),
+      onGamePoint && React.createElement("div", { style: { fontSize: 10, fontWeight: 800, color: C.orange } }, "GAME POINT"));
+  };
+
+  return React.createElement("div", {
+    style: {
+      position: "fixed", inset: 0, zIndex: 300, background: C.bg,
+      display: "flex", flexDirection: "column",
+      paddingTop: "env(safe-area-inset-top, 0px)",
+      paddingBottom: "env(safe-area-inset-bottom, 0px)"
+    }
+  },
+    /* header */
+    React.createElement("div", {
+      style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: `1px solid ${ C.border }`, background: C.surface }
+    },
+      React.createElement("button", {
+        onClick: onClose,
+        style: { minWidth: 44, minHeight: 44, border: "none", background: "transparent", color: C.textDim, cursor: "pointer", fontFamily: "inherit" }
+      }, React.createElement(Ic, { t: "back", s: 20 })),
+      React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 800, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, title || "Referee"),
+        React.createElement("div", { style: { fontSize: 10, color: C.textDim } },
+          subtitle || `to ${ rules.target } · win by ${ rules.winBy }${ rules.sideOut ? " · side-out" : " · rally scoring" }`)),
+      React.createElement("div", {
+        style: { fontSize: 15, fontWeight: 800, color: paused ? C.orange : C.textDim, fontVariantNumeric: "tabular-nums", minWidth: 52, textAlign: "right" }
+      }, fmtClock(timerElapsed(timing)))),
+
+    /* body */
+    React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: 12 } },
+      st.over && React.createElement("div", {
+        style: { background: C.lime, color: "#fff", borderRadius: 10, padding: "10px 12px", marginBottom: 10, fontWeight: 800, fontSize: 13, textAlign: "center" }
+      }, `${ st.winner === "a" ? teamA : teamB } wins ${ Math.max(st.a, st.b) }–${ Math.min(st.a, st.b) }`),
+      st.golden && !st.over && React.createElement("div", {
+        style: { background: C.gold, color: C.black, borderRadius: 10, padding: "8px 12px", marginBottom: 10, fontWeight: 800, fontSize: 12, textAlign: "center" }
+      }, `⚡ Golden point — the next rally takes it`),
+      paused && React.createElement("div", {
+        style: { background: C.orange, color: "#fff", borderRadius: 10, padding: "8px 12px", marginBottom: 10, fontWeight: 800, fontSize: 12, textAlign: "center" }
+      }, `Paused — ${ timing.pauseReason }. The clock is stopped.`),
+
+      React.createElement("div", { style: { display: "flex", gap: 10, marginBottom: 12 } },
+        side("a", teamA, st.a), side("b", teamB, st.b)),
+
+      React.createElement("div", { style: { background: C.card, border: `1px solid ${ C.border }`, borderRadius: 12, padding: 8, marginBottom: 12 } },
+        React.createElement(CourtDiagram, { st, rules, namesA, namesB }),
+        React.createElement("div", { style: { fontSize: 10, color: C.textDim, textAlign: "center", paddingTop: 4 } },
+          `${ st.serving === "a" ? teamA : teamB } serving from the ${ st.servePos === "R" ? "right" : "left" }`,
+          rules.sideOut && rules.perCourt > 2 ? ` · server ${ st.serverNum }` : "",
+          ` · ${ st.rallies } ${ st.rallies === 1 ? "rally" : "rallies" }`)),
+
+      /* controls */
+      React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+        React.createElement("button", {
+          onClick: undo,
+          disabled: !(match.log || []).length,
+          style: {
+            flex: "1 1 130px", minHeight: 46, borderRadius: 10, border: `1px solid ${ C.border }`,
+            background: C.card, color: (match.log || []).length ? C.text : C.textDim,
+            fontWeight: 700, fontSize: 13, cursor: (match.log || []).length ? "pointer" : "default", fontFamily: "inherit"
+          }
+        }, "↶ Undo rally"),
+        React.createElement("button", {
+          onClick: () => commit({ timing: paused ? timerResume(timing) : timerPause(timing, "timeout") }),
+          disabled: !timing.startedAt || !!timing.endedAt,
+          style: {
+            flex: "1 1 130px", minHeight: 46, borderRadius: 10, border: `1px solid ${ paused ? C.orange : C.border }`,
+            background: paused ? C.orange : C.card, color: paused ? "#fff" : C.text,
+            fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit"
+          }
+        }, paused ? "Resume" : "Pause"),
+        paused && React.createElement("div", { style: { flex: "1 1 100%", display: "flex", gap: 6, flexWrap: "wrap" } },
+          PAUSE_REASONS.map(reason => React.createElement("button", {
+            key: reason,
+            onClick: () => commit({ timing: { ...timing, pauseReason: reason } }),
+            style: {
+              flex: 1, minHeight: 40, borderRadius: 8, fontFamily: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer",
+              border: `1px solid ${ timing.pauseReason === reason ? C.orange : C.border }`,
+              background: timing.pauseReason === reason ? C.orange : C.card,
+              color: timing.pauseReason === reason ? "#fff" : C.textDim
+            }
+          }, reason))),
+        st.over && onFinish && React.createElement("button", {
+          onClick: () => onFinish(st),
+          style: {
+            flex: "1 1 100%", minHeight: 48, borderRadius: 10, border: "none", background: C.lime, color: "#fff",
+            fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "inherit"
+          }
+        }, "Save result"))),
+
+    /* pre-match setup, locked once the first rally is recorded */
+    !(match.log || []).length && React.createElement("div", {
+      style: { borderTop: `1px solid ${ C.border }`, background: C.surface, padding: "8px 12px", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }
+    },
+      React.createElement("span", { style: { fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" } }, "First serve"),
+      ["a", "b"].map(t => React.createElement("button", {
+        key: t,
+        onClick: () => commit({ server: t }),
+        style: {
+          minHeight: 40, padding: "0 12px", borderRadius: 8, fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer",
+          border: `1px solid ${ (match.server || "a") === t ? C.lime : C.border }`,
+          background: (match.server || "a") === t ? C.lime : C.card,
+          color: (match.server || "a") === t ? "#fff" : C.text
+        }
+      }, t === "a" ? teamA : teamB))));
+};
+
 function RiseSports() {
   const c = new URLSearchParams(window.location.search).get("view");
   if (c)
