@@ -155,6 +155,37 @@ Three deliberate reversals, decided 2026-08-27:
 - `rs_venues` — venue listings + booking requests (payments handled off-app by design).
 - `rs_u` current user, `rs_r` role, `rs_migrated` migration flag.
 
+## Supabase backend
+
+Project `utfvjsvvbifwcektzrwj` ("Rise Sports", ap-south-1). Shared by the legacy `Format/`
+apps and, from Wave 0.3, by RISE Sports itself. Rows are namespaced by an event code:
+`<event>:<kind>:<id>`.
+
+**Tables:** `osl_live` (live state, one row per match/nomination/config), `app_backups`,
+`live_scores`.
+
+**Write path — locked down 2026-08-28.** All writes go through the `osl_put` RPC, which
+enforces the Lamport counter the clients keep (`where excluded.rev >= l.rev`) so a stale
+device can never roll a row backwards. The table's blanket `anon` INSERT/UPDATE policies were
+dropped, because a direct `PATCH /rest/v1/osl_live` bypassed that guard completely — including
+on the `:cfg` rows that hold the organiser password hash. `osl_put` is `SECURITY DEFINER`
+(with `search_path` pinned to `''`) so it still works with the policies gone.
+
+- **Reads stay open** (`osl_live_select`, `anon`) — devices and spectators read the table
+  directly. Only writes are funnelled.
+- Verified as an anonymous client: read 200, direct PATCH affects 0 rows and leaves the row
+  untouched, direct INSERT 401, `rpc/osl_put` 200.
+- Supabase's linter warns that `osl_put` is an anon-callable `SECURITY DEFINER` function.
+  **That is the intended design**, not a defect — the whole point is that the table is closed
+  and one narrow, rev-guarded RPC is the only way in. Do not "fix" it by reverting to
+  `SECURITY INVOKER`; that would require reopening the table.
+
+**The anon key is public by design** and appears in the shipped HTML. It identifies the
+project, it does not authenticate anyone — all of its power comes from the policies above.
+Rotating it therefore buys nothing on its own and breaks every deployed copy; tighten policies
+instead. The real secret was the organiser password (`ADMIN_DEFAULT`), which is why those
+files stay out of the public repo.
+
 ## Roadmap
 
 Full plan: `C:\Users\khanf\.claude\plans\i-want-to-develop-stateful-pascal.md`
