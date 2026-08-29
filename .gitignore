@@ -46,3 +46,8 @@ tmp/
 # Deploy
 # ---------------------------------------------------------------------------
 .vercel
+
+# Separate project that happens to live in this folder. It is NOT part of RISE
+# Sports, and its seed script carries plaintext passwords -- it must never be
+# committed to this public repo.
+court-ledger/
