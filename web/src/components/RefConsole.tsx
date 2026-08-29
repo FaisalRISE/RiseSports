@@ -69,7 +69,7 @@ export function RefConsole({ view, teamA, teamB, canScore, actions }: RefConsole
         ].join(" ")}
         style={{ background: t.colour ?? (side === "left" ? "#1b4f74" : "#17608a") }}
       >
-        <div className="text-[10px] font-bold uppercase tracking-widest text-white/70">
+        <div className="pr-7 text-[10px] font-bold uppercase tracking-widest text-white/70">
           {serving ? `Serving · ${view.servePos === "R" ? "right / even" : "left / odd"}` : "Receiving"}
         </div>
         <div className="truncate text-base font-bold text-white drop-shadow">{t.name}</div>

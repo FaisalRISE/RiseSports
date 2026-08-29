@@ -1,8 +1,16 @@
 @import "tailwindcss";
 
+/* The console is a dark surface by design: it is read at arm's length on a
+   phone, courtside, often under floodlights, and a light background there is
+   glare. Every component assumes it, so the theme is committed rather than
+   following prefers-color-scheme — a half-applied light mode reads as broken
+   (black text in black inputs), which is exactly what happened when this was
+   left on the scaffold's default. */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  color-scheme: dark;
 }
 
 @theme inline {
@@ -12,15 +20,28 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Form controls inherit the dark surface rather than the UA's light default.
+   This MUST sit in @layer base: Tailwind's utilities live in a layer, and
+   un-layered CSS beats a layer regardless of specificity — an un-layered
+   `color: inherit` here silently overrode every text-* utility on a button and
+   made light-on-light buttons unreadable. */
+@layer base {
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+  }
+}
+
+/* Native select popups and date pickers follow color-scheme above. */
+option {
+  background: #171717;
+  color: #ededed;
 }
