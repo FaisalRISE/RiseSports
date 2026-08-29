@@ -153,13 +153,18 @@ Three deliberate reversals, decided 2026-08-27:
   already understood. Models the pickleboss rule set exactly: to 15, win by 2, the two-point
   rule stopping at 17, cap 18. `goldenInfo()` states it back in plain English under the
   controls so it cannot be misread.
-- **Print pack** — `printPack(tourney, withData, only)` fills the hidden `#printArea` in the
-  shell and calls `window.print()`; the browser's own "Save as PDF" does the rest.
-  Deliberately **not** `window.open` — popups are blocked on most phones, and an organiser
-  printing court sheets is usually on a phone. Sheets: fixtures, knockout draw, standings.
-  Every sheet has a **blank** and a **filled** mode; blank is the one that gets used, printed
-  before play and filled in by hand, because paper does not run out of battery.
-  The `@media print` rules live in `rise-sports.html`, not in the palette.
+- **Print pack** — `printPack(tourney, withData, only)` fills the hidden `#printArea` and calls
+  `window.print()`; the browser's own "Save as PDF" does the rest. Deliberately **not**
+  `window.open` — popups are blocked on the phones organisers carry.
+  Laid out after the OSL 2026 sheets: **one page per group**, carrying fixtures, standings and
+  the score-margin grid together, so a blank print-out is enough to run and settle a group by
+  hand at the court.
+  - Matches are **rows in one table**, not a table each, and the explanatory caption appears
+    **once** under the table rather than under every match. Getting that wrong is what made the
+    first attempt unusable.
+  - `marginGrid` finds the diagonal by POSITION, not by the cell being null — an unplayed match
+    is null too, and `indexOf(null)` would shade the wrong cell.
+  - The `@media print` rules live in `rise-sports.html`, not in the palette.
 - **Palette `C`** — every color flows through this object (currently a light theme).
   Re-theming = editing `C` + the two `<style>` blocks in `rise-sports.html`.
 - **`ROLES`** — PLAYER(1) / ORGANIZER(2) / ADMIN(4); persisted in `rs_r`; switcher on Home.

@@ -1,0 +1,132 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light theme */
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    --primary: 142 72% 36%;
+    --primary-foreground: 0 0% 12%;
+
+    --secondary: 175 84% 32%;
+    --secondary-foreground: 0 0% 12%;
+
+    --muted: 210 40% 94%;
+    --muted-foreground: 215 20% 43%;
+
+    --accent: 210 40% 92%;
+    --accent-foreground: 222 47% 11%;
+
+    --destructive: 350 89% 60%;
+    --destructive-foreground: 0 0% 10%;
+
+    --border: 214 32% 88%;
+    --input: 214 32% 88%;
+    --ring: 142 72% 36%;
+
+    --positive: 142 72% 36%;
+    --negative: 350 89% 55%;
+    --info: 199 89% 42%;
+
+    --hero-from: 142 72% 36%;
+    --hero-to: 175 84% 32%;
+
+    --radius: 0.875rem;
+
+    --chart-1: 82 78% 55%;
+    --chart-2: 172 66% 50%;
+    --chart-3: 199 89% 60%;
+    --chart-4: 271 91% 75%;
+    --chart-5: 38 96% 56%;
+  }
+
+  .dark {
+    /* Dark navy + lime/teal — carried from the original Court Ledger */
+    --background: 220 50% 5%;
+    --foreground: 214 50% 95%;
+
+    --card: 218 41% 13%;
+    --card-foreground: 214 50% 95%;
+
+    --popover: 219 42% 9%;
+    --popover-foreground: 214 50% 95%;
+
+    --primary: 82 78% 55%;
+    --primary-foreground: 220 50% 5%;
+
+    --secondary: 172 66% 50%;
+    --secondary-foreground: 220 50% 5%;
+
+    --muted: 219 42% 18%;
+    --muted-foreground: 217 22% 62%;
+
+    --accent: 219 42% 22%;
+    --accent-foreground: 214 50% 95%;
+
+    --destructive: 351 95% 71%;
+    --destructive-foreground: 220 50% 5%;
+
+    --border: 219 40% 20%;
+    --input: 219 40% 22%;
+    --ring: 82 78% 55%;
+
+    --positive: 82 78% 55%;
+    --negative: 351 95% 71%;
+    --info: 199 89% 60%;
+
+    --hero-from: 82 78% 55%;
+    --hero-to: 172 66% 50%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+}
+
+@layer utilities {
+  .text-positive {
+    color: hsl(var(--positive));
+  }
+  .text-negative {
+    color: hsl(var(--negative));
+  }
+  .text-info {
+    color: hsl(var(--info));
+  }
+  .bg-positive-soft {
+    background-color: hsl(var(--positive) / 0.12);
+  }
+  .bg-negative-soft {
+    background-color: hsl(var(--negative) / 0.12);
+  }
+  .hero-card {
+    background:
+      linear-gradient(150deg, hsl(var(--hero-from) / 0.12), hsl(var(--hero-to) / 0.06)),
+      hsl(var(--card));
+    border: 1px solid hsl(var(--hero-from) / 0.22);
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}

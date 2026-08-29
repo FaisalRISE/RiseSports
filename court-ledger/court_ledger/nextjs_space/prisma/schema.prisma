@@ -1,0 +1,136 @@
+generator client {
+    provider = "prisma-client-js"
+    binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
+    output = "/home/ubuntu/court_ledger/nextjs_space/node_modules/.prisma/client"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+enum BookRole {
+  PRIMARY_ADMIN
+  BOOK_ADMIN
+  DATA_OPERATOR
+  VIEWER
+}
+
+enum ActivityType {
+  COURT_BOOKING
+  EQUIPMENT
+  FOOD_DRINKS
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  DECLINED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  firstName    String?
+  lastName     String?
+  mobile       String?
+  gender       String?
+  upiId        String?
+  qrImagePath  String?
+  qrIsPublic   Boolean  @default(true)
+  isAdmin      Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  memberships  BookMember[]
+  createdBooks Book[]
+}
+
+model Book {
+  id         String   @id @default(cuid())
+  name       String
+  archived   Boolean  @default(false)
+  createdById String
+  createdBy  User     @relation(fields: [createdById], references: [id])
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  members    BookMember[]
+  activities Activity[]
+  payments   Payment[]
+
+  @@index([createdById])
+}
+
+model BookMember {
+  id        String   @id @default(cuid())
+  bookId    String
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  name      String
+  email     String?
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  role      BookRole @default(DATA_OPERATOR)
+  color     String   @default("#a3e635")
+  createdAt DateTime @default(now())
+  paidActivities Activity[] @relation("Payer")
+  participations ActivityParticipant[]
+  paymentsFrom   Payment[] @relation("PayFrom")
+  paymentsTo     Payment[] @relation("PayTo")
+
+  @@index([bookId])
+  @@index([userId])
+  @@index([email])
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  bookId    String
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  type      ActivityType @default(COURT_BOOKING)
+  amount    Int      // paise
+  date      DateTime
+  slotText  String?
+  venue     String?
+  note      String?
+  payerId   String
+  payer     BookMember @relation("Payer", fields: [payerId], references: [id])
+  createdByUserId String?
+  createdAt DateTime @default(now())
+  participants ActivityParticipant[]
+
+  @@index([bookId, date])
+  @@index([payerId])
+}
+
+model ActivityParticipant {
+  activityId String
+  activity   Activity   @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  memberId   String
+  member     BookMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@id([activityId, memberId])
+  @@index([memberId])
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  bookId    String
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  fromId    String
+  from      BookMember @relation("PayFrom", fields: [fromId], references: [id])
+  toId      String
+  to        BookMember @relation("PayTo", fields: [toId], references: [id])
+  amount    Int      // paise
+  mode      String   @default("UPI")
+  note      String?
+  status    PaymentStatus @default(PENDING)
+  date      DateTime @default(now())
+  confirmedAt DateTime?
+  createdByUserId String?
+  createdAt DateTime @default(now())
+
+  @@index([bookId, status])
+  @@index([fromId])
+  @@index([toId])
+}

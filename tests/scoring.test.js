@@ -187,6 +187,10 @@ console.log("\ntournament scoring rules (the CreateTab controls)");
   check("reproduces the pickleboss rule set", pboss.winBy === 2 && pboss.golden === 17 && pboss.cap === 18,
     JSON.stringify(pboss));
   check("ends change is carried through", pboss.switchAt === 8);
+  // it must survive resolveRules too — the console reads it from there, and it
+  // was being dropped, so the setting had no effect anywhere
+  check("ends change reaches the engine", resolveRules("pb", { target: 15, ...pboss }).switchAt === 8);
+  check("no ends change stays null", resolveRules("pb", { target: 11 }).switchAt === null);
 
   const auto = buildScoring(11, true, "auto", "");
   check("auto cap is target + 2", auto.golden === 13 && auto.cap === 14, JSON.stringify(auto));

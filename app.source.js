@@ -195,6 +195,10 @@ const resolveRules = (sportId, over) => {
     /* Traditional pickleball is side-out; plenty of clubs run rally scoring to
        keep a day on schedule, so it stays overridable per tournament. */
     sideOut: pick("sideOut", sp.serveModel === "sideout"),
+    /* Carried through from the tournament: the console draws the ends-change
+       note from it, and it was silently dropped here, so the setting had no
+       effect anywhere. */
+    switchAt: pick("switchAt", null),
     serve: sp.serveModel,
     perCourt: sp.playersPerCourt
   };
@@ -3541,36 +3545,66 @@ const Ic = ({
         margin: 0
       }
     }, "Create Tournament")), React.createElement("div", {
+      /* Numbered stepper: completed steps tick, the current one is filled, the
+         rest are outlined. Steps already passed are clickable so an organiser
+         can go back and change an answer without losing the later ones. */
       style: {
         display: "flex",
-        gap: 4,
-        marginBottom: 20
+        alignItems: "flex-start",
+        marginBottom: 20,
+        padding: "0 2px"
       }
     }, [
       "Basics",
       "Format",
       "Teams",
       "Launch"
-    ].map((h, B) => React.createElement("div", {
-      key: B,
-      style: {
-        flex: 1,
-        textAlign: "center"
-      }
-    }, React.createElement("div", {
-      style: {
-        height: 3,
-        borderRadius: 2,
-        background: v > B ? C.lime : C.border,
-        marginBottom: 4
-      }
-    }), React.createElement("div", {
-      style: {
-        fontSize: 9,
-        fontWeight: 700,
-        color: v > B ? C.lime : C.textDim
-      }
-    }, h)))), v === 1 && React.createElement("div", {
+    ].map((h, B) => {
+      const num = B + 1, done = v > num, current = v === num;
+      return React.createElement(React.Fragment, { key: B },
+        B > 0 && React.createElement("div", {
+          style: {
+            flex: 1,
+            height: 2,
+            background: v > B ? C.lime : C.border,
+            marginTop: 15
+          }
+        }),
+        React.createElement("div", {
+          onClick: () => done && M(num),
+          style: {
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 5,
+            cursor: done ? "pointer" : "default",
+            minWidth: 62
+          }
+        }, React.createElement("div", {
+          style: {
+            width: 30,
+            height: 30,
+            borderRadius: "50%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 12,
+            fontWeight: 800,
+            fontFamily: "inherit",
+            background: done || current ? C.lime : C.card,
+            color: done || current ? "#fff" : C.textDim,
+            border: `2px solid ${ done || current ? C.lime : C.border }`,
+            boxShadow: current ? `0 0 0 3px ${ C.lime }26` : "none"
+          }
+        }, done ? "✓" : num), React.createElement("div", {
+          style: {
+            fontSize: 9.5,
+            fontWeight: current ? 800 : 700,
+            color: current ? C.lime : done ? C.text : C.textDim,
+            textAlign: "center"
+          }
+        }, h)));
+    })), v === 1 && React.createElement("div", {
       style: {
         display: "flex",
         flexDirection: "column",
@@ -11742,63 +11776,106 @@ const CommunityTab = ({
     }, a.confirmed.length, "/", W, " confirmed", a.waitlist.length ? ` \xB7 ${ a.waitlist.length } waiting` : "")));
   })));
 };
-/* ---------- print pack (OSL format) ----------
-   Fixture sheets, results and score-margin grids, for paper or "Save as PDF".
+/* ---------- print pack ----------
+   Laid out after the OSL 2026 sheets.
 
-   Laid out after Format/OSL-2026-tournament-app_24.html's print system: a
-   branded bar with the sport set large, one table per match with the score
-   boxes BETWEEN the two team names, and a score-margin grid per group.
+   ONE PAGE PER GROUP, carrying everything an organiser needs at the court:
+   the fixtures, the standings table, and the score-margin grid. Printed blank
+   before play, the scores get written on by hand and the two grids below give
+   somewhere to work them out — which is the whole reason paper still beats a
+   phone on a windy court.
 
-   Built into a hidden #printArea then window.print(), rather than window.open —
-   popups are blocked on most phones, and an organiser printing court sheets is
-   usually holding one.
+   Two things I had wrong before and OSL gets right: matches are ROWS IN ONE
+   TABLE, not a table each, and the explanatory caption appears ONCE under the
+   table rather than repeating under every match.
 
-   Two modes. BLANK is the one that actually gets used: printed before play and
-   filled in by hand at the court, because paper does not run out of battery. */
+   Built into a hidden #printArea then window.print(), never window.open —
+   popups are blocked on the phones organisers actually carry. */
 const printEsc = s => String(s == null ? "" : s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
-const printHead = (tourney, kind) => {
+const printHead = (tourney, title, sub) => {
   const sp = sportOf(tourney.sport);
-  const meta = [
+  const meta = (sub || [
     tourney.name,
-    kind,
     tourney.startTime,
     tourney.numCourts ? `${ tourney.numCourts } courts` : null
-  ].filter(Boolean).map(printEsc).join(" &middot; ");
+  ].filter(Boolean).join(" · ")).toUpperCase();
   const logo = brandLogo();
   return `<div class="brandbar">
       ${ logo ? `<img class="blogo" src="${ logo }" alt="RISE Sports">` : "" }
       <div class="btitle">
-        <div class="sport">${ printEsc(sp.name) }</div>
-        <div class="meta">${ meta }</div>
+        <div class="sport">${ printEsc(sp.name) }${ title ? ` &mdash; ${ printEsc(title) }` : "" }</div>
+        <div class="meta">${ printEsc(meta) }</div>
       </div>
-      <div class="printed">Printed ${ printEsc(new Date().toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })) }</div>
+      <div class="printed">Printed ${ printEsc(new Date().toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }).replace(",", " ·")) }</div>
     </div>`;
 };
 
-/* One match, laid out as OSL does it: court, then the two teams either side of
-   their score boxes. No winner column — the higher score says it. */
-const matchTable = (mt, withData, label) => {
-  const played = withData && mt.played;
-  const winA = played && mt.scoreA > mt.scoreB, winB = played && mt.scoreB > mt.scoreA;
-  return `${ label ? `<div class="mlabel">${ printEsc(label) }</div>` : "" }
-    <table class="mt">
-      <tr><th class="c" style="width:44px">Court</th><th>Team</th>
-          <th class="c" style="width:52px">Score</th><th class="c" style="width:52px">Score</th><th>Team</th></tr>
-      <tr>
-        <td class="c">${ printEsc(mt.court || "") }</td>
-        <td class="${ winA ? "win" : "" }">${ printEsc(teamName(mt.teamA || mt.p1) || "TBD") }</td>
-        <td class="c sbox">${ played ? printEsc(mt.scoreA != null ? mt.scoreA : mt.s1) : "" }</td>
-        <td class="c sbox">${ played ? printEsc(mt.scoreB != null ? mt.scoreB : mt.s2) : "" }</td>
-        <td class="${ winB ? "win" : "" }">${ printEsc(teamName(mt.teamB || mt.p2) || "TBD") }</td>
-      </tr>
+/* Matches as rows in ONE table. Court, then the two teams either side of their
+   score boxes, winner in bold. Blank boxes when printing before play. */
+const fixtureTable = (matches, withData) => {
+  if (!matches.length) return "";
+  return `<table class="fx">
+      <tr><th class="c" style="width:42px">Court</th><th>Team</th>
+          <th class="c" style="width:50px">Score</th><th class="c" style="width:50px">Score</th><th>Team</th></tr>
+      ${ matches.map(mt => {
+        const a = mt.teamA || mt.p1, b = mt.teamB || mt.p2;
+        const sa = mt.scoreA != null ? mt.scoreA : mt.s1, sb = mt.scoreB != null ? mt.scoreB : mt.s2;
+        const played = withData && mt.played && sa != null && sb != null;
+        return `<tr>
+          <td class="c ct">${ printEsc(mt.court || "") }</td>
+          <td class="${ played && sa > sb ? "win" : "" }">${ printEsc(teamName(a) || "TBD") }</td>
+          <td class="c sbox">${ played ? printEsc(sa) : "" }</td>
+          <td class="c sbox">${ played ? printEsc(sb) : "" }</td>
+          <td class="${ played && sb > sa ? "win" : "" }">${ printEsc(teamName(b) || "TBD") }</td>
+        </tr>`;
+      }).join("") }
     </table>
     <div class="cap">Left score box belongs to the team on the left, right box to the team on the right. The higher score wins &mdash; no separate winner column.</div>`;
 };
 
-/* The score-margin grid. This is the part of the OSL sheets worth copying: it
-   shows every result at a glance AND explains the tie-break, because the row
-   total IS the point difference that separates teams level on wins. */
+/* Standings the way OSL prints them: P W L FOR AGAINST DIFF PTS, with the
+   qualifying places marked. Two points a win. */
+const standingsTable = (tourney, group, withData) => {
+  const teams = group.teams || [];
+  if (!teams.length) return "";
+  const played = (group.matches || []).filter(m => m.played);
+  const rows = teams.map(t => {
+    let p = 0, w = 0, l = 0, pf = 0, pa = 0;
+    played.forEach(m => {
+      const isA = m.teamA.id === t.id, isB = m.teamB.id === t.id;
+      if (!isA && !isB) return;
+      const mine = isA ? m.scoreA : m.scoreB, theirs = isA ? m.scoreB : m.scoreA;
+      p++; pf += mine; pa += theirs;
+      mine > theirs ? w++ : l++;
+    });
+    return { t, p, w, l, pf, pa, diff: pf - pa, pts: w * 2 };
+  }).sort((x, y) => y.w - x.w || y.diff - x.diff || y.pf - x.pf);
+  const advance = Number(tourney.topNAdvance) || 2;
+
+  return `<table class="st">
+      <tr><th class="c" style="width:28px">#</th><th>Team</th>
+        <th class="c" style="width:32px">P</th><th class="c" style="width:32px">W</th><th class="c" style="width:32px">L</th>
+        <th class="c" style="width:46px">For</th><th class="c" style="width:56px">Against</th>
+        <th class="c" style="width:46px">Diff</th><th class="c" style="width:40px">Pts</th></tr>
+      ${ rows.map((r, i) => `<tr>
+        <td class="c">${ i + 1 }</td>
+        <td class="${ withData && i < advance ? "win" : "" }">${ printEsc(teamName(r.t)) }${
+          withData && i < advance ? ` <span class="qual">&middot; qualified</span>` : "" }</td>
+        <td class="c">${ withData ? r.p : "" }</td>
+        <td class="c">${ withData ? r.w : "" }</td>
+        <td class="c">${ withData ? r.l : "" }</td>
+        <td class="c">${ withData ? r.pf : "" }</td>
+        <td class="c">${ withData ? r.pa : "" }</td>
+        <td class="c">${ withData ? (r.diff > 0 ? "+" : "") + r.diff : "" }</td>
+        <td class="c b">${ withData ? r.pts : "" }</td></tr>`).join("") }
+    </table>
+    <div class="cap">Order: wins, then point difference, then the head-to-head result between teams still level, then points scored.</div>`;
+};
+
+/* The score-margin grid. Worth the space because the row total IS the point
+   difference that separates teams level on wins — and printed blank it is
+   somewhere to work the table out by hand. */
 const marginGrid = (group, withData) => {
   const teams = group.teams || [];
   if (teams.length < 2) return "";
@@ -11812,32 +11889,27 @@ const marginGrid = (group, withData) => {
   };
   const rows = teams.map(t => {
     const cells = teams.map(o => (o.id === t.id ? null : marginOf(t, o)));
-    const wins = cells.filter(v => v != null && v > 0).length;
-    const diff = cells.reduce((s2, v) => s2 + (v || 0), 0);
-    return { t, cells, wins, diff };
+    return { t, cells, wins: cells.filter(v => v != null && v > 0).length,
+             diff: cells.reduce((s2, v) => s2 + (v || 0), 0) };
   });
   const ranked = [...rows].sort((a, b) => b.wins - a.wins || b.diff - a.diff);
-  const rankOf = r => ranked.indexOf(r) + 1;
-  /* Head-to-head is only shown where it is actually doing work: two teams level
-     on both wins and difference. */
   const needsH2H = r => ranked.some(o => o !== r && o.wins === r.wins && o.diff === r.diff);
 
-  return `<div class="grp">Score margin &middot; Group ${ printEsc(group.label) }</div>
+  return `<div class="sub">Score margin</div>
     <table class="mg">
-      <tr><th style="width:19%">Group ${ printEsc(group.label) }</th>
+      <tr><th style="width:20%">Group ${ printEsc(group.label) }</th>
         ${ teams.map(t => `<th class="c">${ printEsc(teamName(t)) }</th>`).join("") }
-        <th class="c" style="width:44px">Wins</th><th class="c" style="width:44px">Diff</th>
-        <th class="c" style="width:42px">Rank</th><th class="c" style="width:38px">H2H</th></tr>
+        <th class="c" style="width:40px">Wins</th><th class="c" style="width:40px">Diff</th>
+        <th class="c" style="width:38px">Rank</th><th class="c" style="width:34px">H2H</th></tr>
       ${ rows.map(r => `<tr>
         <td class="nm">${ printEsc(teamName(r.t)) }</td>
-        ${ /* the diagonal is identified by POSITION, not by being null — an
-              unplayed match is null too, and indexOf would find that first */
+        ${ /* the diagonal is found by POSITION — an unplayed match is null too */
            r.cells.map((v, ci) => teams[ci].id === r.t.id
             ? `<td class="self"></td>`
             : `<td class="c">${ v == null ? "" : (v > 0 ? "+" : "") + v }</td>`).join("") }
         <td class="c b">${ withData ? r.wins : "" }</td>
         <td class="c b">${ withData ? (r.diff > 0 ? "+" : "") + r.diff : "" }</td>
-        <td class="c b">${ withData ? rankOf(r) : "" }</td>
+        <td class="c b">${ withData ? ranked.indexOf(r) + 1 : "" }</td>
         <td class="c">${ withData && needsH2H(r) ? "&#9679;" : "" }</td></tr>`).join("") }
     </table>
     <div class="cap">Row team's margin against the column team. A 25&ndash;20 win is <b>+5</b> for the winner and <b>&minus;5</b> for the loser. Count the pluses for wins; the row total is the points difference, which separates teams level on wins &mdash; head-to-head only comes into it if the difference is level too.</div>`;
@@ -11853,31 +11925,16 @@ const rulesLine = tourney => {
     (r.switchAt ? ` Ends change at ${ r.switchAt }.` : "") + `</div>`;
 };
 
-const fixturesSheet = (tourney, withData) => {
-  const groups = tourney.groups || [];
-  if (!groups.length) return "";
-  let h = `<div class="psheet">${ printHead(tourney, withData ? "Results" : "Fixtures") }`;
-  groups.forEach(g => {
-    h += `<div class="grp">Group ${ printEsc(g.label) } &middot; ${ printEsc(g.catName || "") }</div>`;
-    (g.matches || []).forEach(mt => {
-      h += matchTable(mt, withData, `Match ${ mt.matchNum }${ mt.timeStart ? " · " + mt.timeStart : "" }`);
-    });
-  });
-  return h + rulesLine(tourney) + `</div>`;
-};
-
-const standingsSheet = (tourney, withData) => {
-  const groups = tourney.groups || [];
-  if (!groups.length) return "";
-  let h = `<div class="psheet">${ printHead(tourney, "Standings") }`;
-  groups.forEach(g => { h += marginGrid(g, withData); });
-  const champs = Object.values(tourney.champions || {}).filter(Boolean);
-  if (withData && champs.length) {
-    h += `<table class="mt" style="width:auto;margin-top:6px"><tr><th>Champion${ champs.length > 1 ? "s" : "" }</th>` +
-      `<td class="win">${ champs.map(printEsc).join(", ") }</td></tr></table>`;
-  }
-  return h + rulesLine(tourney) + `</div>`;
-};
+/* ONE PAGE PER GROUP: fixtures, standings and the margin grid together. */
+const groupSheet = (tourney, group, withData) =>
+  `<div class="psheet">${
+    printHead(tourney, `Group ${ group.label }`,
+      [tourney.name, group.catName, group.court ? `Court ${ group.court }` : null].filter(Boolean).join(" · "))
+  }<div class="sub">Fixtures</div>${
+    fixtureTable(group.matches || [], withData)
+  }<div class="sub">Standings</div>${
+    standingsTable(tourney, group, withData)
+  }${ marginGrid(group, withData) }${ rulesLine(tourney) }</div>`;
 
 const bracketSheet = (tourney, withData) => {
   const kb = tourney.knockoutBrackets || {};
@@ -11886,15 +11943,12 @@ const bracketSheet = (tourney, withData) => {
   let h = `<div class="psheet">${ printHead(tourney, "Knockout") }`;
   keys.forEach(k => {
     const cat = (tourney.categories || [])[k];
+    const rounds = kb[k] || [];
     h += `<div class="grp">${ printEsc(cat ? cat.name : "Category " + k) }</div>`;
-    (kb[k] || []).forEach((round, ri) => {
-      const names = ["Final", "Semi-final", "Quarter-final"];
-      const fromEnd = (kb[k] || []).length - 1 - ri;
-      const label = names[fromEnd] || `Round ${ ri + 1 }`;
-      round.forEach((mt, mi) => {
-        h += matchTable({ ...mt, teamA: mt.p1, teamB: mt.p2, scoreA: mt.s1, scoreB: mt.s2, played: mt.played },
-          withData, `${ label }${ round.length > 1 ? " " + String.fromCharCode(65 + mi) : "" }`);
-      });
+    rounds.forEach((round, ri) => {
+      const names = ["Final", "Semi-finals", "Quarter-finals"];
+      const label = names[rounds.length - 1 - ri] || `Round ${ ri + 1 }`;
+      h += `<div class="sub">${ printEsc(label) }</div>` + fixtureTable(round, withData);
     });
   });
   return h + rulesLine(tourney) + `</div>`;
@@ -11904,11 +11958,18 @@ const bracketSheet = (tourney, withData) => {
 const printPack = (tourney, withData, only) => {
   const area = document.getElementById("printArea");
   if (!area) return;
+  const groups = tourney.groups || [];
   let html = "";
-  if (only === "fixtures") html = fixturesSheet(tourney, withData);
-  else if (only === "standings") html = standingsSheet(tourney, withData);
-  else if (only === "bracket") html = bracketSheet(tourney, withData);
-  else html = fixturesSheet(tourney, withData) + bracketSheet(tourney, withData) + standingsSheet(tourney, withData);
+  if (only === "bracket") html = bracketSheet(tourney, withData);
+  else if (only === "standings") {
+    /* standings-only: every group on one sheet, which is what gets pinned up */
+    html = `<div class="psheet">${ printHead(tourney, "Standings") }` +
+      groups.map(g => `<div class="grp">Group ${ printEsc(g.label) }${ g.catName ? ` &middot; ${ printEsc(g.catName) }` : "" }</div>` +
+        standingsTable(tourney, g, withData)).join("") + rulesLine(tourney) + `</div>`;
+  } else {
+    html = groups.map(g => groupSheet(tourney, g, withData)).join("");
+    if (only !== "fixtures") html += bracketSheet(tourney, withData);
+  }
   if (!html) { alert("Nothing to print yet — create some groups first."); return; }
   area.innerHTML = html;
   window.print();
