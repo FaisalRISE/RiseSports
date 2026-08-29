@@ -12500,38 +12500,475 @@ const RefConsole = ({ match, rules, title, subtitle, teamA, teamB, namesA, names
           ` ${ st.rallies } ${ st.rallies === 1 ? "rally" : "rallies" } recorded — ${ st.a }+${ st.b }=${ st.a + st.b }.`))));
 };
 
-/* ---------- Court Ledger ----------
-   The ledger is a complete standalone app of its own (RBAC, a global player
-   directory, the two-party payment acknowledgment flow). It is embedded here
-   rather than re-implemented: build.js inlines the file into window.RISE_LEDGER
-   and this hosts it in a sandboxed iframe, so all of that behaviour arrives
-   intact and the single-file build still holds.
+/* ---------- Court Ledger: UI ----------
+   Rebuilt against RISE's architecture from the Next.js ledger's screens
+   (books list, entries, balances, members). The money engine above came across
+   from lib/finance.ts unchanged; only the storage and rendering are new —
+   localStorage instead of Prisma, React.createElement instead of JSX/shadcn.
 
-   It keeps its OWN localStorage, so it does not yet share the RISE player list.
-   That is the trade for embedding instead of porting, and the honest place to
-   fix it is a shared player directory rather than a rewrite. */
-const LedgerTab = () => {
-  const doc = typeof window !== "undefined" && window.RISE_LEDGER;
-  if (!doc) return React.createElement("div", {
-    style: { padding: 24, textAlign: "center", color: C.textDim, fontSize: 12 }
-  }, "Court Ledger is not bundled in this build. Run ", React.createElement("code", null, "node build.js"),
-    " with court-ledger/Uploads/index.html present.");
-  return React.createElement("iframe", {
-    title: "Court Ledger",
-    srcDoc: doc,
-    /* allow-same-origin so its own localStorage works; no allow-top-navigation,
-       so the embedded app can never navigate the host out from under us */
-    sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals",
-    style: {
-      width: "100%",
-      height: "calc(100vh - 148px)",
-      minHeight: 460,
-      border: `1px solid ${ C.border }`,
-      borderRadius: 12,
-      background: "#060a12",
-      display: "block"
+   No sign-in: the Next.js app needs NextAuth and a Postgres row per user, and
+   this is a prototype. "You" is simply the member marked `me`, switchable from
+   the Members tab, which is enough to see every balance from any side. */
+
+const LEDGER_KEY = "ledger";
+const LEDGER_COLOURS = ["#65a30d", "#0d9488", "#2563eb", "#7c3aed", "#db2777", "#ea580c", "#ca8a04", "#e11d48"];
+const LEDGER_TYPE_LIST = ["COURT_BOOKING", "EQUIPMENT", "FOOD_DRINKS", "OTHER"];
+
+const loadLedger = () => {
+  try {
+    const raw = localStorage.getItem(lsKey(LEDGER_KEY));
+    if (raw) {
+      const v = JSON.parse(raw);
+      if (v && Array.isArray(v.books)) return v;
     }
-  });
+  } catch (e) {
+  }
+  return { books: [], meName: "You" };
+};
+
+/* A book seeded with the people and one booking, so the balances tab has
+   something to show the first time it is opened. */
+const seedLedgerBook = name => {
+  const mk = (n, i) => ({ id: uid(), name: n, color: LEDGER_COLOURS[i % LEDGER_COLOURS.length], role: i === 0 ? "PRIMARY_ADMIN" : "DATA_OPERATOR", me: i === 0 });
+  const members = ["You", "Nadeem", "Sumit", "Kautubh"].map(mk);
+  return {
+    id: uid(),
+    name: name || "New book",
+    createdAt: new Date().toISOString(),
+    members,
+    activities: [],
+    payments: []
+  };
+};
+
+const LedgerTab = () => {
+  const [db, setDb] = useState(loadLedger);
+  const [openId, setOpenId] = useState(null);
+  const [tab, setTab] = useState("entries");
+  const [sheet, setSheet] = useState(null);      // "entry" | "payment" | "member" | "book"
+  const [editing, setEditing] = useState(null);
+
+  useEffect(() => {
+    try { localStorage.setItem(lsKey(LEDGER_KEY), JSON.stringify(db)); } catch (e) {}
+  }, [db]);
+
+  const book = (db.books || []).find(b => b.id === openId) || null;
+  const meId = book ? ((book.members.find(m => m.me) || book.members[0] || {}).id) : null;
+  const nameOf = id => ledgerMemberName(book, id);
+  const setBook = fn => setDb(d => ({ ...d, books: d.books.map(b => b.id === openId ? fn(b) : b) }));
+
+  /* ---------- shared bits ---------- */
+  const card = (children, extra) => React.createElement("div", {
+    style: { background: C.card, border: `1px solid ${ C.border }`, borderRadius: 14, padding: 14, marginBottom: 10, ...(extra || {}) }
+  }, children);
+
+  const avatar = (m, size) => React.createElement("div", {
+    style: {
+      width: size || 30, height: size || 30, borderRadius: "50%", flexShrink: 0,
+      background: `${ (m && m.color) || C.lime }22`, color: (m && m.color) || C.lime,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontSize: (size || 30) * 0.36, fontWeight: 800
+    }
+  }, ((m && m.name) || "?").split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase());
+
+  const money = (paise, tone) => React.createElement("span", {
+    style: { fontWeight: 800, fontVariantNumeric: "tabular-nums",
+      color: tone === "pos" ? C.lime : tone === "neg" ? C.red : C.text }
+  }, ledgerMoney(paise));
+
+  const pillBtn = (label, onClick, active, tone) => React.createElement("button", {
+    key: label, onClick,
+    style: {
+      minHeight: 40, padding: "0 14px", borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
+      fontSize: 12.5, fontWeight: 700,
+      border: `1px solid ${ active ? (tone || C.lime) : C.border }`,
+      background: active ? (tone || C.lime) : C.card,
+      color: active ? "#fff" : C.text
+    }
+  }, label);
+
+  /* ---------- books list ---------- */
+  if (!book) {
+    return React.createElement("div", null,
+      React.createElement("div", {
+        style: { display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 10, marginBottom: 12 }
+      },
+        React.createElement("div", null,
+          React.createElement("h2", { style: { fontSize: 19, fontWeight: 800, color: C.text, margin: 0 } }, "Books"),
+          React.createElement("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } },
+            "One book per group, season or pool.")),
+        React.createElement("button", {
+          onClick: () => {
+            const n = window.prompt("Name this book", "Pickleball");
+            if (n === null) return;
+            const b = seedLedgerBook(n.trim() || "New book");
+            setDb(d => ({ ...d, books: [...(d.books || []), b] }));
+            setOpenId(b.id);
+          },
+          style: {
+            minHeight: 44, padding: "0 16px", borderRadius: 22, border: "none", cursor: "pointer",
+            background: C.lime, color: "#fff", fontWeight: 800, fontSize: 13, fontFamily: "inherit"
+          }
+        }, "+ New Book")),
+
+      !(db.books || []).length && card(React.createElement("div", {
+        style: { textAlign: "center", color: C.textDim, fontSize: 12, padding: "18px 8px" }
+      }, "No books yet. A book is one group's shared spending — court bookings, shuttles, food — and who paid for what.")),
+
+      (db.books || []).map(b => {
+        const bal = ledgerBalances(b);
+        const mine = (b.members.find(m => m.me) || b.members[0] || {}).id;
+        const v = bal[mine] || 0;
+        return React.createElement("div", {
+          key: b.id,
+          onClick: () => { setOpenId(b.id); setTab("entries"); },
+          style: {
+            display: "flex", alignItems: "center", gap: 11, padding: 13, marginBottom: 8, cursor: "pointer",
+            background: C.card, border: `1px solid ${ C.border }`, borderRadius: 14
+          }
+        },
+          React.createElement("div", {
+            style: { width: 38, height: 38, borderRadius: 10, background: `${ C.lime }1a`,
+              display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17 }
+          }, "📗"),
+          React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+            React.createElement("div", { style: { fontSize: 14, fontWeight: 800, color: C.text } }, b.name),
+            React.createElement("div", { style: { fontSize: 10.5, color: C.textDim, marginTop: 1 } },
+              `${ b.members.length } members \xB7 ${ b.activities.length } ${ b.activities.length === 1 ? "entry" : "entries" }`)),
+          money(v, v > 0 ? "pos" : v < 0 ? "neg" : null));
+      }));
+  }
+
+  /* ---------- one book ---------- */
+  const balances = ledgerBalances(book);
+  const myBal = balances[meId] || 0;
+  const owedToMe = book.members.reduce((s2, m) => m.id !== meId && (balances[m.id] || 0) < 0 ? s2 : s2, 0);
+
+  const header = React.createElement("div", { style: { marginBottom: 12 } },
+    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 9 } },
+      React.createElement("button", {
+        onClick: () => setOpenId(null),
+        style: { minWidth: 40, minHeight: 40, border: "none", background: "transparent", cursor: "pointer", color: C.textDim, fontSize: 17, fontFamily: "inherit" }
+      }, "←"),
+      React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+        React.createElement("h2", { style: { fontSize: 18, fontWeight: 800, color: C.text, margin: 0 } }, book.name),
+        React.createElement("div", { style: { fontSize: 11, color: C.textDim } }, `${ book.members.length } members`))),
+    React.createElement("div", {
+      style: { display: "flex", gap: 4, marginTop: 10, background: C.cardAlt, borderRadius: 11, padding: 4 }
+    }, [
+      ["entries", "Entries"], ["balances", "Balances"], ["members", "Members"]
+    ].map(([id, label]) => React.createElement("button", {
+      key: id, onClick: () => setTab(id),
+      style: {
+        flex: 1, minHeight: 38, borderRadius: 8, border: "none", cursor: "pointer", fontFamily: "inherit",
+        fontSize: 12.5, fontWeight: tab === id ? 800 : 600,
+        background: tab === id ? C.card : "transparent",
+        color: tab === id ? C.text : C.textDim,
+        boxShadow: tab === id ? "0 1px 3px rgba(0,0,0,.07)" : "none"
+      }
+    }, label))));
+
+  /* ---------- entries ---------- */
+  const entriesView = React.createElement("div", null,
+    !book.activities.length && card(React.createElement("div", {
+      style: { textAlign: "center", color: C.textDim, fontSize: 12, padding: "16px 8px" }
+    }, "No entries yet. Add a court booking and it will split between whoever played.")),
+    [...book.activities].sort((x, y) => new Date(y.date) - new Date(x.date)).map(a2 => {
+      const t = ledgerTypeMeta(a2.type);
+      const shares = ledgerShares(book, a2);
+      const n = Object.keys(shares).length;
+      return React.createElement("div", {
+        key: a2.id,
+        style: { background: C.card, border: `1px solid ${ C.border }`, borderRadius: 14, padding: 13, marginBottom: 8 }
+      },
+        React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: 10 } },
+          React.createElement("div", {
+            style: { width: 34, height: 34, borderRadius: 9, background: C.cardAlt, flexShrink: 0,
+              display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }
+          }, t.emoji),
+          React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+            React.createElement("div", { style: { fontSize: 13.5, fontWeight: 800, color: C.text } },
+              t.label + (a2.venue ? " \xB7 " + a2.venue : "")),
+            React.createElement("div", { style: { fontSize: 10.5, color: C.textDim, marginTop: 1 } },
+              `${ new Date(a2.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) } \xB7 paid by ${ nameOf(a2.payerId) }`),
+            React.createElement("div", { style: { fontSize: 10.5, color: C.textDim } },
+              n ? `Split ${ n } ${ n === 1 ? "way" : "ways" } \xB7 ~${ ledgerMoney(Math.round(a2.amount / n)) } each` : "No participants")),
+          React.createElement("div", { style: { fontSize: 15, fontWeight: 800, color: C.text, fontVariantNumeric: "tabular-nums" } },
+            ledgerMoney(a2.amount))),
+        React.createElement("div", { style: { display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 8 } },
+          React.createElement("button", {
+            onClick: () => { setEditing({ ...a2, id: null }); setSheet("entry"); },
+            style: { minHeight: 34, padding: "0 10px", borderRadius: 8, border: `1px solid ${ C.border }`, background: C.card, color: C.textMuted, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }
+          }, "Duplicate"),
+          React.createElement("button", {
+            onClick: () => { setEditing({ ...a2 }); setSheet("entry"); },
+            style: { minHeight: 34, padding: "0 10px", borderRadius: 8, border: `1px solid ${ C.border }`, background: C.card, color: C.textMuted, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }
+          }, "Edit"),
+          React.createElement("button", {
+            onClick: () => {
+              if (!window.confirm("Delete this entry? Balances will be recalculated.")) return;
+              setBook(b => ({ ...b, activities: b.activities.filter(x => x.id !== a2.id) }));
+            },
+            style: { minHeight: 34, padding: "0 10px", borderRadius: 8, border: `1px solid ${ C.red }33`, background: C.card, color: C.red, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }
+          }, "Delete")));
+    }));
+
+  /* ---------- balances ---------- */
+  const settle = ledgerSettleUp(book);
+  const pairs = ledgerPairs(book).filter(p => p.net !== 0);
+  const balancesView = React.createElement("div", null,
+    card(React.createElement("div", null,
+      React.createElement("div", { style: { fontSize: 9.5, fontWeight: 800, letterSpacing: .1, textTransform: "uppercase", color: C.textDim } },
+        `${ book.name } \xB7 Balance`),
+      React.createElement("div", { style: { fontSize: 30, fontWeight: 900, color: myBal >= 0 ? C.lime : C.red, marginTop: 3, fontVariantNumeric: "tabular-nums" } },
+        ledgerMoney(Math.abs(myBal))),
+      React.createElement("div", { style: { fontSize: 11.5, color: C.textMuted, marginTop: 2 } },
+        myBal > 0 ? "You are owed in this book" : myBal < 0 ? "You owe in this book" : "You are all square")),
+      { background: `linear-gradient(150deg, ${ C.lime }14, ${ C.teal }0a)`, border: `1px solid ${ C.lime }3d` }),
+
+    React.createElement("button", {
+      onClick: () => { setEditing(null); setSheet("payment"); },
+      style: {
+        width: "100%", minHeight: 46, borderRadius: 12, marginBottom: 10, cursor: "pointer",
+        border: `1px dashed ${ C.border }`, background: C.card, color: C.text,
+        fontSize: 13, fontWeight: 700, fontFamily: "inherit"
+      }
+    }, "+ Record a payment"),
+
+    settle.length > 0 && card(React.createElement("div", null,
+      React.createElement("div", { style: { fontSize: 12.5, fontWeight: 800, color: C.text, marginBottom: 8 } },
+        "✨ Settle up — fewest transfers"),
+      settle.map((t, i) => React.createElement("div", {
+        key: i,
+        style: { display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderTop: i ? `1px solid ${ C.border }` : "none" }
+      },
+        React.createElement("div", { style: { flex: 1, fontSize: 12.5, color: C.text, fontWeight: 600 } },
+          React.createElement("b", null, nameOf(t.from)), " → ", React.createElement("b", null, nameOf(t.to))),
+        React.createElement("span", { style: { fontSize: 13, fontWeight: 800, fontVariantNumeric: "tabular-nums", color: C.text } },
+          ledgerMoney(t.amount)),
+        React.createElement("button", {
+          onClick: () => { setEditing({ fromId: t.from, toId: t.to, amount: t.amount }); setSheet("payment"); },
+          style: { minHeight: 34, padding: "0 11px", borderRadius: 8, border: "none", background: C.lime, color: "#fff", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }
+        }, "Settle"))))),
+
+    pairs.length > 0 && React.createElement("div", null,
+      React.createElement("div", { style: { fontSize: 12, fontWeight: 800, color: C.textMuted, margin: "12px 2px 7px" } }, "Who owes whom"),
+      pairs.map(p => {
+        const from = p.net > 0 ? p.a : p.b, to = p.net > 0 ? p.b : p.a;
+        return React.createElement("div", {
+          key: p.a + p.b,
+          style: { display: "flex", alignItems: "center", gap: 10, padding: 12, marginBottom: 7, background: C.card, border: `1px solid ${ C.border }`, borderRadius: 12 }
+        },
+          avatar(book.members.find(m => m.id === from), 28),
+          React.createElement("div", { style: { flex: 1, fontSize: 12.5, color: C.text } },
+            React.createElement("b", null, nameOf(from)), " owes ", React.createElement("b", null, nameOf(to))),
+          React.createElement("span", { style: { fontSize: 13.5, fontWeight: 800, fontVariantNumeric: "tabular-nums" } },
+            ledgerMoney(Math.abs(p.net))));
+      })),
+
+    book.payments.filter(p => p.status === "PENDING").length > 0 && card(React.createElement("div", null,
+      React.createElement("div", { style: { fontSize: 12.5, fontWeight: 800, color: C.orange, marginBottom: 7 } }, "Awaiting confirmation"),
+      book.payments.filter(p => p.status === "PENDING").map(p => React.createElement("div", {
+        key: p.id, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }
+      },
+        React.createElement("div", { style: { flex: 1, fontSize: 12, color: C.text } },
+          `${ nameOf(p.fromId) } marked ${ ledgerMoney(p.amount) } paid to ${ nameOf(p.toId) }`),
+        React.createElement("button", {
+          onClick: () => setBook(b => ({ ...b, payments: b.payments.map(x => x.id === p.id ? { ...x, status: "CONFIRMED", confirmedAt: new Date().toISOString() } : x) })),
+          style: { minHeight: 34, padding: "0 11px", borderRadius: 8, border: "none", background: C.lime, color: "#fff", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }
+        }, "Confirm"))))));
+
+  /* ---------- members ---------- */
+  const membersView = React.createElement("div", null,
+    React.createElement("div", { style: { fontSize: 10.5, color: C.textDim, margin: "0 2px 8px" } },
+      "Tap a member to view the book from their side — no sign-in while this is a prototype."),
+    book.members.map(m => {
+      const v = balances[m.id] || 0;
+      return React.createElement("div", {
+        key: m.id,
+        onClick: () => setBook(b => ({ ...b, members: b.members.map(x => ({ ...x, me: x.id === m.id })) })),
+        style: {
+          display: "flex", alignItems: "center", gap: 11, padding: 12, marginBottom: 7, cursor: "pointer",
+          background: C.card, borderRadius: 12,
+          border: `1px solid ${ m.me ? C.lime : C.border }`
+        }
+      },
+        avatar(m),
+        React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+          React.createElement("div", { style: { fontSize: 13.5, fontWeight: 800, color: C.text } },
+            m.name, m.me ? React.createElement("span", { style: { color: C.lime, fontSize: 11, fontWeight: 700 } }, "  · you") : null),
+          React.createElement("div", { style: { fontSize: 10, color: C.textDim } }, m.role.replace(/_/g, " ").toLowerCase())),
+        money(v, v > 0 ? "pos" : v < 0 ? "neg" : null));
+    }),
+    React.createElement("button", {
+      onClick: () => {
+        const n = window.prompt("Member name");
+        if (!n || !n.trim()) return;
+        setBook(b => ({ ...b, members: [...b.members, { id: uid(), name: n.trim(), color: LEDGER_COLOURS[b.members.length % LEDGER_COLOURS.length], role: "DATA_OPERATOR" }] }));
+      },
+      style: {
+        width: "100%", minHeight: 44, borderRadius: 12, marginTop: 4, cursor: "pointer",
+        border: `1px dashed ${ C.border }`, background: C.card, color: C.text, fontSize: 12.5, fontWeight: 700, fontFamily: "inherit"
+      }
+    }, "+ Add member"));
+
+  return React.createElement("div", null,
+    header,
+    tab === "entries" && entriesView,
+    tab === "balances" && balancesView,
+    tab === "members" && membersView,
+    tab === "entries" && React.createElement("button", {
+      onClick: () => { setEditing(null); setSheet("entry"); },
+      style: {
+        position: "sticky", bottom: 12, width: "100%", minHeight: 50, borderRadius: 25, marginTop: 10,
+        border: "none", background: C.lime, color: "#fff", fontSize: 14, fontWeight: 800,
+        cursor: "pointer", fontFamily: "inherit", boxShadow: "0 4px 14px rgba(0,0,0,.16)"
+      }
+    }, "+ Add Entry"),
+    sheet === "entry" && React.createElement(LedgerEntrySheet, {
+      book, initial: editing,
+      onClose: () => { setSheet(null); setEditing(null); },
+      onSave: a2 => {
+        setBook(b => a2.id && b.activities.some(x => x.id === a2.id)
+          ? { ...b, activities: b.activities.map(x => x.id === a2.id ? a2 : x) }
+          : { ...b, activities: [...b.activities, { ...a2, id: a2.id || uid() }] });
+        setSheet(null); setEditing(null);
+      }
+    }),
+    sheet === "payment" && React.createElement(LedgerPaymentSheet, {
+      book, initial: editing, meId,
+      onClose: () => { setSheet(null); setEditing(null); },
+      onSave: p => {
+        setBook(b => ({ ...b, payments: [...b.payments, { ...p, id: uid() }] }));
+        setSheet(null); setEditing(null);
+      }
+    }));
+};
+
+/* Add or edit one entry. The participant chips are the important control:
+   the split follows exactly who is ticked. */
+const LedgerEntrySheet = ({ book, initial, onClose, onSave }) => {
+  const [type, setType] = useState((initial && initial.type) || "COURT_BOOKING");
+  const [amount, setAmount] = useState(initial && initial.amount != null ? String(initial.amount / 100) : "");
+  const [payerId, setPayerId] = useState((initial && initial.payerId) || (book.members[0] || {}).id);
+  const [venue, setVenue] = useState((initial && initial.venue) || "");
+  const [slot, setSlot] = useState((initial && initial.slotText) || "");
+  const [date, setDate] = useState(((initial && initial.date) || new Date().toISOString()).slice(0, 10));
+  const [ids, setIds] = useState((initial && initial.participantIds) || book.members.map(m => m.id));
+
+  const paise = ledgerPaise(amount);
+  const per = ids.length ? Math.round(paise / ids.length) : 0;
+  const valid = paise > 0 && ids.length > 0 && payerId;
+
+  const label = t => React.createElement("div", {
+    style: { fontSize: 9.5, fontWeight: 800, letterSpacing: .09, textTransform: "uppercase", color: C.textDim, margin: "12px 0 5px" }
+  }, t);
+
+  return React.createElement(Modal, { onClose }, React.createElement("div", { style: { padding: 18 } },
+    React.createElement("h3", { style: { fontSize: 15, fontWeight: 800, color: C.text, margin: 0, textAlign: "center" } },
+      initial && initial.id ? "Edit entry" : "Add entry"),
+
+    label("What"),
+    React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+      LEDGER_TYPE_LIST.map(t => {
+        const meta = ledgerTypeMeta(t);
+        return React.createElement("button", {
+          key: t, onClick: () => setType(t),
+          style: {
+            flex: "1 1 44%", minHeight: 42, borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
+            fontSize: 11.5, fontWeight: 700,
+            border: `1px solid ${ type === t ? C.lime : C.border }`,
+            background: type === t ? C.lime : C.card, color: type === t ? "#fff" : C.text
+          }
+        }, meta.emoji + " " + meta.label);
+      })),
+
+    label("Amount (₹)"),
+    React.createElement(Input, { value: amount, onChange: setAmount, placeholder: "2600", type: "number" }),
+
+    label("Paid by"),
+    React.createElement(Select, {
+      value: payerId, onChange: setPayerId,
+      options: book.members.map(m => ({ value: m.id, label: m.name }))
+    }),
+
+    label(`Split between — ${ ids.length } selected${ ids.length ? ` \xB7 ${ ledgerMoney(per) } each` : "" }`),
+    React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+      book.members.map(m => {
+        const on = ids.includes(m.id);
+        return React.createElement("button", {
+          key: m.id,
+          onClick: () => setIds(on ? ids.filter(x => x !== m.id) : [...ids, m.id]),
+          style: {
+            minHeight: 38, padding: "0 12px", borderRadius: 19, cursor: "pointer", fontFamily: "inherit",
+            fontSize: 12, fontWeight: 700,
+            border: `1px solid ${ on ? C.lime : C.border }`,
+            background: on ? C.lime : C.card, color: on ? "#fff" : C.text
+          }
+        }, (on ? "✓ " : "") + m.name);
+      })),
+
+    label("Venue (optional)"),
+    React.createElement(Input, { value: venue, onChange: setVenue, placeholder: "ASC" }),
+    label("Time slot (optional)"),
+    React.createElement(Input, { value: slot, onChange: setSlot, placeholder: "8:00 PM – 10:00 PM" }),
+    label("Date"),
+    React.createElement(Input, { value: date, onChange: setDate, type: "date" }),
+
+    React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 16 } },
+      React.createElement(Btn, { full: !0, onClick: onClose }, "Cancel"),
+      React.createElement(Btn, {
+        full: !0, primary: !0, color: C.lime,
+        onClick: () => valid && onSave({
+          id: initial && initial.id, type, amount: paise, payerId,
+          participantIds: ids, venue: venue.trim(), slotText: slot.trim(),
+          date: new Date(date).toISOString()
+        })
+      }, "Save entry"))));
+};
+
+/* Record a settlement. It lands as PENDING so the person receiving it confirms
+   — the same two-party handshake the original app used, minus the accounts. */
+const LedgerPaymentSheet = ({ book, initial, meId, onClose, onSave }) => {
+  const [fromId, setFromId] = useState((initial && initial.fromId) || meId || (book.members[0] || {}).id);
+  const [toId, setToId] = useState((initial && initial.toId) || (book.members.find(m => m.id !== meId) || {}).id);
+  const [amount, setAmount] = useState(initial && initial.amount != null ? String(initial.amount / 100) : "");
+  const [mode, setMode] = useState("UPI");
+  const paise = ledgerPaise(amount);
+
+  const label = t => React.createElement("div", {
+    style: { fontSize: 9.5, fontWeight: 800, letterSpacing: .09, textTransform: "uppercase", color: C.textDim, margin: "12px 0 5px" }
+  }, t);
+
+  return React.createElement(Modal, { onClose }, React.createElement("div", { style: { padding: 18 } },
+    React.createElement("h3", { style: { fontSize: 15, fontWeight: 800, color: C.text, margin: 0, textAlign: "center" } }, "Record a payment"),
+    label("From"),
+    React.createElement(Select, { value: fromId, onChange: setFromId, options: book.members.map(m => ({ value: m.id, label: m.name })) }),
+    label("To"),
+    React.createElement(Select, { value: toId, onChange: setToId, options: book.members.map(m => ({ value: m.id, label: m.name })) }),
+    label("Amount (₹)"),
+    React.createElement(Input, { value: amount, onChange: setAmount, placeholder: "500", type: "number" }),
+    label("Mode"),
+    React.createElement("div", { style: { display: "flex", gap: 6 } },
+      ["UPI", "Cash", "Bank"].map(m => React.createElement("button", {
+        key: m, onClick: () => setMode(m),
+        style: {
+          flex: 1, minHeight: 40, borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
+          fontSize: 12, fontWeight: 700,
+          border: `1px solid ${ mode === m ? C.lime : C.border }`,
+          background: mode === m ? C.lime : C.card, color: mode === m ? "#fff" : C.text
+        }
+      }, m))),
+    React.createElement("div", { style: { fontSize: 10.5, color: C.textDim, marginTop: 10, lineHeight: 1.5 } },
+      "The payment waits as pending until the person receiving it confirms, so one side cannot clear a debt on its own."),
+    React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14 } },
+      React.createElement(Btn, { full: !0, onClick: onClose }, "Cancel"),
+      React.createElement(Btn, {
+        full: !0, primary: !0, color: C.lime,
+        onClick: () => paise > 0 && fromId !== toId && onSave({
+          fromId, toId, amount: paise, mode, status: "PENDING", date: new Date().toISOString()
+        })
+      }, "Mark as paid"))));
 };
 
 function RiseSports() {

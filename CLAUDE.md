@@ -136,6 +136,22 @@ Three deliberate reversals, decided 2026-08-27:
   Uses `performance.now()`, **never** a difference of wall-clock stamps: a device that sleeps
   or re-syncs its clock mid-match would otherwise report nonsense. One record per match, no
   aggregates, and no feed into the rating — the spec is firm about that.
+- **Court Ledger** (`LedgerTab`) — shared-expense tracking, on its own nav tab.
+  - The money engine is `lib/finance.ts` from the Next.js ledger, ported verbatim
+    apart from the TypeScript: `ledgerShares/OwedMap/Balances/Pairs/SettleUp/For` plus
+    `ledgerMoney`/`ledgerPaise`. It was portable precisely because it is pure — no Prisma,
+    no React. **Amounts are integer paise, never floats**: ₹1000 split 3 ways is
+    33333+33333+33334 with the odd paise to the payer, so a book sums to exactly what
+    was spent. `tests/ledger.test.js` pins the invariants (balances sum to zero; applying
+    the settle-up plan zeroes everyone; circular debt needs no transfers).
+  - The UI is rebuilt against RISE's architecture — localStorage under `rs_ledger`,
+    `React.createElement` — because the rest of that app (Next.js, Postgres, NextAuth, S3)
+    cannot live in a single offline HTML file. An earlier attempt embedded the older
+    standalone `Uploads/index.html` in an iframe; that is gone.
+  - **No sign-in while this is a prototype.** "You" is the member flagged `me`, switchable
+    from the Members tab, which is enough to see the book from any side. Payments still
+    land as PENDING and need the recipient to confirm, so one side cannot clear a debt
+    alone.
 - **`RefConsole` + `CourtBox`** — the referee UI, laid out after
   `Format/pickleboss-35split 12.html:965-1065`, which was built for and used at real events.
   The load-bearing idea there is that **the court is the input**: a referee standing courtside
