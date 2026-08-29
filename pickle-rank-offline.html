@@ -12225,6 +12225,193 @@ const CommunityTab = ({
     }, a.confirmed.length, "/", W, " confirmed", a.waitlist.length ? ` \xB7 ${ a.waitlist.length } waiting` : "")));
   })));
 };
+/* ---------- Court Ledger: money engine ----------
+   Ported verbatim (minus TypeScript) from
+   court-ledger/court_ledger/nextjs_space/lib/finance.ts.
+
+   That file is a pure calculation layer with no Prisma, React or Next in it,
+   which is exactly why it can come across unchanged while the rest of that app
+   — a Next.js/Postgres/NextAuth stack — cannot live inside a single offline
+   HTML file.
+
+   EVERY AMOUNT IS AN INTEGER NUMBER OF PAISE. Money is never held in floats:
+   a 3-way split of ₹1000 is 33333+33333+33334, and the odd paise go to the
+   payer so the ledger always sums exactly to what was spent. */
+
+/* Equal split of an activity among its participants; remainder paise to the payer. */
+const ledgerShares = (book, act) => {
+  const memberIds = new Set(((book && book.members) || []).map(m => m && m.id));
+  const ids = ((act && act.participantIds) || []).filter(id => memberIds.has(id));
+  const out = {};
+  const n = ids.length;
+  if (!n) return out;
+  const total = (act && act.amount) || 0;
+  const base = Math.floor(total / n);
+  let rem = total - base * n;
+  ids.forEach(id => { out[id] = base; });
+  if (rem > 0) {
+    if (out[act.payerId] != null) out[act.payerId] += rem;
+    else {
+      let i = 0;
+      while (rem-- > 0) { out[ids[i % n]] += 1; i++; }
+    }
+  }
+  return out;
+};
+
+/* m[a][b] = total paise a owes b, before netting. Confirmed payments reduce it. */
+const ledgerOwedMap = book => {
+  const m = {};
+  const add = (a, b, v) => {
+    if (a === b || !v) return;
+    if (!m[a]) m[a] = {};
+    m[a][b] = (m[a][b] || 0) + v;
+  };
+  ((book && book.activities) || []).forEach(act => {
+    const s = ledgerShares(book, act);
+    Object.keys(s || {}).forEach(pid => {
+      if (pid !== (act && act.payerId)) add(pid, act.payerId, s[pid]);
+    });
+  });
+  ((book && book.payments) || []).forEach(p => {
+    if (p && p.status === "CONFIRMED") add(p.fromId, p.toId, -(p.amount || 0));
+  });
+  return m;
+};
+
+/* Net between a and b: positive means a owes b. */
+const ledgerNet = (m, a, b) => ((m && m[a] && m[a][b]) || 0) - ((m && m[b] && m[b][a]) || 0);
+
+/* Balance of one member: positive means others owe them. */
+const ledgerBalances = book => {
+  const m = ledgerOwedMap(book);
+  const out = {};
+  const members = (book && book.members) || [];
+  members.forEach(p => {
+    let t = 0;
+    members.forEach(o => { if (o && p && o.id !== p.id) t += ledgerNet(m, o.id, p.id); });
+    out[p.id] = t;
+  });
+  return out;
+};
+
+/* Per-pair detail: the two legs and any settled payments between them. */
+const ledgerPairs = book => {
+  const out = [];
+  const ppl = (book && book.members) || [];
+  const m = ledgerOwedMap(book);
+  const shareCache = ((book && book.activities) || []).map(act => ({ act, shares: ledgerShares(book, act) }));
+  for (let i = 0; i < ppl.length; i++) {
+    for (let j = i + 1; j < ppl.length; j++) {
+      const a = ppl[i] && ppl[i].id, b = ppl[j] && ppl[j].id;
+      if (!a || !b) continue;
+      const net = ledgerNet(m, a, b);
+      let legAB = 0, legBA = 0;
+      shareCache.forEach(({ act, shares }) => {
+        if (act && act.payerId === b && shares && shares[a]) legAB += shares[a];
+        if (act && act.payerId === a && shares && shares[b]) legBA += shares[b];
+      });
+      let paidAB = 0, paidBA = 0;
+      ((book && book.payments) || []).forEach(p => {
+        if (!p || p.status !== "CONFIRMED") return;
+        if (p.fromId === a && p.toId === b) paidAB += p.amount || 0;
+        if (p.fromId === b && p.toId === a) paidBA += p.amount || 0;
+      });
+      if (legAB || legBA || paidAB || paidBA) out.push({ a, b, net, legAB, legBA, paidAB, paidBA });
+    }
+  }
+  return out.sort((x, y) => Math.abs(y.net) - Math.abs(x.net));
+};
+
+/* Minimum-transaction settlement: largest debtor pays largest creditor, repeat.
+   Turns a tangle of who-owes-what into the shortest list of transfers. */
+const ledgerSettleUp = book => {
+  const balances = ledgerBalances(book);
+  const cred = [], debt = [];
+  Object.keys(balances || {}).forEach(id => {
+    const b = balances[id] || 0;
+    if (b > 0) cred.push({ id, v: b });
+    else if (b < 0) debt.push({ id, v: -b });
+  });
+  cred.sort((a, b) => b.v - a.v);
+  debt.sort((a, b) => b.v - a.v);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < debt.length && j < cred.length) {
+    const v = Math.min(debt[i].v, cred[j].v);
+    if (v > 0) out.push({ from: debt[i].id, to: cred[j].id, amount: v });
+    debt[i].v -= v; cred[j].v -= v;
+    if (debt[i].v <= 0) i++;
+    if (cred[j].v <= 0) j++;
+  }
+  return out;
+};
+
+const LEDGER_TYPES = {
+  COURT_BOOKING: { emoji: "🏸", label: "Court Booking" },
+  EQUIPMENT: { emoji: "🎽", label: "Equipment" },
+  FOOD_DRINKS: { emoji: "🥤", label: "Food & Drinks" },
+  OTHER: { emoji: "📌", label: "Other" }
+};
+const ledgerTypeMeta = type => LEDGER_TYPES[type || "OTHER"] || LEDGER_TYPES.OTHER;
+const ledgerMemberName = (book, id) => {
+  const m = ((book && book.members) || []).find(x => x && x.id === id);
+  return m ? m.name : "—";
+};
+
+/* Indian-grouped rupees from paise. Uses a real minus sign, not a hyphen. */
+const ledgerMoney = paise => {
+  const v = (paise || 0) / 100, abs = Math.abs(v);
+  const str = abs.toLocaleString("en-IN", {
+    maximumFractionDigits: abs % 1 === 0 ? 0 : 2,
+    minimumFractionDigits: 0
+  });
+  return `${ v < 0 ? "−" : "" }₹${ str }`;
+};
+const ledgerPaise = v => Math.round((Number(v) || 0) * 100);
+
+/* Bank-statement view for one member: newest first, with a running balance. */
+const ledgerFor = (book, pid) => {
+  const rows = [];
+  ((book && book.activities) || []).forEach(act => {
+    const s = ledgerShares(book, act);
+    const t = ledgerTypeMeta(act && act.type);
+    const slot = (act && act.slotText) || "";
+    if (act && act.payerId === pid) {
+      let lent = 0;
+      Object.keys(s || {}).forEach(k => { if (k !== pid) lent += s[k]; });
+      if (lent) rows.push({
+        at: act.date, delta: lent,
+        title: `${ t.emoji } ${ t.label }${ act.venue ? " \xB7 " + act.venue : "" }`,
+        sub: `You paid ${ ledgerMoney(act.amount) } for ${ Object.keys(s).length } \xB7 covered ${ ledgerMoney(lent) } for others${ slot ? ` (${ slot })` : "" }`
+      });
+    } else if (s && s[pid] != null) {
+      rows.push({
+        at: act.date, delta: -s[pid],
+        title: `${ t.emoji } ${ t.label }${ act.venue ? " \xB7 " + act.venue : "" }`,
+        sub: `Share of ${ ledgerMoney(act.amount) } split ${ Object.keys(s).length } ways \xB7 paid by ${ ledgerMemberName(book, act.payerId) }${ slot ? ` (${ slot })` : "" }`
+      });
+    }
+  });
+  ((book && book.payments) || []).forEach(p => {
+    if (!p || p.status !== "CONFIRMED") return;
+    if (p.fromId === pid) rows.push({
+      at: p.date, delta: p.amount, isPayment: !0,
+      title: `💸 Paid ${ ledgerMemberName(book, p.toId) }`,
+      sub: `${ p.note || "Settlement" } (${ p.mode || "UPI" })`
+    });
+    if (p.toId === pid) rows.push({
+      at: p.date, delta: -p.amount, isPayment: !0,
+      title: `✅ Received from ${ ledgerMemberName(book, p.fromId) }`,
+      sub: `${ p.note || "Settlement" } (${ p.mode || "UPI" })`
+    });
+  });
+  rows.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+  let run = 0;
+  rows.forEach(r => { run += r.delta; r.run = run; });
+  return rows.reverse();
+};
+
 /* ---------- print pack ----------
    Laid out after the OSL 2026 sheets.
 
