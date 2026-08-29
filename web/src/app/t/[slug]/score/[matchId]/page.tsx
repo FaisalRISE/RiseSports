@@ -6,6 +6,7 @@ import { viewMatch } from "@/lib/matchState";
 import { principalFor } from "@/lib/auth/guard";
 import { canScore, canView } from "@/lib/auth/policy";
 import { RefConsole, type ConsoleTeam } from "@/components/RefConsole";
+import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { scorePoint, undoPoint, confirmRotation } from "../../actions";
 
 /* Never cached: this is the live scoring surface. */
@@ -50,6 +51,8 @@ export default async function ScorePage({
   const view = viewMatch(row.tournament, row.match);
 
   return (
+    <>
+    <OpenAccessBanner />
     <main className="mx-auto max-w-3xl p-4 sm:p-6">
       <h1 className="mb-1 text-xl font-black">{row.tournament.name}</h1>
       <p className="mb-4 text-[11px] font-bold uppercase tracking-widest text-neutral-500">
@@ -66,5 +69,6 @@ export default async function ScorePage({
         actions={{ score: scorePoint, undo: undoPoint, confirm: confirmRotation }}
       />
     </main>
+    </>
   );
 }

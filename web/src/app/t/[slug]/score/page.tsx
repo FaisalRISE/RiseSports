@@ -5,6 +5,7 @@ import { tournaments } from "@/lib/db/schema";
 import { principalFor } from "@/lib/auth/guard";
 import { canScore } from "@/lib/auth/policy";
 import { redeemPin } from "../actions";
+import { OPEN_ACCESS } from "@/lib/auth/access";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,13 @@ export default async function ScoreEntryPage({
   if (!t) notFound();
 
   const principal = await principalFor(t.id);
+  /* Open access hands out scoring rights to everyone, so principalFor already
+     returns a scorer and this redirect fires — nobody ever sees a PIN box. */
   if (canScore(principal)) redirect(`/t/${slug}`);
+
+  /* Unreachable while OPEN_ACCESS is on; kept so the page still works the
+     moment RISE_OPEN_ACCESS=0 turns the gate back on. */
+  if (OPEN_ACCESS) redirect(`/t/${slug}`);
 
   async function submit(formData: FormData) {
     "use server";

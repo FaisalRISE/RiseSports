@@ -35,6 +35,35 @@ pnpm test                    # unit tests
 pnpm build && pnpm test      # also runs the client-bundle leak guard
 ```
 
+## Access control is OFF for now
+
+`RISE_OPEN_ACCESS` is unset, which means **open access**: no PIN, no sign-in,
+every visitor can score and manage every tournament, and draft tournaments are
+publicly visible. That is deliberate while the product is being tested — the
+point right now is to exercise the features, not the gate. Every page carries an
+"open access" banner so an unlocked deployment cannot be mistaken for a locked
+one.
+
+**This is a switch, not a deletion.** The authorization system is fully built
+and unit-tested and simply is not consulted while the switch is on:
+
+| Still there | Where |
+|---|---|
+| Role hierarchy and permission rules | `src/lib/auth/policy.ts` (20 tests) |
+| scrypt-hashed scorer PINs | `src/lib/auth/pin.ts` (11 tests) |
+| Per-tournament grants, revocable | `src/lib/db/schema.ts` → `scorer_grants` |
+| Checks inside every mutation | `src/app/t/[slug]/actions.ts` |
+
+To lock it down later, set one environment variable on the Vercel project:
+
+```bash
+RISE_OPEN_ACCESS=0
+```
+
+No code changes. The PIN page, the grant cookies and the role checks all come
+back on, and `src/lib/auth/access.test.ts` pins the behaviour of the switch in
+both positions.
+
 ## Layout
 
 | Path | What |

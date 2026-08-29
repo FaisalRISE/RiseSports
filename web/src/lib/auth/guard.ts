@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { eventRoles, scorerGrants, tournaments } from "@/lib/db/schema";
 import { anonymous, grantIsUsable, type Principal } from "./policy";
+import { OPEN_ACCESS } from "./access";
 
 /** One cookie per tournament, so redeeming a PIN for one event never grants
  *  anything at another. httpOnly: the token is never readable from client JS. */
@@ -32,6 +33,13 @@ async function currentUserId(): Promise<string | null> {
  */
 export async function principalFor(tournamentId: string): Promise<Principal> {
   const p: Principal = anonymous();
+
+  /* Testing posture: everyone is treated as the owner, so no PIN and no
+     sign-in are needed to exercise the app. The checks below still run in
+     production — see lib/auth/access.ts. */
+  if (OPEN_ACCESS) {
+    return { userId: "open-access", role: "ADMIN", hasScorerGrant: true, isOwner: true };
+  }
 
   const jar = await cookies();
   const token = jar.get(grantCookieName(tournamentId))?.value;

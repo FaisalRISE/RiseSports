@@ -5,6 +5,9 @@ import { db } from "@/lib/db";
 import { matches, teams, tournaments } from "@/lib/db/schema";
 import { viewMatch } from "@/lib/matchState";
 import { sportOf } from "@/lib/sports/registry";
+import { principalFor } from "@/lib/auth/guard";
+import { canView } from "@/lib/auth/policy";
+import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 
 /* Spectator view. A Server Component: the scoring engine runs here, the browser
  * receives finished numbers. This is the read-heavy surface, so it is cached at
@@ -15,7 +18,9 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
   const { slug } = await params;
 
   const [t] = await db.select().from(tournaments).where(eq(tournaments.slug, slug)).limit(1);
-  if (!t || !t.published) notFound();
+  if (!t) notFound();
+  /* Drafts are visible to the organiser — and to everyone while open access is on. */
+  if (!canView(await principalFor(t.id), t.published)) notFound();
 
   const [teamRows, matchRows] = await Promise.all([
     db.select().from(teams).where(eq(teams.tournamentId, t.id)),
@@ -25,6 +30,8 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
   const sport = sportOf(t.sport);
 
   return (
+    <>
+    <OpenAccessBanner />
     <main className="mx-auto max-w-3xl p-4 sm:p-6">
       <header className="mb-6">
         <p className="text-[11px] font-bold uppercase tracking-widest text-neutral-500">
@@ -81,5 +88,6 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
         </Link>
       </p>
     </main>
+    </>
   );
 }
