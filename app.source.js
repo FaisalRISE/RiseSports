@@ -1533,6 +1533,12 @@ const Ic = ({
         x2: "7.01",
         y2: "7"
       })),
+      wallet: React.createElement("svg", {
+        ...e,
+        viewBox: "0 0 24 24"
+      }, React.createElement("path", { d: "M3 7a2 2 0 012-2h12a2 2 0 012 2v1" }),
+        React.createElement("path", { d: "M3 7v10a2 2 0 002 2h14a2 2 0 002-2v-7a2 2 0 00-2-2H5a2 2 0 01-2-2z" }),
+        React.createElement("circle", { cx: "17", cy: "13", r: "1.2" })),
       zap: React.createElement("svg", {
         ...e,
         viewBox: "0 0 24 24"
@@ -12307,6 +12313,40 @@ const RefConsole = ({ match, rules, title, subtitle, teamA, teamB, namesA, names
           ` ${ st.rallies } ${ st.rallies === 1 ? "rally" : "rallies" } recorded — ${ st.a }+${ st.b }=${ st.a + st.b }.`))));
 };
 
+/* ---------- Court Ledger ----------
+   The ledger is a complete standalone app of its own (RBAC, a global player
+   directory, the two-party payment acknowledgment flow). It is embedded here
+   rather than re-implemented: build.js inlines the file into window.RISE_LEDGER
+   and this hosts it in a sandboxed iframe, so all of that behaviour arrives
+   intact and the single-file build still holds.
+
+   It keeps its OWN localStorage, so it does not yet share the RISE player list.
+   That is the trade for embedding instead of porting, and the honest place to
+   fix it is a shared player directory rather than a rewrite. */
+const LedgerTab = () => {
+  const doc = typeof window !== "undefined" && window.RISE_LEDGER;
+  if (!doc) return React.createElement("div", {
+    style: { padding: 24, textAlign: "center", color: C.textDim, fontSize: 12 }
+  }, "Court Ledger is not bundled in this build. Run ", React.createElement("code", null, "node build.js"),
+    " with court-ledger/Uploads/index.html present.");
+  return React.createElement("iframe", {
+    title: "Court Ledger",
+    srcDoc: doc,
+    /* allow-same-origin so its own localStorage works; no allow-top-navigation,
+       so the embedded app can never navigate the host out from under us */
+    sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals",
+    style: {
+      width: "100%",
+      height: "calc(100vh - 148px)",
+      minHeight: 460,
+      border: `1px solid ${ C.border }`,
+      borderRadius: 12,
+      background: "#060a12",
+      display: "block"
+    }
+  });
+};
+
 function RiseSports() {
   const c = new URLSearchParams(window.location.search).get("view");
   if (c)
@@ -12424,6 +12464,11 @@ function RiseSports() {
         id: "register",
         l: "Join",
         i: "user"
+      },
+      {
+        id: "ledger",
+        l: "Ledger",
+        i: "wallet"
       }
     ];
   return k >= ROLES.ADMIN.level && D.push({
@@ -12562,7 +12607,7 @@ function RiseSports() {
     selectedPlayer: R,
     setSelectedPlayer: S,
     setPlayers: r
-  }), e === "register" && React.createElement(RegisterTab, {
+  }), e === "ledger" && React.createElement(LedgerTab, null), e === "register" && React.createElement(RegisterTab, {
     players: p,
     setPlayers: r,
     currentUser: l,

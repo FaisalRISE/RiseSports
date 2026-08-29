@@ -95,6 +95,41 @@ try {
   console.warn("warning: brand/logo-inline.json missing; run node tools/make-logo.js");
 }
 
+// --- Court Ledger ---------------------------------------------------------
+// A complete standalone app that lives in its own folder. It is inlined here
+// and hosted in an iframe rather than ported, because it already works: RBAC,
+// the global player directory and the payment-acknowledgment flow are all
+// built. Inlining keeps the single-file promise intact.
+// NOTE: it keeps its own localStorage, so it does not share the RISE player
+// list yet. That is the price of embedding rather than porting.
+try {
+  const ledger = fs.readFileSync("court-ledger/Uploads/index.html", "utf8");
+  const slot = /(<script id="rise-ledger">)[\s\S]*?(<\/script>)/;
+  if (!slot.test(out)) {
+    console.warn('warning: <script id="rise-ledger"> slot missing; ledger not embedded');
+  } else {
+    // JSON.stringify does NOT protect a closing script tag: the HTML parser
+    // ends the block at the first literal </script> regardless of JS string
+    // context, so the assignment gets truncated and silently never runs.
+    // Escaping the slash keeps the string identical at runtime while hiding
+    // the tag from the parser. Same rule the app source lives under.
+    const safe = JSON.stringify(ledger).replace(/<\/script/gi, "<\\/script");
+    // Hard stop. A literal closing tag here truncates the slot mid-string, and
+    // because the output IS the next build's template, that corruption becomes
+    // permanent and compounds on every rebuild. It cost a manual repair once.
+    if (/<\/script/i.test(safe)) {
+      console.error("ERROR: ledger payload contains a literal closing script tag.");
+      process.exit(1);
+    }
+    // Function replacement: a string replacement would expand $-sequences that
+    // happen to appear in the payload.
+    out = out.replace(slot, (m, a, b) => a + "window.RISE_LEDGER=" + safe + ";" + b);
+    console.log(`ledger: embedded (${Math.round(ledger.length / 1024)} KB)`);
+  }
+} catch (e) {
+  console.warn("warning: court-ledger/Uploads/index.html not found; Ledger tab will be empty");
+}
+
 // The template is also the output, so a bad splice corrupts the file it read.
 // Adding a <script> AFTER the app block would make lastIndexOf pick the wrong
 // one and quietly overwrite that instead — verify before writing, not after.
