@@ -69,10 +69,55 @@ detail they contain (rating algorithm, matchmaking, registration, venue booking)
 architecture and scope sections as superseded.
 
 Three deliberate reversals, decided 2026-08-27:
-- **Stay single-file**, do not rewrite to Next.js — the Supabase sync already working in
-  `Format/` solves the multi-device gap that the rewrite existed to fix.
+- ~~**Stay single-file**, do not rewrite to Next.js~~ — **REVERSED 2026-08-29, see below.**
 - **Go multi-sport**, including the OSL board games.
-- **Capacitor** for mobile, not Expo — Expo would mean rebuilding the whole UI.
+- **Capacitor** for mobile, not Expo — Expo would mean rebuilding the whole UI. Still holds:
+  Capacitor will wrap the Next.js app instead of the single file.
+
+## Architecture reversal (2026-08-29): Next.js after all
+
+The 2026-08-27 decision to stay single-file is **reversed**. The rebuild lives in `web/`
+(Next.js 16 App Router + TypeScript, Neon Postgres, deployed as a separate Vercel project);
+see `web/README.md`.
+
+**Do not treat this as drift.** The earlier decision was correct on the evidence it had. It
+weighed exactly one thing — the multi-device gap — and concluded that Supabase sync solved it
+more cheaply than a rewrite. That reasoning still stands on its own terms.
+
+What changed is that a requirement was added on 2026-08-29 that the earlier decision never
+considered:
+
+> "easy to maintain, **hard to copy the codes**, and can handle massive traffic"
+
+A self-contained HTML file ships its entire source — scoring engine, rating algorithm, auction
+rules — to every visitor. View Source is a complete, runnable copy of the product, and
+minification does not change that. Supabase sync does not address it, because it is not a data
+problem. If the code is meant to be defensible, the valuable logic has to run somewhere the
+browser never sees, and that means a server. Server-rendered pages with edge caching are also
+the ordinary answer to heavy read traffic, and a typed modular codebase is easier to maintain
+than 13.3k lines mixing minified single-letter locals with readable ones.
+
+Consequences for anyone working in this repo:
+
+- The root single-file app is **still production** and still deploys from `main`. Do not break
+  it. Feature work on it is frozen; fixes only, until `web/` reaches parity.
+- `web/` is developed on the `next` branch against a **second Vercel project** with its own
+  preview domain. `rise-sports.vercel.app` keeps serving the single-file app until cutover.
+- The new app has its **own Neon database**. It does not touch the Supabase project
+  (`utfvjsvvbifwcektzrwj`), which stays with the legacy per-event `Format/` apps — those keep
+  their own PIN access and serve a different purpose.
+- Domain logic was **ported, not rewritten**. `web/src/lib/` carries the scoring engine, sports
+  registry, ledger money engine and rating engine across, with the legacy engine extracted by
+  text from `app.source.js` and used as a differential test oracle. Two deliberate behaviour
+  changes are documented in `web/README.md`: the rating conservation fix, and `rallyStats`
+  going from O(n²) to O(n).
+- The OSL Rules v4.8 team format (three pairs, rotation at 7 and 14, first to 25) is now a
+  format module, `web/src/lib/formats/osl.ts`, rather than a separate event app.
+
+Also superseded: the note above that `Files for claude code/CLAUDE.md` "was not adopted". Its
+**architecture** section (Next.js + Supabase) is now closer to the direction of travel, though
+its scope section still is not — multi-sport and the auction module are in scope, and the
+database is Neon rather than Supabase.
 
 ## Critical constraints
 
