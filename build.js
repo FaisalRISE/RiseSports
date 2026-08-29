@@ -102,8 +102,51 @@ try {
 // built. Inlining keeps the single-file promise intact.
 // NOTE: it keeps its own localStorage, so it does not share the RISE player
 // list yet. That is the price of embedding rather than porting.
+/* Make the embedded ledger sit seamlessly inside RISE Sports, WITHOUT editing
+   court-ledger/Uploads/index.html — that file is the owner's, and it will keep
+   being updated. Everything here is applied at build time to a copy.
+
+   It already uses Sora, and it already ships a full light palette; it just
+   defaults to dark and picks slightly different accents. So this flips the
+   default and remaps its CSS variables onto the RISE palette. */
+const riseLedgerTheme = html => {
+  let h = html;
+  // Force light. Note the ledger PERSISTS its theme in its own localStorage, so
+  // flipping the attribute is not enough — a device that once ran it in dark
+  // would restore dark and land in a hybrid state (light backgrounds, dark
+  // text variables, white-on-white text). Pin it until RISE gains a dark mode.
+  h = h.replace(/<html([^>]*)data-theme="dark"/i, '<html$1data-theme="light"');
+  // Pin at the function itself rather than at each call site: the ledger reads
+  // its stored theme in one place and toggles it in another, and both have to
+  // agree or the CSS variables and the theme attribute end up disagreeing.
+  h = h.replace(/function applyTheme\(\s*(\w+)\s*\)\s*\{/,
+    (m, arg) => `function applyTheme(${arg}){ ${arg} = "light"; /* pinned by RISE build */`);
+  // the host page already loads Sora; a second request inside the iframe is waste
+  h = h.replace(/<link[^>]+fonts\.(googleapis|gstatic)\.com[^>]*>\s*/gi, "");
+  /* Remap onto the RISE palette. This declares the COMPLETE set the ledger
+     uses, not just the accents — a partial override leaves the rest on their
+     dark values the moment the theme attribute disagrees. */
+  const override = `<style id="rise-skin">
+    :root, [data-theme="light"], [data-theme="dark"] {
+      --bg:#eef1f6; --surface:#ffffff; --card:#ffffff; --card2:#f1f4f9; --card3:#e2e8f0;
+      --line:#e2e8f0; --line2:#cbd5e1;
+      --lime:#65a30d; --lime-dark:#4d7c0f; --teal:#0d9488; --blue:#2563eb;
+      --purple:#7c3aed; --red:#e11d48; --gold:#ca8a04; --orange:#ea580c;
+      --text:#0f172a; --text-heading:#0f172a; --muted:#475569; --dim:#94a3b8;
+      --shadow:0 4px 20px -2px rgba(0,0,0,.06);
+      --hero-bg:linear-gradient(150deg, rgba(101,163,13,.10), rgba(13,148,136,.06));
+      --hero-border:rgba(101,163,13,.25);
+      --badge-admin:rgba(101,163,13,.12);  --badge-admin-txt:#4d7c0f;
+      --badge-op:rgba(37,99,235,.12);      --badge-op-txt:#2563eb;
+      --badge-viewer:rgba(100,116,139,.12);--badge-viewer-txt:#475569;
+    }
+    body{font-family:'Sora',system-ui,-apple-system,sans-serif;background:var(--bg)}
+  </style>`;
+  return h.includes("</head>") ? h.replace("</head>", override + "</head>") : override + h;
+};
+
 try {
-  const ledger = fs.readFileSync("court-ledger/Uploads/index.html", "utf8");
+  const ledger = riseLedgerTheme(fs.readFileSync("court-ledger/Uploads/index.html", "utf8"));
   const slot = /(<script id="rise-ledger">)[\s\S]*?(<\/script>)/;
   if (!slot.test(out)) {
     console.warn('warning: <script id="rise-ledger"> slot missing; ledger not embedded');
