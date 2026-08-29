@@ -48,49 +48,49 @@ const PREFIX = "rs_", lsKey = n => PREFIX + n;
 const DEFAULT_SPORT = "pb", SPORTS = {
   pb: {
     id: "pb", name: "Pickleball", emoji: "\u{1F3D3}", court: "court",
-    playersPerCourt: 4, formats: ["ms", "ws", "md", "wd", "mx", "gn"],
+    playersPerCourt: 4, targets: [11, 15, 21], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
     scoring: { target: 11, winBy: 2, cap: null, golden: null }, serveModel: "sideout",
     skills: ["Serve", "Return", "Dink", "Drive", "Volley", "Drop Shot", "Lob", "Positioning", "Smash", "Reset", "Poach", "Backhand", "Speed Ups"],
     tags: ["Spin Server", "Power Player", "Dink Master", "Net Rusher", "Serial Lobber", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Hands", "Soft Game", "Hard Hitter", "Great Partner", "Court General", "Comeback King"]
   },
   bd: {
     id: "bd", name: "Badminton", emoji: "\u{1F3F8}", court: "court",
-    playersPerCourt: 4, formats: ["ms", "ws", "md", "wd", "mx", "gn"],
+    playersPerCourt: 4, targets: [15, 21, 30], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
     scoring: { target: 21, winBy: 2, cap: 30, golden: 29 }, serveModel: "rally",
     skills: ["Serve", "Return", "Clear", "Drop", "Smash", "Net Kill", "Drive", "Lift", "Defence", "Footwork", "Deception", "Backhand", "Positioning"],
     tags: ["Big Smash", "Net Killer", "Deceptive", "Retriever", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Tireless", "Soft Touch", "Hard Hitter", "Great Partner", "Court General", "Comeback King"]
   },
   tt: {
     id: "tt", name: "Table Tennis", emoji: "\u{1F3D3}", court: "table",
-    playersPerCourt: 4, formats: ["ms", "ws", "md", "wd", "mx", "gn"],
+    playersPerCourt: 4, targets: [11, 21], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
     scoring: { target: 11, winBy: 2, cap: null, golden: null }, serveModel: "alt2",
     skills: ["Serve", "Return", "Topspin", "Backspin", "Block", "Smash", "Loop", "Push", "Flick", "Footwork", "Placement", "Backhand", "Spin Reading"],
     tags: ["Spin Server", "Looper", "Blocker", "Chopper", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Feet", "Soft Touch", "Hard Hitter", "Great Partner", "Table General", "Comeback King"]
   },
   pd: {
     id: "pd", name: "Padel", emoji: "\u{1F3BE}", court: "court",
-    playersPerCourt: 4, formats: ["ms", "ws", "md", "wd", "mx", "gn"],
+    playersPerCourt: 4, targets: [], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
     scoring: null, setBased: true, serveModel: "games",
     skills: ["Serve", "Return", "Volley", "Bandeja", "Vibora", "Smash", "Wall Play", "Lob", "Drop", "Positioning", "Defence", "Backhand", "Court Coverage"],
     tags: ["Big Smash", "Wall Master", "Bandeja Specialist", "Retriever", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Feet", "Soft Touch", "Hard Hitter", "Great Partner", "Court General", "Comeback King"]
   },
   tn: {
     id: "tn", name: "Tennis", emoji: "\u{1F3BE}", court: "court",
-    playersPerCourt: 4, formats: ["ms", "ws", "md", "wd", "mx", "gn"],
+    playersPerCourt: 4, targets: [], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
     scoring: null, setBased: true, serveModel: "games",
     skills: ["Serve", "Return", "Forehand", "Backhand", "Volley", "Smash", "Slice", "Topspin", "Drop Shot", "Lob", "Footwork", "Positioning", "Mental"],
     tags: ["Big Server", "Baseliner", "Serve & Volley", "Retriever", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Feet", "Soft Touch", "Hard Hitter", "Great Partner", "Court General", "Comeback King"]
   },
   cr: {
     id: "cr", name: "Carrom", emoji: "\u{1F7E4}", court: "board", board: true,
-    playersPerCourt: 4, formats: ["ms", "ws", "md", "wd", "mx", "gn"],
+    playersPerCourt: 4, targets: [21, 25, 29], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
     scoring: { target: 25, winBy: 1, cap: null, golden: null }, serveModel: "turns",
     skills: ["Strike", "Thumb Shot", "Cut", "Rebound", "Board Control", "Queen Cover", "Defence", "Placement", "Angles", "Break", "Consistency", "Pocketing", "Focus"],
     tags: ["Sharp Shooter", "Queen Hunter", "Thumb Specialist", "Defender", "Steady Hand", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Break", "Soft Touch", "Power Striker", "Great Partner", "Board General", "Comeback King"]
   },
   ch: {
     id: "ch", name: "Chess", emoji: "\u{265F}", court: "board", board: true,
-    playersPerCourt: 2, formats: ["gn", "ms", "ws"],
+    playersPerCourt: 2, targets: [1], formats: ["gn", "ms", "ws"],
     scoring: { target: 1, winBy: 1, cap: null, golden: null }, serveModel: "turns", draws: true,
     skills: ["Openings", "Tactics", "Endgame", "Calculation", "Positional", "Time Management", "Defence", "Attack", "Pawn Structure", "Piece Activity", "Prophylaxis", "Conversion", "Composure"],
     tags: ["Opening Prep", "Tactician", "Endgame Grinder", "Blitz Specialist", "Solid", "Wall", "Consistent", "Clutch Player", "Positional", "Fast Calculator", "Quiet Mover", "Attacker", "Great Sport", "Board General", "Comeback King"]
@@ -3551,8 +3551,11 @@ const Ic = ({
       style: {
         display: "flex",
         alignItems: "flex-start",
-        marginBottom: 20,
-        padding: "0 2px"
+        marginBottom: 22,
+        padding: "14px 6px 12px",
+        background: C.card,
+        borderRadius: 14,
+        border: `1px solid ${ C.border }`
       }
     }, [
       "Basics",
@@ -3565,9 +3568,12 @@ const Ic = ({
         B > 0 && React.createElement("div", {
           style: {
             flex: 1,
-            height: 2,
+            height: 3,
+            borderRadius: 2,
             background: v > B ? C.lime : C.border,
-            marginTop: 15
+            marginTop: 18.5,
+            marginLeft: -4,
+            marginRight: -4
           }
         }),
         React.createElement("div", {
@@ -3582,26 +3588,29 @@ const Ic = ({
           }
         }, React.createElement("div", {
           style: {
-            width: 30,
-            height: 30,
+            width: 40,
+            height: 40,
             borderRadius: "50%",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            fontSize: 12,
+            fontSize: current ? 17 : 15,
             fontWeight: 800,
             fontFamily: "inherit",
-            background: done || current ? C.lime : C.card,
+            lineHeight: 1,
+            background: done || current ? C.lime : "transparent",
             color: done || current ? "#fff" : C.textDim,
             border: `2px solid ${ done || current ? C.lime : C.border }`,
-            boxShadow: current ? `0 0 0 3px ${ C.lime }26` : "none"
+            boxShadow: current ? `0 0 0 4px ${ C.lime }24` : "none",
+            transition: "background .15s ease, box-shadow .15s ease"
           }
         }, done ? "✓" : num), React.createElement("div", {
           style: {
-            fontSize: 9.5,
-            fontWeight: current ? 800 : 700,
+            fontSize: 11,
+            fontWeight: current || done ? 800 : 600,
             color: current ? C.lime : done ? C.text : C.textDim,
-            textAlign: "center"
+            textAlign: "center",
+            letterSpacing: .01
           }
         }, h)));
     })), v === 1 && React.createElement("div", {
@@ -3640,10 +3649,15 @@ const Ic = ({
       key: sp.id,
       onClick: () => {
         setSport(sp.id);
+        /* Drop any selected category this sport cannot play, and move the
+           points target onto one this sport actually uses — badminton is not
+           played to 11, and carrom is not played to 21. */
         u(f.filter(id => {
           const c0 = l.find(x0 => x0.id === id);
           return c0 && formatsFor(sp.id).includes(c0.format);
         }));
+        const tg = sportOf(sp.id).targets || [];
+        tg.length && !tg.includes(Number(I)) && ae(String(tg[0]));
       },
       style: {
         padding: "8px 12px",
@@ -3866,11 +3880,7 @@ const Ic = ({
     }, "Points to Win"), React.createElement(Select, {
       value: I,
       onChange: ae,
-      options: [
-        11,
-        15,
-        21
-      ].map(h => ({
+      options: (sportOf(sport).targets || [11, 15, 21]).map(h => ({
         value: String(h),
         label: String(h)
       })),
@@ -3883,7 +3893,19 @@ const Ic = ({
         background: C.cardAlt,
         border: `1px solid ${ C.border }`
       }
-    }, React.createElement("div", {
+    }, sportOf(sport).setBased ? React.createElement("div", {
+      /* Tennis and padel are scored by games and sets, not a point target, so
+         none of these controls mean anything for them. */
+      style: { fontSize: 11, color: C.textDim, lineHeight: 1.5 }
+    }, React.createElement("b", { style: { color: C.text } }, sportOf(sport).name),
+      " is scored by games and sets. Enter final set scores when the match is done — the live court console does not cover set-based scoring yet."
+    ) : React.createElement(React.Fragment, null, sportOf(sport).serveModel === "turns" ? React.createElement("div", {
+      /* Carrom and chess are turn-based: there is no serve, so rally vs service
+         is not a question that exists. */
+      style: { fontSize: 10, color: C.textDim, marginBottom: 8, lineHeight: 1.5 }
+    }, React.createElement("b", { style: { color: C.text } }, sportOf(sport).name),
+      " is played in turns, so there is no serve — every point counts for whoever wins it."
+    ) : React.createElement(React.Fragment, null, React.createElement("div", {
       style: { fontSize: 9, fontWeight: 800, letterSpacing: .09, textTransform: "uppercase", color: C.textDim, marginBottom: 5 }
     }, "How points are scored"), React.createElement("div", {
       style: { display: "flex", gap: 6, marginBottom: 8 }
@@ -3907,7 +3929,12 @@ const Ic = ({
     }, React.createElement("div", { style: { fontSize: 11.5, fontWeight: 800 } }, opt.label),
       React.createElement("div", {
         style: { fontSize: 9, fontWeight: 600, opacity: .8 }
-      }, opt.hint)))), React.createElement("div", {
+      }, opt.hint))))), (sportOf(sport).targets || []).length === 1 && (sportOf(sport).targets || [])[0] === 1 ? React.createElement("div", {
+      /* A chess game is won, drawn or lost — there is no two-point rule to
+         configure, and offering one invites a nonsense setting. */
+      style: { fontSize: 10, color: C.textDim, lineHeight: 1.5 }
+    }, "A game is won, drawn or lost" + (sportOf(sport).draws ? " — draws count for both players." : ".")
+    ) : React.createElement(React.Fragment, null, React.createElement("div", {
       style: { fontSize: 9, fontWeight: 800, letterSpacing: .09, textTransform: "uppercase", color: C.textDim, marginBottom: 5 }
     }, "How the game ends"), React.createElement("div", {
       style: { display: "flex", gap: 6, marginBottom: 6 }
@@ -3961,7 +3988,7 @@ const Ic = ({
       style: { flex: 1, minWidth: 110 }
     })), React.createElement("div", {
       style: { fontSize: 10, color: C.textDim, marginTop: 6, lineHeight: 1.45 }
-    }, goldenInfo(I, winBy2, goldenAt, scoreType))), React.createElement("div", { style: { marginTop: 10 } }, React.createElement("label", {
+    }, goldenInfo(I, winBy2, goldenAt, scoreType))))), React.createElement("div", { style: { marginTop: 10 } }, React.createElement("label", {
       style: {
         fontSize: 10,
         color: C.textDim,
@@ -11834,45 +11861,6 @@ const fixtureTable = (matches, withData) => {
     <div class="cap">Left score box belongs to the team on the left, right box to the team on the right. The higher score wins &mdash; no separate winner column.</div>`;
 };
 
-/* Standings the way OSL prints them: P W L FOR AGAINST DIFF PTS, with the
-   qualifying places marked. Two points a win. */
-const standingsTable = (tourney, group, withData) => {
-  const teams = group.teams || [];
-  if (!teams.length) return "";
-  const played = (group.matches || []).filter(m => m.played);
-  const rows = teams.map(t => {
-    let p = 0, w = 0, l = 0, pf = 0, pa = 0;
-    played.forEach(m => {
-      const isA = m.teamA.id === t.id, isB = m.teamB.id === t.id;
-      if (!isA && !isB) return;
-      const mine = isA ? m.scoreA : m.scoreB, theirs = isA ? m.scoreB : m.scoreA;
-      p++; pf += mine; pa += theirs;
-      mine > theirs ? w++ : l++;
-    });
-    return { t, p, w, l, pf, pa, diff: pf - pa, pts: w * 2 };
-  }).sort((x, y) => y.w - x.w || y.diff - x.diff || y.pf - x.pf);
-  const advance = Number(tourney.topNAdvance) || 2;
-
-  return `<table class="st">
-      <tr><th class="c" style="width:28px">#</th><th>Team</th>
-        <th class="c" style="width:32px">P</th><th class="c" style="width:32px">W</th><th class="c" style="width:32px">L</th>
-        <th class="c" style="width:46px">For</th><th class="c" style="width:56px">Against</th>
-        <th class="c" style="width:46px">Diff</th><th class="c" style="width:40px">Pts</th></tr>
-      ${ rows.map((r, i) => `<tr>
-        <td class="c">${ i + 1 }</td>
-        <td class="${ withData && i < advance ? "win" : "" }">${ printEsc(teamName(r.t)) }${
-          withData && i < advance ? ` <span class="qual">&middot; qualified</span>` : "" }</td>
-        <td class="c">${ withData ? r.p : "" }</td>
-        <td class="c">${ withData ? r.w : "" }</td>
-        <td class="c">${ withData ? r.l : "" }</td>
-        <td class="c">${ withData ? r.pf : "" }</td>
-        <td class="c">${ withData ? r.pa : "" }</td>
-        <td class="c">${ withData ? (r.diff > 0 ? "+" : "") + r.diff : "" }</td>
-        <td class="c b">${ withData ? r.pts : "" }</td></tr>`).join("") }
-    </table>
-    <div class="cap">Order: wins, then point difference, then the head-to-head result between teams still level, then points scored.</div>`;
-};
-
 /* The score-margin grid. Worth the space because the row total IS the point
    difference that separates teams level on wins — and printed blank it is
    somewhere to work the table out by hand. */
@@ -11925,15 +11913,16 @@ const rulesLine = tourney => {
     (r.switchAt ? ` Ends change at ${ r.switchAt }.` : "") + `</div>`;
 };
 
-/* ONE PAGE PER GROUP: fixtures, standings and the margin grid together. */
+/* ONE PAGE PER GROUP: fixtures, then the margin grid.
+   No standings table — the margin grid already carries wins, difference and
+   rank, and it is the grid an organiser fills in by hand, so printing both was
+   asking for two sets of numbers to disagree with each other. */
 const groupSheet = (tourney, group, withData) =>
   `<div class="psheet">${
     printHead(tourney, `Group ${ group.label }`,
       [tourney.name, group.catName, group.court ? `Court ${ group.court }` : null].filter(Boolean).join(" · "))
   }<div class="sub">Fixtures</div>${
     fixtureTable(group.matches || [], withData)
-  }<div class="sub">Standings</div>${
-    standingsTable(tourney, group, withData)
   }${ marginGrid(group, withData) }${ rulesLine(tourney) }</div>`;
 
 const bracketSheet = (tourney, withData) => {
@@ -11963,9 +11952,8 @@ const printPack = (tourney, withData, only) => {
   if (only === "bracket") html = bracketSheet(tourney, withData);
   else if (only === "standings") {
     /* standings-only: every group on one sheet, which is what gets pinned up */
-    html = `<div class="psheet">${ printHead(tourney, "Standings") }` +
-      groups.map(g => `<div class="grp">Group ${ printEsc(g.label) }${ g.catName ? ` &middot; ${ printEsc(g.catName) }` : "" }</div>` +
-        standingsTable(tourney, g, withData)).join("") + rulesLine(tourney) + `</div>`;
+    html = `<div class="psheet">${ printHead(tourney, "Score margin") }` +
+      groups.map(g => marginGrid(g, withData)).join("") + rulesLine(tourney) + `</div>`;
   } else {
     html = groups.map(g => groupSheet(tourney, g, withData)).join("");
     if (only !== "fixtures") html += bracketSheet(tourney, withData);
