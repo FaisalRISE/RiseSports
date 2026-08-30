@@ -2,6 +2,13 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "rise-next",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["web/node_modules/next/dist/bin/next", "start", "web", "-p", "3000"],
+      "port": 3000,
+      "url": "http://localhost:3000"
+    },
+    {
       "name": "rise-sports",
       "runtimeExecutable": "node",
       "runtimeArgs": ["tools/serve.js", "8765"],

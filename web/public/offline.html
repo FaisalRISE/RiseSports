@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Offline — RISE Sports</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0; min-height: 100dvh; display: grid; place-items: center;
+        background: #0a0a0a; color: #e5e5e5; padding: 1.5rem;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      .card { max-width: 26rem; text-align: center; }
+      h1 { font-size: 1.25rem; font-weight: 900; margin: 0 0 .75rem; }
+      p { font-size: .875rem; line-height: 1.6; color: #a3a3a3; margin: 0 0 .75rem; }
+      .note {
+        margin-top: 1.25rem; padding: .75rem; border-radius: .75rem;
+        border: 1px solid #404040; background: #171717;
+        font-size: .8125rem; color: #d4d4d4;
+      }
+      button {
+        margin-top: 1rem; padding: .625rem 1.25rem; border-radius: .75rem;
+        border: 1px solid #525252; background: #262626; color: #e5e5e5;
+        font-weight: 700; font-size: .875rem; cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>No connection</h1>
+      <p>This page has not been opened on this device yet, so there is nothing saved to show.</p>
+      <p>A match you have already opened will still load and can still be scored offline.</p>
+      <div class="note">
+        Rallies scored offline are held on this phone and sent when the
+        connection returns. They are not saved until then.
+      </div>
+      <button onclick="location.reload()">Try again</button>
+    </div>
+  </body>
+</html>
