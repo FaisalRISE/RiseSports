@@ -42,3 +42,7 @@ next-env.d.ts
 
 # local PGlite database
 /.pgdata
+
+# screenshots the e2e scripts drop in the working directory
+/e2e-*.png
+/shot-*.png

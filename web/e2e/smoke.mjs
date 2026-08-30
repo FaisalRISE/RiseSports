@@ -1,7 +1,7 @@
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
-const B='http://localhost:3111';
+import { launch, BASE } from './harness.mjs';
+const B=BASE;
 let fails=0; const ok=(c,m)=>{console.log((c?'  ok   ':'  FAIL ')+m); if(!c)fails++;};
-const b=await chromium.launch({executablePath:'/opt/pw-browsers/chromium-1194/chrome-linux/chrome',proxy:{server:'direct://',bypass:'*'},args:['--no-proxy-server']});
+const b=await launch();
 const p=await b.newPage({viewport:{width:390,height:844}});
 const errs=[]; p.on('pageerror',e=>errs.push('pageerror: '+e.message));
 p.on('console',m=>{if(m.type()==='error')errs.push('console: '+m.text());});

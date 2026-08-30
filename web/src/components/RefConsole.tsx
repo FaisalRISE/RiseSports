@@ -245,7 +245,9 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
             Undo last point
           </button>
         )}
-        <span className="ml-auto text-[11px] font-semibold text-neutral-500">
+        {/* The connection banner also says "N rallies", so the e2e scripts need
+            to address this one exactly rather than by scanning the page. */}
+        <span data-testid="rally-count" className="ml-auto text-[11px] font-semibold text-neutral-500">
           {live.rallies} rallies{live.over ? " · match complete" : ""}
         </span>
       </div>

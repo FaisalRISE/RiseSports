@@ -15,7 +15,9 @@
     "seed": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs scripts/seed.ts",
     "db:setup": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs scripts/db-setup.ts",
     "e2e": "node e2e/smoke.mjs",
-    "e2e:event": "node e2e/event.mjs"
+    "e2e:event": "node e2e/event.mjs",
+    "e2e:offline": "node e2e/offline.mjs",
+    "e2e:divergence": "node e2e/divergence.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",
@@ -38,6 +40,7 @@
     "drizzle-orm": "^0.45.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.3",
+    "playwright": "^1.62.1",
     "tailwindcss": "^4",
     "tsx": "^4.23.12",
     "typescript": "^5",
