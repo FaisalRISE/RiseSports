@@ -14,11 +14,22 @@ Three requirements the single-file architecture could not meet:
   visitor — View Source is a runnable copy. Here the scoring engine, rating
   maths, championship points and PIN hashing execute in Server Components and
   Server Actions and are never sent to the browser.
-  `src/lib/__tests__/bundle-leak.test.ts` fails the build if that ever stops
-  being true.
+
+  The guarantee is `import "server-only"` at the top of every engine module,
+  which makes the **build fail**, with an import trace, if a Client Component
+  imports one. **A new module under `lib/` needs that line**, and
+  `src/lib/__tests__/bundle-leak.test.ts` fails if it is missing.
+
+  This used to work by grepping the built bundles for engine identifiers, and
+  that does not work: the minifier renames imported bindings, so importing
+  `calcRtgChange` into a client component shipped the whole rating algorithm to
+  the browser while all twenty name checks passed. Only string literals and
+  object-property names survive minification, which is all that scan is still
+  good for.
 - **Massive traffic.** Spectator pages are Server Components cached at the edge
   and revalidated on write. Scoring pages are dynamic.
-- **Easy to maintain.** TypeScript, one module per domain, 114 unit tests.
+- **Easy to maintain.** TypeScript, one module per domain, 252 unit tests plus
+  four end-to-end suites (`e2e/README.md`).
 
 ## Quick start
 
@@ -32,7 +43,14 @@ pnpm dev
 
 ```bash
 pnpm test                    # unit tests
-pnpm build && pnpm test      # also runs the client-bundle leak guard
+pnpm build && pnpm test      # also scans the built bundles for leaked secrets
+
+# end to end, in a real browser — see e2e/README.md
+pnpm exec playwright install chromium     # once per machine
+pnpm e2e            # smoke
+pnpm e2e:event      # a whole event, groups to knockout
+pnpm e2e:offline    # scoring with no network, the queue, the service worker
+pnpm e2e:divergence # two devices on one match, and the conflict prompt
 ```
 
 ## Access control is OFF for now
