@@ -1,3 +1,9 @@
+/* Build-time guarantee, not a convention: importing this from a Client
+   Component fails the build. Grepping the output bundle cannot do this — the
+   minifier renames every identifier, so the algorithm ships intact under a
+   one-letter name. See lib/__tests__/bundle-leak.test.ts. */
+import "server-only";
+
 /* Sports registry — ported from app.source.js:48-99.
  *
  * Everything sport-specific lives here. `scoring` and `serveModel` feed the
