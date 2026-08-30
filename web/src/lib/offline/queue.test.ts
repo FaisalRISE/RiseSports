@@ -154,3 +154,39 @@ describe("flushing", () => {
     expect(await loadQueued("m2")).not.toBeNull();
   });
 });
+
+/* Regression: found by killing the server with the page open.
+ *
+ * A Server Action rejects outright when the request cannot be made — which is
+ * the NORMAL offline case, not an exceptional one. It used to propagate out of
+ * flushMatch, so the console never ran its "failed" branch and showed queued
+ * rallies as saved. The rallies were never at risk (IndexedDB is written
+ * first); the lie to the referee was the bug. */
+describe("a push that rejects outright", () => {
+  const rec = { matchId: "m1", log: ["a", "b"] as Side[], baseRev: 3, queuedAt: 0 };
+
+  it("comes back as failed rather than throwing", async () => {
+    const out = await flushMatch(rec, async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    expect(out.status).toBe("failed");
+    if (out.status === "failed") expect(out.error).toBe("Failed to fetch");
+  });
+
+  it("keeps the queue so the rallies can still be sent later", async () => {
+    __resetQueue();
+    await saveQueued(rec);
+    await flushMatch(rec, async () => {
+      throw new Error("offline");
+    });
+    expect((await loadQueued("m1"))?.log).toEqual(["a", "b"]);
+  });
+
+  it("survives a rejection that is not an Error", async () => {
+    const out = await flushMatch(rec, async () => {
+      throw "gone";
+    });
+    expect(out.status).toBe("failed");
+    if (out.status === "failed") expect(out.error).toBe("No connection to the server");
+  });
+});

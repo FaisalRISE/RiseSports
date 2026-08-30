@@ -172,7 +172,23 @@ export async function flushMatch(
   let base = rec.baseRev;
 
   for (let i = 0; i < attempts; i++) {
-    const res = await push(rec.matchId, rec.log, base);
+    /* A Server Action REJECTS when the request cannot be made at all — no
+       route to the server, DNS gone, request aborted. That is the ordinary
+       offline case, not an exception, and it has to come back as "failed" like
+       any other: letting it throw past the caller means the console never
+       learns the rallies are unsaved and shows them as if they were. The
+       rallies themselves are safe either way, because they were written to
+       IndexedDB before this was ever called. */
+    let res: PushResult;
+    try {
+      res = await push(rec.matchId, rec.log, base);
+    } catch (e) {
+      return {
+        status: "failed",
+        matchId: rec.matchId,
+        error: e instanceof Error ? e.message : "No connection to the server",
+      };
+    }
 
     if (res.ok) {
       await clearQueued(rec.matchId);

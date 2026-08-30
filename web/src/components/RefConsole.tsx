@@ -100,9 +100,14 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
         type="button"
         disabled={locked}
         onClick={() => {
-          /* Once anything is queued, keep queueing: mixing a direct write into
-             a pending local log would apply rallies out of order. */
-          if (!off.online || off.queued > 0) off.scoreOffline(sideOf(t));
+          /* ONE path, always, whenever the browser can score this format.
+             Branching on `off.online` looked right and was wrong: a hall with
+             WiFi but no route to the server leaves navigator.onLine true, so
+             the first tap took the direct Server Action, the fetch rejected
+             inside the transition, and the rally was silently lost — the one
+             outcome this whole feature exists to prevent. Queue first, send
+             second: the rally is durable before anything can fail. */
+          if (off.canScoreOffline) off.scoreOffline(sideOf(t));
           else run(() => actions.score(view.matchId, sideOf(t), view.rev));
         }}
         aria-label={`Point to ${t.name}`}
@@ -157,7 +162,11 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
       {/* Connection state. A referee must always be able to tell "recorded on
           this phone" from "saved" — otherwise they cannot know what to re-enter
           if the phone dies. Never claim a queued rally is saved. */}
-      {(!off.online || off.queued > 0 || off.syncing) && (
+      {/* Shown only once a send has actually FAILED, or the browser reports
+          itself offline. Every tap queues now, so keying this off `queued > 0`
+          would flash a warning on every single point of a healthy match and
+          teach the referee to ignore the one banner that matters. */}
+      {(!off.online || off.stalled) && (
         <p
           role="status"
           className={[
@@ -167,9 +176,7 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
               : "border-neutral-600 bg-neutral-800 text-neutral-300",
           ].join(" ")}
         >
-          {off.syncing
-            ? "Saving queued rallies…"
-            : off.queued > 0
+          {off.queued > 0
               ? `${!off.online ? "Offline" : "No connection to the server"} — ${off.queued} ${off.queued === 1 ? "rally" : "rallies"} recorded on this phone, not yet saved. They will save on their own when the signal returns; keep scoring.`
               : off.canScoreOffline
                 ? "Offline — you can keep scoring, and it will save when the signal returns."
@@ -228,7 +235,9 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
             type="button"
             disabled={pending || live.rallies === 0 || !!off.conflict}
             onClick={() => {
-              if (!off.online || off.queued > 0) off.undoOffline();
+              /* Same single path as scoring above — an undo that vanishes into
+                 a rejected fetch is as bad as a lost point. */
+              if (off.canScoreOffline) off.undoOffline();
               else run(() => actions.undo(view.matchId, view.rev));
             }}
             className="rounded-lg border border-neutral-600 px-3 py-1.5 text-xs font-bold text-neutral-300 hover:border-neutral-400 disabled:opacity-40"
