@@ -47,6 +47,19 @@ const CLIENT_SAFE = [
   "offline/queue.ts", // IndexedDB queue; imports one type and nothing else
 ];
 
+/* A separate category, kept separate on purpose: these are NOT client-safe.
+ * They are imported by drizzle-kit and the `seed` / `db:setup` node scripts,
+ * which run outside Next's resolver and through tsx's CJS transform, where the
+ * `react-server` condition does not reach — so the marker throws there.
+ *
+ * They are also not engines. `schema.ts` is table definitions and `seed.ts` is
+ * demo data; neither carries an algorithm worth protecting. The module that
+ * does hold something sensitive — `db/index.ts`, which builds the connection —
+ * keeps its marker and is imported only from server code. */
+const TOOLING_SHARED = ["db/schema.ts", "db/seed.ts"];
+
+const EXEMPT = [...CLIENT_SAFE, ...TOOLING_SHARED];
+
 function libModules(): string[] {
   const out: string[] = [];
   const walk = (dir: string) => {
@@ -65,7 +78,7 @@ function libModules(): string[] {
 }
 
 const modules = libModules();
-const engines = modules.filter((m) => !CLIENT_SAFE.includes(m));
+const engines = modules.filter((m) => !EXEMPT.includes(m));
 
 describe("engine code cannot reach the browser", () => {
   /* The real guard. A missing marker here is the exact hole that let the rating
@@ -74,21 +87,31 @@ describe("engine code cannot reach the browser", () => {
     const src = fs.readFileSync(path.join(LIB, rel), "utf8");
     expect(
       /^import ["']server-only["'];?$/m.test(src),
-      `${rel} has no \`import "server-only"\`. Either add it, or — if this really ` +
-        `is meant to run in the browser — add it to CLIENT_SAFE with a reason.`,
+      `${rel} has no \`import "server-only"\`. Add it — or, with a reason, add ` +
+        `the file to CLIENT_SAFE (it is meant to run in the browser) or to ` +
+        `TOOLING_SHARED (a CLI script imports it and it holds no engine logic).`,
     ).toBe(true);
   });
 
-  /* The allowlist must not silently rot into "everything". */
-  it("the client-safe allowlist is small and every entry exists", () => {
+  /* The allowlists must not silently rot into "everything". */
+  it("the exemptions are few and every entry still exists", () => {
     expect(CLIENT_SAFE.length).toBeLessThanOrEqual(4);
-    for (const rel of CLIENT_SAFE) expect(modules, `${rel} is stale`).toContain(rel);
+    expect(TOOLING_SHARED.length).toBeLessThanOrEqual(3);
+    for (const rel of EXEMPT) expect(modules, `${rel} is stale`).toContain(rel);
   });
 
-  it("client-safe modules do NOT carry the marker (it would break them at runtime)", () => {
-    for (const rel of CLIENT_SAFE) {
+  /* db/index.ts builds the connection from DATABASE_URL. It is the one file
+     under db/ that must never be reachable from the browser, so it is called
+     out by name rather than left to the discovery above. */
+  it("the database connection module is marked, whatever else under db/ is not", () => {
+    const src = fs.readFileSync(path.join(LIB, "db/index.ts"), "utf8");
+    expect(/^import ["']server-only["'];?$/m.test(src)).toBe(true);
+  });
+
+  it("exempt modules do NOT carry the marker (it would throw where they run)", () => {
+    for (const rel of EXEMPT) {
       const src = fs.readFileSync(path.join(LIB, rel), "utf8");
-      expect(/^import ["']server-only["'];?$/m.test(src), `${rel} would throw in the browser`).toBe(false);
+      expect(/^import ["']server-only["'];?$/m.test(src), `${rel} would throw where it runs`).toBe(false);
     }
   });
 
