@@ -2,12 +2,14 @@ import { notFound } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { matches, players, teams, tournaments } from "@/lib/db/schema";
-import { viewMatch } from "@/lib/matchState";
+import { viewMatch, rulesFor } from "@/lib/matchState";
 import { principalFor } from "@/lib/auth/guard";
 import { canScore, canView } from "@/lib/auth/policy";
 import { RefConsole, type ConsoleTeam } from "@/components/RefConsole";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
-import { scorePoint, undoPoint, confirmRotation } from "../../actions";
+import { scorePoint, undoPoint, confirmRotation, pushLog } from "../../actions";
+import type { LiteRules } from "@/lib/scoring/replayLite";
+import type { Side } from "@/lib/scoring/replay";
 
 /* Never cached: this is the live scoring surface. */
 export const dynamic = "force-dynamic";
@@ -50,6 +52,22 @@ export default async function ScorePage({
 
   const view = viewMatch(row.tournament, row.match);
 
+  /* The resolved rules cross to the client as DATA, never as code: the browser
+     needs the numbers to score offline, but `resolveRules` and the format
+     presets stay here. See lib/scoring/replayLite.ts for where that line is. */
+  const rules = rulesFor(row.tournament);
+  const liteRules: LiteRules | null = rules
+    ? {
+        target: rules.target,
+        winBy: rules.winBy,
+        cap: rules.cap,
+        golden: rules.golden,
+        sideOut: rules.sideOut,
+        serve: rules.serve as LiteRules["serve"],
+        perCourt: rules.perCourt,
+      }
+    : null;
+
   return (
     <>
     <OpenAccessBanner />
@@ -66,7 +84,15 @@ export default async function ScorePage({
         teamA={consoleTeam(row.match.teamAId, row.match.lineupA)}
         teamB={consoleTeam(row.match.teamBId, row.match.lineupB)}
         canScore={canScore(principal)}
-        actions={{ score: scorePoint, undo: undoPoint, confirm: confirmRotation }}
+        actions={{ score: scorePoint, undo: undoPoint, confirm: confirmRotation, push: pushLog }}
+        offline={{
+          rules: liteRules,
+          format: row.tournament.format,
+          serverLog: (row.match.log ?? []) as Side[],
+          server: row.match.server as Side | null,
+          posA: row.match.posA as 0 | 1 | null,
+          posB: row.match.posB as 0 | 1 | null,
+        }}
       />
     </main>
     </>

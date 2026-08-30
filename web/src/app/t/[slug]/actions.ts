@@ -109,6 +109,54 @@ export async function undoPoint(matchId: string, expectedRev: number): Promise<A
   return res.ok ? { ok: true } : { ok: false, error: "Another device scored first — reloading." };
 }
 
+/** What a device gets back when its queued log could not be applied as-is. */
+export type PushResult =
+  | { ok: true; rev: number }
+  | { ok: false; reason: "stale"; serverLog: Side[]; rev: number }
+  | { ok: false; reason: "error"; error: string };
+
+/**
+ * Apply a whole log recorded offline.
+ *
+ * The single-rally actions above are wrong for a reconnecting device: it may
+ * hold several rallies, and replaying them one at a time would leave the match
+ * half-applied if the connection dropped again. `commitLog` already writes the
+ * ENTIRE array under a rev guard, so the whole queue lands atomically or not
+ * at all.
+ *
+ * On a stale rev this returns the SERVER'S log rather than just an error. The
+ * device cannot tell a lost response from a genuine two-device conflict without
+ * seeing it — and the difference matters, because one resolves silently and the
+ * other has to interrupt a referee. `lib/offline/queue.ts:classify` decides.
+ */
+export async function pushLog(matchId: string, log: Side[], expectedRev: number): Promise<PushResult> {
+  const id = idSchema.parse(matchId);
+  const incoming = z.array(sideSchema).max(500).parse(log);
+
+  let ctx: Ctx;
+  try {
+    ctx = await requireScorer(id);
+  } catch (e) {
+    return { ok: false, reason: "error", error: e instanceof Error ? e.message : "Not allowed" };
+  }
+
+  const current = (ctx.match.log as Side[]) ?? [];
+
+  /* Rotation gates are re-derived from the incoming log rather than trusted
+     from the device: an offline console cannot evaluate OSL rotation (it is not
+     shipped to the browser), so it may have queued rallies straight past a gate
+     it never knew was due. */
+  const a = incoming.filter((x) => x === "a").length;
+  const lead = Math.max(a, incoming.length - a);
+  const acked = ctx.tournament.format === "osl"
+    ? oslPruneAcks(lead, ctx.match.ackedGates ?? [])
+    : (ctx.match.ackedGates ?? []);
+
+  const res = await commitLog(ctx, incoming, acked, expectedRev);
+  if (res.ok) return { ok: true, rev: expectedRev + 1 };
+  return { ok: false, reason: "stale", serverLog: current, rev: ctx.match.rev };
+}
+
 /** Confirm a rotation (and, at 14, the change of ends). Rules 3.4 / 5.6. */
 export async function confirmRotation(matchId: string, gate: number, expectedRev: number): Promise<ActionResult> {
   const id = idSchema.parse(matchId);

@@ -1,8 +1,12 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import type { MatchView } from "@/lib/matchState";
 import type { Side } from "@/lib/scoring/replay";
+import type { LiteRules } from "@/lib/scoring/replayLite";
+import type { PushResult } from "@/lib/offline/queue";
+import { useOfflineScoring } from "./useOfflineScoring";
 
 /* The referee console.
  *
@@ -27,20 +31,51 @@ export type RefConsoleProps = {
     score: (matchId: string, side: Side, rev: number) => Promise<{ ok: true } | { ok: false; error: string }>;
     undo: (matchId: string, rev: number) => Promise<{ ok: true } | { ok: false; error: string }>;
     confirm: (matchId: string, gate: number, rev: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+    push: (matchId: string, log: Side[], baseRev: number) => Promise<PushResult>;
+  };
+  /** Rules and raw log as DATA, so the browser can keep scoring with no signal. */
+  offline: {
+    rules: LiteRules | null;
+    format: string | null;
+    serverLog: Side[];
+    server: Side | null;
+    posA: 0 | 1 | null;
+    posB: 0 | 1 | null;
   };
 };
 
-export function RefConsole({ view, teamA, teamB, canScore, actions }: RefConsoleProps) {
+export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: RefConsoleProps) {
   const [flipped, setFlipped] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
+  const router = useRouter();
+
+  const off = useOfflineScoring({
+    matchId: view.matchId,
+    rules: offline.rules,
+    format: offline.format,
+    serverLog: offline.serverLog,
+    serverRev: view.rev,
+    server: offline.server,
+    posA: offline.posA,
+    posB: offline.posB,
+    push: actions.push,
+    onSynced: () => router.refresh(),
+  });
+
+  /* While rallies are queued the browser's own replay is what is true on court;
+     the server's view is behind until they land. */
+  const live = off.local
+    ? { ...view, a: off.local.a, b: off.local.b, serving: off.local.serving, servePos: off.local.servePos,
+        over: off.local.over, winner: off.local.winner, golden: off.local.golden, rallies: off.local.rallies }
+    : view;
 
   /* Ends change at 14 in the OSL format, so the console mirrors itself to match
      where the teams are actually standing. */
-  const swapped = (view.osl?.endsChanged ?? false) !== flipped;
+  const swapped = (live.osl?.endsChanged ?? false) !== flipped;
   const left = swapped ? teamB : teamA;
   const right = swapped ? teamA : teamB;
-  const scoreOf = (t: ConsoleTeam) => (t.id === teamA.id ? view.a : view.b);
+  const scoreOf = (t: ConsoleTeam) => (t.id === teamA.id ? live.a : live.b);
   const sideOf = (t: ConsoleTeam): Side => (t.id === teamA.id ? "a" : "b");
 
   const run = (fn: () => Promise<{ ok: true } | { ok: false; error: string }>) => {
@@ -51,16 +86,25 @@ export function RefConsole({ view, teamA, teamB, canScore, actions }: RefConsole
     });
   };
 
-  const locked = view.locked || !canScore || pending;
-  const gate = view.osl?.pendingGate ?? 0;
+  /* Offline, the server cannot be asked whether a rotation is pending, so a
+     format that needs one is not scoreable here at all. */
+  const locked =
+    live.locked || !canScore || pending ||
+    (!off.online && !off.canScoreOffline) || !!off.conflict;
+  const gate = live.osl?.pendingGate ?? 0;
 
   const half = (t: ConsoleTeam, side: "left" | "right") => {
-    const serving = view.serving === sideOf(t);
+    const serving = live.serving === sideOf(t);
     return (
       <button
         type="button"
         disabled={locked}
-        onClick={() => run(() => actions.score(view.matchId, sideOf(t), view.rev))}
+        onClick={() => {
+          /* Once anything is queued, keep queueing: mixing a direct write into
+             a pending local log would apply rallies out of order. */
+          if (!off.online || off.queued > 0) off.scoreOffline(sideOf(t));
+          else run(() => actions.score(view.matchId, sideOf(t), view.rev));
+        }}
         aria-label={`Point to ${t.name}`}
         className={[
           "relative flex min-h-40 flex-1 flex-col justify-center gap-1 p-4 text-left transition",
@@ -70,7 +114,7 @@ export function RefConsole({ view, teamA, teamB, canScore, actions }: RefConsole
         style={{ background: t.colour ?? (side === "left" ? "#1b4f74" : "#17608a") }}
       >
         <div className="pr-7 text-[10px] font-bold uppercase tracking-widest text-white/70">
-          {serving ? `Serving · ${view.servePos === "R" ? "right / even" : "left / odd"}` : "Receiving"}
+          {serving ? `Serving · ${live.servePos === "R" ? "right / even" : "left / odd"}` : "Receiving"}
         </div>
         <div className="truncate text-base font-bold text-white drop-shadow">{t.name}</div>
         <div className="font-mono text-5xl font-black leading-none text-white drop-shadow">{scoreOf(t)}</div>
@@ -91,12 +135,12 @@ export function RefConsole({ view, teamA, teamB, canScore, actions }: RefConsole
 
   return (
     <div className="space-y-3">
-      {view.osl && (
+      {live.osl && (
         <div className="flex flex-wrap items-baseline gap-2 rounded-xl border border-neutral-700 bg-neutral-900 p-3">
           <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-400">On court</span>
-          <span className="text-xl font-black text-amber-400">{view.osl.pairLabel}</span>
-          <span className="text-[11px] font-semibold text-neutral-400">{view.osl.pairRange}</span>
-          {view.osl.endsChanged && (
+          <span className="text-xl font-black text-amber-400">{live.osl.pairLabel}</span>
+          <span className="text-[11px] font-semibold text-neutral-400">{live.osl.pairRange}</span>
+          {live.osl.endsChanged && (
             <span className="ml-auto text-[11px] font-semibold text-neutral-400">
               Ends changed — {left.name} now on the left
             </span>
@@ -104,10 +148,65 @@ export function RefConsole({ view, teamA, teamB, canScore, actions }: RefConsole
         </div>
       )}
 
-      {view.golden && !view.over && (
+      {live.golden && !live.over && (
         <p className="rounded-xl border border-rose-500 bg-rose-500/10 p-3 text-sm font-bold text-rose-300">
           ⚡ Golden point — the next rally wins the match.
         </p>
+      )}
+
+      {/* Connection state. A referee must always be able to tell "recorded on
+          this phone" from "saved" — otherwise they cannot know what to re-enter
+          if the phone dies. Never claim a queued rally is saved. */}
+      {(!off.online || off.queued > 0 || off.syncing) && (
+        <p
+          role="status"
+          className={[
+            "rounded-xl border p-3 text-sm font-bold",
+            off.queued > 0
+              ? "border-amber-500 bg-amber-500/10 text-amber-300"
+              : "border-neutral-600 bg-neutral-800 text-neutral-300",
+          ].join(" ")}
+        >
+          {off.syncing
+            ? "Saving queued rallies…"
+            : off.queued > 0
+              ? `${!off.online ? "Offline" : "No connection to the server"} — ${off.queued} ${off.queued === 1 ? "rally" : "rallies"} recorded on this phone, not yet saved. They will save on their own when the signal returns; keep scoring.`
+              : off.canScoreOffline
+                ? "Offline — you can keep scoring, and it will save when the signal returns."
+                : "Offline — this format is scored on the server, so scoring is paused until the signal returns."}
+        </p>
+      )}
+
+      {/* Two devices scored the same match. There is no safe automatic answer:
+          picking one silently discards real rallies from a real court. */}
+      {off.conflict && (
+        <div className="rounded-xl border-2 border-rose-500 bg-rose-500/10 p-4">
+          <h2 className="text-sm font-black uppercase tracking-wide text-rose-300">
+            Another device also scored this match
+          </h2>
+          <p className="mt-1 text-[13px] font-semibold text-neutral-300">
+            Both versions have rallies the other does not, so they cannot be merged automatically.
+            Check the court and choose which is right.
+          </p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => void off.resolveConflict("mine")}
+              className="rounded-lg border border-rose-400 bg-rose-500/20 p-3 text-left text-[13px] font-bold text-rose-200 hover:bg-rose-500/30"
+            >
+              Keep this phone&apos;s score
+              <span className="mt-1 block font-mono text-lg">{off.conflict.localLog.length} rallies</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void off.resolveConflict("theirs")}
+              className="rounded-lg border border-neutral-500 bg-neutral-800 p-3 text-left text-[13px] font-bold text-neutral-200 hover:bg-neutral-700"
+            >
+              Keep the saved score
+              <span className="mt-1 block font-mono text-lg">{off.conflict.serverLog.length} rallies</span>
+            </button>
+          </div>
+        </div>
       )}
 
       <div className="flex overflow-hidden rounded-xl shadow-lg">
@@ -127,15 +226,18 @@ export function RefConsole({ view, teamA, teamB, canScore, actions }: RefConsole
         {canScore && (
           <button
             type="button"
-            disabled={pending || view.rallies === 0}
-            onClick={() => run(() => actions.undo(view.matchId, view.rev))}
+            disabled={pending || live.rallies === 0 || !!off.conflict}
+            onClick={() => {
+              if (!off.online || off.queued > 0) off.undoOffline();
+              else run(() => actions.undo(view.matchId, view.rev));
+            }}
             className="rounded-lg border border-neutral-600 px-3 py-1.5 text-xs font-bold text-neutral-300 hover:border-neutral-400 disabled:opacity-40"
           >
             Undo last point
           </button>
         )}
         <span className="ml-auto text-[11px] font-semibold text-neutral-500">
-          {view.rallies} rallies{view.over ? " · match complete" : ""}
+          {live.rallies} rallies{live.over ? " · match complete" : ""}
         </span>
       </div>
 
@@ -145,24 +247,24 @@ export function RefConsole({ view, teamA, teamB, canScore, actions }: RefConsole
         </p>
       )}
 
-      {view.over && (
+      {live.over && (
         <p className="rounded-xl border border-emerald-500 bg-emerald-500/10 p-3 text-sm font-bold text-emerald-300">
-          🏆 {view.winner === "a" ? teamA.name : teamB.name} win {Math.max(view.a, view.b)}–{Math.min(view.a, view.b)}.
+          🏆 {live.winner === "a" ? teamA.name : teamB.name} win {Math.max(live.a, live.b)}–{Math.min(live.a, live.b)}.
         </p>
       )}
 
       {/* Blocking rotation confirmation — Rules 3.4, and at 14 also 5.6.
           Scoring stays locked until the referee says the players have swapped. */}
-      {gate > 0 && view.osl && (
+      {gate > 0 && live.osl && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
           <div className="w-full max-w-md rounded-2xl border-2 border-emerald-400 bg-neutral-900 p-5 text-center">
             <h2 className="text-xl font-black uppercase text-emerald-400">
-              {view.osl.pairLabel} on court · {gate} reached
+              {live.osl.pairLabel} on court · {gate} reached
             </h2>
             <p className="mt-1 text-sm font-semibold text-neutral-400">
-              {view.osl.pendingIsEndsChange
+              {live.osl.pendingIsEndsChange
                 ? "Teams change ends at 14 — the pair change and the end change happen together."
-                : `The score is not reset — ${view.osl.pairLabel} picks up from ${gate}.`}
+                : `The score is not reset — ${live.osl.pairLabel} picks up from ${gate}.`}
             </p>
             <dl className="my-4 space-y-2 text-left">
               {[teamA, teamB].map((t) => (
@@ -187,7 +289,7 @@ export function RefConsole({ view, teamA, teamB, canScore, actions }: RefConsole
               <p className="text-sm font-semibold text-neutral-400">Waiting for the referee to confirm.</p>
             )}
             <p className="mt-2 text-[11px] font-semibold text-neutral-500">
-              Scoring is paused until this is confirmed. {view.osl.switchSeconds}s to take position.
+              Scoring is paused until this is confirmed. {live.osl.switchSeconds}s to take position.
             </p>
           </div>
         </div>
