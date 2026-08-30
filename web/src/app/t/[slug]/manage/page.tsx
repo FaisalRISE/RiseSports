@@ -8,7 +8,10 @@ import { viewMatch } from "@/lib/matchState";
 import { sportOf } from "@/lib/sports/registry";
 import { oslLineupIssues } from "@/lib/formats/osl";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
-import { addTeam, addPlayer, removePlayer, addMatch, removeMatch } from "./actions";
+import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, generateGroups, generateKnockout, fillKnockoutSlots } from "./actions";
+import { loadTournament, groupTables, refResolver, resolveSlots } from "@/lib/tournamentState";
+import { StandingsTable } from "@/components/StandingsTable";
+import { allowsDraws } from "@/lib/matchState";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +26,7 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
     db.select().from(matches).where(eq(matches.tournamentId, t.id)),
   ]);
   const byTeam = new Map(teamRows.map((x) => [x.id, x]));
-  const nameOf = new Map(playerRows.map((p) => [p.id, p.name]));
+  const playerNameOf = new Map(playerRows.map((p) => [p.id, p.name]));
   const isOsl = t.format === "osl";
 
   const squadOf = (teamId: string) => playerRows.filter((p) => p.teamId === teamId);
@@ -32,6 +35,20 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
      at a different tournament by editing the form. */
   const addTeamHere = addTeam.bind(null, t.id);
   const addMatchHere = addMatch.bind(null, t.id);
+
+  const loaded = await loadTournament(slug);
+  const tables = loaded ? groupTables(loaded) : [];
+  const resolver = loaded ? refResolver(loaded, tables) : null;
+  const teamNameOf = (id: string) => teamRows.find((x) => x.id === id)?.name ?? "—";
+
+  /* An unfilled knockout side shows its seed reference in words rather than
+     "TBD", so an organiser can see where the team will come from. */
+  const slotLabel = (m: (typeof matchRows)[number], side: "a" | "b", teamName?: string) => {
+    if (teamName) return teamName;
+    if (!resolver) return "TBD";
+    const [ra, rb] = resolveSlots(m, resolver, teamNameOf);
+    return (side === "a" ? ra : rb).label;
+  };
 
   return (
     <>
@@ -117,6 +134,61 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
           )}
         </section>
 
+        {/* ---------- draw ---------- */}
+        <section>
+          <h2 className="mb-3 text-lg font-black">Draw</h2>
+          <div className="space-y-3 rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
+            <form action={generateGroups.bind(null, t.id)} className="grid gap-2 sm:grid-cols-[auto_1fr_auto]">
+              <label className="flex items-center gap-2 text-sm">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Groups</span>
+                <input name="groups" type="number" min={1} max={8} defaultValue={2}
+                  className="w-16 rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm" />
+              </label>
+              <input name="courts" placeholder="Court names, comma separated (optional)"
+                className="min-w-0 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm" />
+              <button className="rounded-lg bg-neutral-200 px-4 py-2 text-xs font-black text-neutral-900">
+                Draw groups &amp; fixtures
+              </button>
+            </form>
+            <p className="text-[11px] text-neutral-500">
+              Teams are snaked across the groups so the strong ones do not all land in group A, and each
+              group plays a full round robin with the rounds spread so a team rarely plays twice in a row.
+              Redrawing replaces the existing groups and their matches.
+            </p>
+
+            <form action={generateKnockout.bind(null, t.id)} className="flex flex-wrap items-center gap-2 border-t border-neutral-800 pt-3">
+              <label className="flex items-center gap-2 text-sm">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Qualify per group</span>
+                <input name="qualify" type="number" min={1} max={4} defaultValue={2}
+                  className="w-16 rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm" />
+              </label>
+              <button className="rounded-lg bg-neutral-200 px-4 py-2 text-xs font-black text-neutral-900">
+                Draw knockout
+              </button>
+            </form>
+            {/* A separate form: HTML forbids nesting one form inside another,
+                and React hydration fails outright if you try. */}
+            <form action={fillKnockoutSlots.bind(null, t.id)}>
+              <button className="rounded-lg border border-neutral-600 px-3 py-2 text-xs font-bold">
+                Fill resolved slots
+              </button>
+            </form>
+            <p className="text-[11px] text-neutral-500">
+              Knockout places are stored as references — A1, B2, W:Semi-Final 1 — and resolve themselves as
+              each group finishes, so a bracket can never be seeded from a half-played table.
+            </p>
+          </div>
+        </section>
+
+        {tables.length > 0 && (
+          <section className="space-y-3">
+            <h2 className="text-lg font-black">Standings</h2>
+            {tables.map((table) => (
+              <StandingsTable key={table.group.id} table={table} allowDraws={allowsDraws(t.sport)} />
+            ))}
+          </section>
+        )}
+
         {/* ---------- matches ---------- */}
         <section>
           <h2 className="mb-3 text-lg font-black">Matches</h2>
@@ -134,11 +206,11 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                       {v.over ? " · final" : v.rallies > 0 ? " · live" : ""}
                     </p>
                     <p className="truncate text-sm">
-                      {a?.name ?? "TBD"} <span className="font-mono font-bold">{v.a}–{v.b}</span> {b?.name ?? "TBD"}
+                      {slotLabel(m, "a", a?.name)} <span className="font-mono font-bold">{v.a}–{v.b}</span> {slotLabel(m, "b", b?.name)}
                     </p>
                     {m.lineupA.length > 0 && (
                       <p className="truncate text-[11px] text-neutral-500">
-                        {m.lineupA.map((id) => nameOf.get(id)).join(", ")}
+                        {m.lineupA.map((id) => playerNameOf.get(id)).join(", ")}
                       </p>
                     )}
                   </div>

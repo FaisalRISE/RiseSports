@@ -43,7 +43,6 @@ const half=p.locator('[aria-label^="Point to"]').first();
 await half.click(); await p.waitForTimeout(900);
 const after=await p.textContent('body');
 ok(after.includes('Pair B on court')||after.includes('7 reached'),'scoring the 7th point blocks with the Pair B confirmation');
-const scoreBefore=after.match(/\d+/g);
 // taps must be ignored while blocked
 await half.click({force:true}); await p.waitForTimeout(500);
 ok((await p.textContent('body')).includes('Pair B on court')||(await p.textContent('body')).includes('7 reached'),'further taps ignored while blocked');

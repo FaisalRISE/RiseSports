@@ -46,6 +46,13 @@ export default async function NewTournament({
               </span>
             </label>
             <label className="flex gap-3 rounded-xl border border-neutral-700 p-3">
+              <input type="radio" name="format" value="pickleboss" className="mt-1" />
+              <span>
+                <span className="block text-sm font-bold">Pickleboss</span>
+                <span className="block text-xs text-neutral-400">To 15, win by 2, with the two-point rule stopping at 17 so the 18th point decides it. Groups on separate courts, ranked on wins then point difference.</span>
+              </span>
+            </label>
+            <label className="flex gap-3 rounded-xl border border-neutral-700 p-3">
               <input type="radio" name="format" value="osl" className="mt-1" />
               <span>
                 <span className="block text-sm font-bold">OSL team event</span>

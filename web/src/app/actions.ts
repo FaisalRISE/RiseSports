@@ -24,7 +24,7 @@ function slugify(name: string): string {
 const createSchema = z.object({
   name: z.string().trim().min(2).max(80),
   sport: z.enum(SPORT_IDS as [string, ...string[]]),
-  format: z.enum(["standard", "osl"]),
+  format: z.enum(["standard", "osl", "pickleboss"]),
 });
 
 export async function createTournament(formData: FormData) {

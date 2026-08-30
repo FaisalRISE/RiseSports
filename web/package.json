@@ -14,7 +14,8 @@
     "db:studio": "drizzle-kit studio",
     "seed": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs scripts/seed.ts",
     "db:setup": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs scripts/db-setup.ts",
-    "e2e": "node e2e/smoke.mjs"
+    "e2e": "node e2e/smoke.mjs",
+    "e2e:event": "node e2e/event.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",
