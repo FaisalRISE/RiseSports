@@ -7,6 +7,8 @@
 
 import { resolveRules, type Rules } from "@/lib/scoring/rules";
 import { replayRallies, type ReplayState, type Side } from "@/lib/scoring/replay";
+import { picklebossRuleOverrides } from "@/lib/formats/pickleboss";
+import { TIEBREAKS, type ComparatorName } from "@/lib/standings";
 import {
   oslRuleOverrides, oslPairIndex, oslPendingRotation, oslPairSlots,
   PAIR_LABELS, PAIR_RANGES, OSL_SWITCH_SECONDS, type PairIndex,
@@ -35,10 +37,25 @@ export type MatchView = ReplayState & {
   osl: OslView | null;
 };
 
+/** Scoring overrides for a tournament's declared format, falling back to any
+ *  per-tournament overrides the organiser set. */
 export function rulesFor(t: Pick<Tournament, "sport" | "format" | "scoring">): Rules | null {
-  const overrides = t.format === "osl" ? oslRuleOverrides() : (t.scoring ?? undefined);
+  const preset =
+    t.format === "osl" ? oslRuleOverrides()
+    : t.format === "pickleboss" ? picklebossRuleOverrides()
+    : null;
+  const overrides = preset ?? (t.scoring ?? undefined);
   return resolveRules(t.sport, overrides as never);
 }
+
+/** The tie-break chain a format's tables are sorted by. They genuinely differ:
+ *  see lib/standings for why this cannot be one hardcoded order. */
+export function tieBreakFor(t: Pick<Tournament, "format">): ComparatorName[] {
+  return TIEBREAKS[t.format] ?? TIEBREAKS.standard;
+}
+
+/** Draws are only meaningful where the sport allows them (chess, carrom). */
+export const allowsDraws = (sport: string): boolean => sport === "ch" || sport === "cr";
 
 export function viewMatch(
   t: Pick<Tournament, "sport" | "format" | "scoring">,

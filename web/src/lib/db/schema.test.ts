@@ -44,8 +44,40 @@ describe("the generated migration applies to a real Postgres", () => {
     );
     const names = (rows.rows as { table_name: string }[]).map((r) => r.table_name);
     expect(names).toEqual([
-      "event_roles", "matches", "players", "scorer_grants", "teams", "tournaments", "users",
+      "event_roles", "groups", "matches", "players", "scorer_grants", "teams", "tournaments", "users",
     ]);
+  });
+
+  it("applies migrations incrementally, not just the first one", async () => {
+    /* 0001 added groups and the seed-ref slots. If only 0000 had run, these
+       columns would be missing and the query below would throw. */
+    const rows = await db.execute(
+      `select column_name from information_schema.columns
+       where table_name = 'matches' and column_name in ('group_id','slot_a','slot_b')
+       order by column_name`,
+    );
+    expect((rows.rows as { column_name: string }[]).map((r) => r.column_name))
+      .toEqual(["group_id", "slot_a", "slot_b"]);
+  });
+
+  it("keeps group keys unique within a tournament but not across them", async () => {
+    const t2 = await db.insert(schema.tournaments).values({
+      id: "other", slug: "other-cup", name: "Other Cup", ownerId: seeded.ownerId,
+    }).returning({ id: schema.tournaments.id });
+
+    await db.insert(schema.groups).values({ id: "g1", tournamentId: seeded.oslId, key: "A" });
+    // same key, different tournament: allowed
+    await db.insert(schema.groups).values({ id: "g2", tournamentId: t2[0].id, key: "A" });
+    // same key, same tournament: refused
+    await expect(
+      db.insert(schema.groups).values({ id: "g3", tournamentId: seeded.oslId, key: "A" }),
+    ).rejects.toThrow();
+
+    /* Clean up so later tests see only the seeded tournaments — these run
+       against one shared database, so a test that leaves rows behind breaks
+       its neighbours. */
+    await db.delete(schema.tournaments).where(eq(schema.tournaments.id, t2[0].id));
+    await db.delete(schema.groups).where(eq(schema.groups.id, "g1"));
   });
 
   it("enforces the unique slug", async () => {

@@ -29,10 +29,13 @@ function extract(src: string, name: string): string {
   return src.slice(start, i + 1);
 }
 
+/* The legacy engine is untyped JavaScript evaluated at runtime, so its return
+   shapes are genuinely unknown here — the tests compare them structurally
+   against the TypeScript port rather than trusting a hand-written type. */
 export type Legacy = {
-  resolveRules: (sport: string, over?: unknown) => any;
-  replayRallies: (m: unknown, r: unknown) => any;
-  rallyStats: (m: unknown, r: unknown, tp?: unknown) => any;
+  resolveRules: (sport: string, over?: unknown) => unknown;
+  replayRallies: (m: unknown, r: unknown) => unknown;
+  rallyStats: (m: unknown, r: unknown, tp?: unknown) => unknown;
 };
 
 export function loadLegacy(): Legacy {

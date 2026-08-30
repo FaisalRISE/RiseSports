@@ -77,6 +77,26 @@ export const players = pgTable(
   (t) => [index("players_tournament_idx").on(t.tournamentId), index("players_team_idx").on(t.teamId)],
 );
 
+/** A draw group: one court, one round-robin, its own table. Pickleboss runs
+ *  A-F across six courts; OSL runs two groups of four. */
+export const groups = pgTable(
+  "groups",
+  {
+    id: id(),
+    tournamentId: text("tournament_id").notNull().references(() => tournaments.id, { onDelete: "cascade" }),
+    /** "A", "B", ... — the letter used by seed references like "A1". */
+    key: text("key").notNull(),
+    name: text("name"),
+    court: text("court"),
+    position: integer("position").notNull().default(0),
+    createdAt: created(),
+  },
+  (t) => [
+    index("groups_tournament_idx").on(t.tournamentId),
+    uniqueIndex("groups_key_idx").on(t.tournamentId, t.key),
+  ],
+);
+
 export const matches = pgTable(
   "matches",
   {
@@ -86,8 +106,16 @@ export const matches = pgTable(
     court: integer("court"),
     scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
 
+    groupId: text("group_id").references(() => groups.id, { onDelete: "set null" }),
+
     teamAId: text("team_a_id").references(() => teams.id, { onDelete: "set null" }),
     teamBId: text("team_b_id").references(() => teams.id, { onDelete: "set null" }),
+
+    /* Seed references for a knockout slot that is not filled yet: "A1" is the
+       winner of group A, "W:SF1" the winner of an earlier tie. The slot resolves
+       to a team id as the results come in — see lib/brackets/resolveRef. */
+    slotA: text("slot_a"),
+    slotB: text("slot_b"),
 
     /** THE source of truth. One entry per rally: "a" or "b" for whoever won it. */
     log: jsonb("log").$type<Side[]>().notNull().default([]),
@@ -113,7 +141,10 @@ export const matches = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: created(),
   },
-  (t) => [index("matches_tournament_idx").on(t.tournamentId)],
+  (t) => [
+    index("matches_tournament_idx").on(t.tournamentId),
+    index("matches_group_idx").on(t.groupId),
+  ],
 );
 
 export const ROLES = ["PLAYER", "SCORER", "ORGANIZER", "ADMIN"] as const;
@@ -150,6 +181,7 @@ export const scorerGrants = pgTable(
 
 export type Tournament = typeof tournaments.$inferSelect;
 export type Team = typeof teams.$inferSelect;
+export type Group = typeof groups.$inferSelect;
 export type Player = typeof players.$inferSelect;
 export type Match = typeof matches.$inferSelect;
 export type EventRole = typeof eventRoles.$inferSelect;

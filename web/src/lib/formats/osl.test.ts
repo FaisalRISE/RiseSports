@@ -4,7 +4,7 @@ import { replayRallies, type Side } from "@/lib/scoring/replay";
 import {
   oslRuleOverrides, oslPairIndex, oslGateReached, oslPendingRotation, oslPruneAcks,
   oslPairSlots, oslLineupIssues, oslChampionship, oslPointsFor, oslPlaceByRecord,
-  OSL_MAX_POINTS, OSL_SPORTS, OSL_TARGET, PAIR_LABELS,
+  OSL_MAX_POINTS, OSL_SPORTS, PAIR_LABELS,
   type LineupPlayer, type SportRanking,
 } from "./osl";
 
