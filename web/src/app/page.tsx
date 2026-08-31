@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { desc } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { describeDbError } from "@/lib/db/error";
 import { tournaments } from "@/lib/db/schema";
 import { sportOf } from "@/lib/sports/registry";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
@@ -13,7 +14,7 @@ export default async function Home() {
   try {
     rows = await db.select().from(tournaments).orderBy(desc(tournaments.createdAt));
   } catch (e) {
-    dbError = e instanceof Error ? e.message : String(e);
+    dbError = describeDbError(e);
   }
 
   return (
@@ -47,10 +48,10 @@ export default async function Home() {
           <div className="mb-4 rounded-xl border border-rose-500 bg-rose-500/10 p-4 text-sm text-rose-200">
             <p className="font-bold">The database is not reachable.</p>
             <p className="mt-1 text-rose-300/80">
-              Run <code className="rounded bg-black/40 px-1">vercel install neon</code>, then{" "}
-              <code className="rounded bg-black/40 px-1">vercel env pull .env.local</code>, then{" "}
-              <code className="rounded bg-black/40 px-1">pnpm db:push</code> and{" "}
-              <code className="rounded bg-black/40 px-1">pnpm seed</code>.
+              Check <code className="rounded bg-black/40 px-1">DATABASE_URL</code>. Locally that is{" "}
+              <code className="rounded bg-black/40 px-1">pglite://.pgdata</code> plus{" "}
+              <code className="rounded bg-black/40 px-1">pnpm db:setup</code>; in production it is the
+              Supabase transaction pooler string, port 6543.
             </p>
             <p className="mt-2 font-mono text-[11px] text-rose-400/70">{dbError}</p>
           </div>
