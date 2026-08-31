@@ -8,7 +8,8 @@ import { viewMatch } from "@/lib/matchState";
 import { sportOf } from "@/lib/sports/registry";
 import { oslLineupIssues } from "@/lib/formats/osl";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
-import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, generateGroups, generateKnockout, fillKnockoutSlots } from "./actions";
+import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, generateGroups, generateKnockout, fillKnockoutSlots, seedByRating } from "./actions";
+import { SEED_BANDS } from "@/lib/rating";
 import { loadTournament, groupTables, refResolver, resolveSlots } from "@/lib/tournamentState";
 import { StandingsTable } from "@/components/StandingsTable";
 import { allowsDraws } from "@/lib/matchState";
@@ -106,15 +107,38 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                     </p>
                   )}
 
-                  <form action={addPlayer.bind(null, t.id, team.id)} className="flex gap-2">
-                    <input name="name" required placeholder="Player name"
-                      className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm" />
-                    <select name="gender" defaultValue="M"
-                      className="rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm">
-                      <option value="M">M</option>
-                      <option value="F">F</option>
-                    </select>
-                    <button className="rounded-lg border border-neutral-600 px-3 text-xs font-bold">Add</button>
+                  {/* Phone is what makes a RISE Rating follow the player. It is
+                      optional and unverified — an organiser typing it is only
+                      saying "same person as last week", which needs no OTP. If
+                      the number already exists, that person's rating comes with
+                      them; if not, DUPR or a placement band seeds a new one. */}
+                  <form action={addPlayer.bind(null, t.id, team.id)} className="space-y-2">
+                    <div className="flex gap-2">
+                      <input name="name" required placeholder="Player name"
+                        className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm" />
+                      <select name="gender" defaultValue="M"
+                        className="rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm">
+                        <option value="M">M</option>
+                        <option value="F">F</option>
+                      </select>
+                      <button className="rounded-lg border border-neutral-600 px-3 text-xs font-bold">Add</button>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <input name="phone" inputMode="tel" placeholder="Phone (optional)"
+                        className="min-w-0 flex-1 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-xs" />
+                      <input name="dupr" inputMode="decimal" placeholder="DUPR"
+                        className="w-20 rounded-lg border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-xs" />
+                      <select name="band" defaultValue=""
+                        className="min-w-0 flex-1 rounded-lg border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-xs">
+                        <option value="">Starting level…</option>
+                        {SEED_BANDS.map((b) => (
+                          <option key={b.seed} value={b.seed}>{b.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <p className="text-[10px] leading-snug text-neutral-600">
+                      No phone: their rating works here but will not follow them to another event.
+                    </p>
                   </form>
                 </div>
               );
@@ -155,6 +179,21 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
               group plays a full round robin with the rounds spread so a team rarely plays twice in a row.
               Redrawing replaces the existing groups and their matches.
             </p>
+
+            {/* The point of the whole rating: the snake above draws from the
+                seed order, so putting SKILL into that column is the entire
+                change. Deliberately a button rather than automatic — an
+                organiser knows things the number does not, and their own order
+                must not be silently overwritten. */}
+            <form action={seedByRating.bind(null, t.id)} className="flex flex-wrap items-center gap-2 border-t border-neutral-800 pt-3">
+              <button className="rounded-lg border border-amber-500/60 bg-amber-500/10 px-3 py-1.5 text-xs font-black text-amber-300 hover:bg-amber-500/20">
+                📈 Seed by RISE Rating
+              </button>
+              <span className="text-[11px] text-neutral-500">
+                Orders the teams by their players&apos; average rating before you draw. Teams with nobody
+                linked to a RISE profile go last — no rating is not the same as a low one.
+              </span>
+            </form>
 
             <form action={generateKnockout.bind(null, t.id)} className="flex flex-wrap items-center gap-2 border-t border-neutral-800 pt-3">
               <label className="flex items-center gap-2 text-sm">

@@ -6,12 +6,15 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/lib/db";
-import { groups, matches, players, teams, tournaments } from "@/lib/db/schema";
+import { groups, matches, people, players, teams, tournaments } from "@/lib/db/schema";
 import { principalFor } from "@/lib/auth/guard";
 import { canManage, assert } from "@/lib/auth/policy";
 import { planGroups, knockoutRefsFromGroups } from "@/lib/formats/pickleboss";
 import { resolveRef } from "@/lib/brackets";
 import { loadTournament, groupTables, refResolver } from "@/lib/tournamentState";
+import { findOrCreatePerson, carriedRating, peopleForTournament } from "@/lib/people";
+import { ratingFormatFor } from "@/lib/rating/tournament";
+import { ratingKey } from "@/lib/sports/registry";
 
 /* Same discipline as the scoring actions: load, authorize server-side, write.
  * With RISE_OPEN_ACCESS unset these assertions pass for everyone; with it set
@@ -44,20 +47,112 @@ export async function addTeam(tournamentId: string, formData: FormData) {
   revalidatePath(`/t/${t.slug}/manage`);
 }
 
+/**
+ * Add a player, linking them to a PERSON so their rating follows them.
+ *
+ * Matching is by phone only. A name is not an identity — auto-merging two
+ * "Rahul S" entries would fuse two people's ratings, and unpicking that is far
+ * harder than tolerating a duplicate. Where an organiser wants to reuse someone
+ * whose number they do not have, they pick from the roster search
+ * (`personId` in the form) instead.
+ *
+ * No phone and no pick still works: the player exists, gets a rating inside
+ * this event, and simply has nothing to carry it elsewhere.
+ */
 export async function addPlayer(tournamentId: string, teamId: string, formData: FormData) {
   const t = await requireManager(tournamentId);
   const parsed = name.safeParse(formData.get("name"));
   const gender = formData.get("gender") === "F" ? "F" : "M";
   if (!parsed.success) return;
 
+  const pickedId = String(formData.get("personId") ?? "").trim();
+  const phone = String(formData.get("phone") ?? "").trim();
+  const duprRaw = String(formData.get("dupr") ?? "").trim();
+  const bandRaw = String(formData.get("band") ?? "").trim();
+
+  const roster = await db.select().from(players).where(eq(players.tournamentId, t.id));
+  const formatKey = ratingKey(t.sport, ratingFormatFor([...roster, { gender, teamId } as never]));
+
+  let personId: string | null = null;
+  let carried: number | null = null;
+
+  if (pickedId) {
+    const [existing] = await db.select().from(people).where(eq(people.id, pickedId)).limit(1);
+    if (existing) {
+      personId = existing.id;
+      carried = carriedRating(existing, t.sport, ratingFormatFor(roster));
+    }
+  } else if (phone || duprRaw || bandRaw) {
+    const dupr = duprRaw ? Number(duprRaw) : null;
+    const band = bandRaw ? Number(bandRaw) : null;
+    const { person } = await findOrCreatePerson({
+      name: parsed.data,
+      gender,
+      phone: phone || null,
+      dupr: Number.isFinite(dupr) && dupr! > 0 ? dupr : null,
+      bandSeed: Number.isFinite(band) && band! > 0 ? band : null,
+      formatKey,
+      seededBy: t.ownerId,
+    });
+    personId = person.id;
+    carried = carriedRating(person, t.sport, ratingFormatFor(roster));
+  }
+
   await db.insert(players).values({
     id: randomUUID(),
     tournamentId: t.id,
     teamId,
+    personId,
     name: parsed.data,
     gender,
-    ratings: {},
+    /* The rating they bring IN. The per-event view starts here; the person's
+       own record is what actually moves. */
+    ratings: carried == null ? {} : { [formatKey]: carried },
   });
+  revalidatePath(`/t/${t.slug}/manage`);
+}
+
+/**
+ * Seed the draw by RISE Rating instead of arrival order.
+ *
+ * This is the point of the whole rating: `planGroups` already snake-drafts from
+ * `teams.seed`, so putting a skill order into that column is the entire change.
+ * Left as an explicit action rather than done automatically — an organiser
+ * knows things the number does not, and their manual order must not be silently
+ * overwritten.
+ *
+ * Teams with nobody linked to a person sort last: no evidence is not the same
+ * as a low rating, and burying them at the top of the draw would be worse than
+ * leaving them at the bottom.
+ */
+export async function seedByRating(tournamentId: string) {
+  const t = await requireManager(tournamentId);
+
+  const rows = await db.select().from(players).where(eq(players.tournamentId, t.id));
+  const roster = await peopleForTournament(t.id);
+  const teamRows = await db.select().from(teams).where(eq(teams.tournamentId, t.id));
+
+  const strengthOf = (teamId: string): number | null => {
+    const ids = rows.filter((p) => p.teamId === teamId && p.personId).map((p) => p.personId!);
+    const ratings = ids
+      .map((id) => roster.get(id)?.riseBest)
+      .filter((r): r is number => typeof r === "number");
+    if (ratings.length === 0) return null;
+    return ratings.reduce((s, n) => s + n, 0) / ratings.length;
+  };
+
+  const ranked = teamRows
+    .map((tm) => ({ id: tm.id, name: tm.name, strength: strengthOf(tm.id) }))
+    .sort((a, b) => {
+      if (a.strength == null && b.strength == null) return a.name.localeCompare(b.name);
+      if (a.strength == null) return 1;
+      if (b.strength == null) return -1;
+      return b.strength - a.strength;
+    });
+
+  for (let i = 0; i < ranked.length; i++) {
+    await db.update(teams).set({ seed: i + 1 }).where(eq(teams.id, ranked[i].id));
+  }
   revalidatePath(`/t/${t.slug}/manage`);
 }
 

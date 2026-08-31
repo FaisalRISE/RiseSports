@@ -15,6 +15,13 @@
       "when": 1788093570653,
       "tag": "0001_many_ser_duncan",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788157663763,
+      "tag": "0002_amusing_living_lightning",
+      "breakpoints": true
     }
   ]
 }

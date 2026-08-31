@@ -68,6 +68,10 @@ export const players = pgTable(
     tournamentId: text("tournament_id").notNull().references(() => tournaments.id, { onDelete: "cascade" }),
     teamId: text("team_id").references(() => teams.id, { onDelete: "set null" }),
     userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
+    /* The person this entry is. Null on rows created before the roster existed,
+       and on anyone the organiser added without linking — their rating still
+       works inside the event, it just cannot follow them out of it. */
+    personId: text("person_id").references(() => people.id, { onDelete: "set null" }),
     name: text("name").notNull(),
     gender: text("gender").$type<"M" | "F">().notNull().default("M"),
     /** Sport-namespaced ratings, e.g. { "pb:md": 1020 }. */
@@ -179,6 +183,118 @@ export const scorerGrants = pgTable(
   (t) => [uniqueIndex("scorer_grants_token_idx").on(t.token), index("scorer_grants_tournament_idx").on(t.tournamentId)],
 );
 
+/* ── The person ───────────────────────────────────────────────────────────
+ *
+ * A RISE Rating is only useful if it follows the player, so it hangs off a
+ * PERSON, not off a tournament entry. `players` stays what it was — the
+ * per-event row carrying team, line-up and gender — and now points here.
+ *
+ * Deliberately NOT `users`. That table is an auth account: `email` is NOT NULL
+ * and unique, which is wrong for the club player who will never log in and is
+ * exactly the person whose rating matters most.
+ *
+ * `phone` is the key, and it is UNVERIFIED. An organiser adding someone to a
+ * draw is asserting "this is the same Rahul as last week", which needs no OTP
+ * and costs nothing; verification belongs to the day a player claims their own
+ * profile, so SMS spend scales with engaged players rather than roster size.
+ * `phoneVerified` stays false until auth ships, and this column is already the
+ * login id when it does.
+ *
+ * It is NULLABLE because some people will not give a number — several NULLs are
+ * allowed under a unique index in Postgres. Such a person still gets a rating;
+ * it just cannot follow them anywhere else, and the UI should say so.
+ *
+ * Treat the number as personal data: normalised to E.164 for matching, never
+ * rendered on a public page, never placed in a URL. */
+export const people = pgTable(
+  "people",
+  {
+    id: id(),
+    /** E.164, e.g. "+919876543210". Unique, nullable, unverified. */
+    phone: text("phone"),
+    phoneVerified: boolean("phone_verified").notNull().default(false),
+    name: text("name").notNull(),
+    gender: text("gender").$type<"M" | "F">().notNull().default("M"),
+
+    /* Spec §2: independent ratings per format — singles and doubles are
+       different skills and must not share a number. Keyed "pb:md". */
+    riseRatings: jsonb("rise_ratings").$type<Record<string, number>>().notNull().default({}),
+    /** max() across formats. Display and SEEDING only — never fed back in. */
+    riseBest: integer("rise_best"),
+    /** Completed matches per format, for the provisional multiplier (§5). */
+    matchCount: jsonb("match_count").$type<Record<string, number>>().notNull().default({}),
+
+    /** Spec §7. 0–100. Decayed by inactivity — the RATING never is. */
+    reliability: integer("reliability"),
+    /** Spec §6.2 — per partner: matches, wins, avg partner/opponent rating. */
+    partnerStats: jsonb("partner_stats").$type<Record<string, unknown>>().notNull().default({}),
+    lastPlayedAt: timestamp("last_played_at", { withTimezone: true }),
+    flags: jsonb("flags").$type<Record<string, unknown>>().notNull().default({}),
+
+    /* DUPR is a STARTING REFERENCE, not a mirror. Many players never update it,
+       which is the reason RiseR exists — so the date is stored and shown, and
+       the number is converted once via seedFromDupr. */
+    dupr: integer("dupr_x100"),
+    duprEnteredAt: timestamp("dupr_entered_at", { withTimezone: true }),
+
+    /** Spec §3: an organiser-set seed must be attributable. */
+    seedSource: text("seed_source").$type<"dupr" | "organiser" | "default">(),
+    seededBy: text("seeded_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: created(),
+  },
+  (t) => [
+    uniqueIndex("people_phone_idx").on(t.phone),
+    index("people_name_idx").on(t.name),
+  ],
+);
+
+/* Spec §9. Every INPUT recorded, not just the result, because "when a player
+ * disputes a rating — and they will — the organiser needs to show the working."
+ *
+ * The unique index is what makes applying a match idempotent: a re-save cannot
+ * move a rating twice. Undoing a match deletes its rows. */
+export const ratingHistory = pgTable(
+  "rating_history",
+  {
+    id: id(),
+    personId: text("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+    format: text("format").notNull(),
+    matchId: text("match_id").notNull().references(() => matches.id, { onDelete: "cascade" }),
+    ratingBefore: integer("rating_before").notNull(),
+    ratingAfter: integer("rating_after").notNull(),
+    deltaApplied: integer("delta_applied").notNull(),
+    /** The working, so a disputed rating can be explained rather than asserted. */
+    expected: integer("expected_x1000").notNull(),
+    marginMultiplier: integer("margin_x1000").notNull(),
+    stageMultiplier: integer("stage_x1000").notNull(),
+    verificationWeight: integer("verification_x1000").notNull(),
+    provisionalMultiplier: integer("provisional_x1000").notNull(),
+    /** Which damping actually fired, so a small delta is explainable. */
+    notes: jsonb("notes").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: created(),
+  },
+  (t) => [
+    uniqueIndex("rating_history_match_person_format_idx").on(t.matchId, t.personId, t.format),
+    index("rating_history_person_idx").on(t.personId),
+  ],
+);
+
+/* Spec §5 and §6.1. Conservation is deliberately broken in two places — the
+ * provisional multiplier and the doubles carry guard — and the difference is
+ * WRITTEN DOWN rather than silently minted or destroyed. */
+export const ratingLedger = pgTable(
+  "rating_ledger",
+  {
+    id: id(),
+    matchId: text("match_id").notNull().references(() => matches.id, { onDelete: "cascade" }),
+    /** Points created (+) or destroyed (−) by this match. */
+    imbalance: integer("imbalance").notNull(),
+    reason: text("reason").notNull(),
+    createdAt: created(),
+  },
+  (t) => [index("rating_ledger_match_idx").on(t.matchId)],
+);
+
 export type Tournament = typeof tournaments.$inferSelect;
 export type Team = typeof teams.$inferSelect;
 export type Group = typeof groups.$inferSelect;
@@ -186,3 +302,6 @@ export type Player = typeof players.$inferSelect;
 export type Match = typeof matches.$inferSelect;
 export type EventRole = typeof eventRoles.$inferSelect;
 export type ScorerGrant = typeof scorerGrants.$inferSelect;
+export type Person = typeof people.$inferSelect;
+export type RatingHistory = typeof ratingHistory.$inferSelect;
+export type RatingLedger = typeof ratingLedger.$inferSelect;

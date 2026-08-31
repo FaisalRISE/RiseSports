@@ -11,6 +11,7 @@ import { principalFor, grantCookieName, GRANT_COOKIE_OPTIONS } from "@/lib/auth/
 import { canScore, canManage, assert } from "@/lib/auth/policy";
 import { verifyPin, generateGrantToken } from "@/lib/auth/pin";
 import { viewMatch } from "@/lib/matchState";
+import { applyMatchRatings, revertMatchRatings } from "@/lib/rating/apply";
 import { oslPruneAcks } from "@/lib/formats/osl";
 import type { Side } from "@/lib/scoring/replay";
 
@@ -66,9 +67,37 @@ async function commitLog(
     .returning({ id: matches.id });
 
   if (updated.length === 0) return { ok: false, reason: "stale" };
+
+  await syncRatings(ctx, log, ackedGates);
+
   revalidatePath(`/t/${ctx.tournament.slug}`);
   revalidatePath(`/t/${ctx.tournament.slug}/score/${ctx.match.id}`);
+  revalidatePath(`/t/${ctx.tournament.slug}/ratings`);
   return { ok: true };
+}
+
+/**
+ * Move people's RISE Ratings when a match crosses the finish line, and put them
+ * back if an undo takes it back over that line.
+ *
+ * Gated on the TRANSITION rather than on the current state, so the common case
+ * — a referee tapping a rally mid-game — does no database work at all. Applying
+ * on every write would put a query in the hot path of every point.
+ *
+ * Failures are swallowed deliberately: a rating that did not move is a problem
+ * for later, but a rally that would not save because of it is a problem on
+ * court right now. The match is already committed at this point.
+ */
+async function syncRatings(ctx: Ctx, log: Side[], ackedGates: number[]) {
+  try {
+    const wasOver = viewMatch(ctx.tournament, ctx.match).over;
+    const isOver = viewMatch(ctx.tournament, { ...ctx.match, log, ackedGates, typedScoreA: null, typedScoreB: null }).over;
+    if (wasOver === isOver) return;
+    if (isOver) await applyMatchRatings(ctx.match.id);
+    else await revertMatchRatings(ctx.match.id);
+  } catch (e) {
+    console.error("rating sync failed for match", ctx.match.id, e);
+  }
 }
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
@@ -186,7 +215,18 @@ export async function setTypedScore(matchId: string, a: number, b: number): Prom
     .set({ typedScoreA: sa, typedScoreB: sb, log: [], rev: ctx.match.rev + 1, updatedAt: new Date() })
     .where(eq(matches.id, id));
 
+  /* A typed score IS a result, so it moves ratings like any other. Re-applied
+     from scratch because the score may have been corrected: revert first, then
+     apply, which the idempotency guard would otherwise refuse. */
+  try {
+    await revertMatchRatings(id);
+    await applyMatchRatings(id);
+  } catch (e) {
+    console.error("rating sync failed for typed score", id, e);
+  }
+
   revalidatePath(`/t/${ctx.tournament.slug}`);
+  revalidatePath(`/t/${ctx.tournament.slug}/ratings`);
   return { ok: true };
 }
 

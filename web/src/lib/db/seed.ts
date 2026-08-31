@@ -11,7 +11,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { matches, players, teams, tournaments, users } from "./schema";
+import { matches, people, players, teams, tournaments, users } from "./schema";
 import type { Side } from "@/lib/scoring/replay";
 
 type Db = {
@@ -63,12 +63,40 @@ export async function seed(db: Db) {
   }));
   await insert(teams, clubTeams);
 
-  const clubPlayers = clubTeams.flatMap((t) =>
-    [1, 2].map((n) => ({
-      id: id(), tournamentId: clubId, teamId: t.id,
-      name: `${t.name} ${n}`, gender: (n === 2 ? "F" : "M") as "M" | "F",
-      ratings: { "pb:md": 1000 + n * 25 },
-    })),
+  /* Every seeded club player is a PERSON, so the demo data actually shows what
+     RiseR is for: a rating that follows the player between events. Without a
+     linked person a match cannot move anything, and the seed would quietly
+     demonstrate the opposite of the product.
+
+     The phone numbers are documentation-range placeholders, not real. */
+  const clubPeople = clubTeams.flatMap((t, ti) =>
+    [1, 2].map((n) => {
+      const rating = 1000 + n * 25;
+      return {
+        id: id(),
+        phone: `+9199000${String(ti * 2 + n).padStart(5, "0")}`,
+        phoneVerified: false,
+        name: `${t.name} ${n}`,
+        gender: (n === 2 ? "F" : "M") as "M" | "F",
+        riseRatings: { "pb:mx": rating },
+        riseBest: rating,
+        matchCount: {},
+        seedSource: "organiser" as const,
+        seededBy: ownerId,
+      };
+    }),
+  );
+  await insert(people, clubPeople);
+
+  const clubPlayers = clubTeams.flatMap((t, ti) =>
+    [1, 2].map((n) => {
+      const person = clubPeople[ti * 2 + (n - 1)];
+      return {
+        id: id(), tournamentId: clubId, teamId: t.id, personId: person.id,
+        name: person.name, gender: person.gender,
+        ratings: { "pb:mx": person.riseBest },
+      };
+    }),
   );
   await insert(players, clubPlayers);
 

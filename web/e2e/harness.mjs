@@ -78,10 +78,30 @@ export const text = (page, sel = "body") =>
  * when the console showed 22. Every offline assertion silently measured the
  * wrong number until this was pinned down. */
 export async function rallyCount(page) {
-  const el = await page.$("[data-testid='rally-count']");
-  if (!el) return null;
-  const m = (await el.textContent()).match(/(\d+)\s+rallies/);
-  return m ? Number(m[1]) : null;
+  return retryOnNavigation(page, async () => {
+    const el = await page.$("[data-testid='rally-count']");
+    if (!el) return null;
+    const m = (await el.textContent()).match(/(\d+)\s+rallies/);
+    return m ? Number(m[1]) : null;
+  });
+}
+
+/**
+ * Re-read once if the page navigated mid-read.
+ *
+ * Scoring triggers a router refresh, so a DOM read started just before one
+ * lands dies with "Execution context was destroyed". That is the test racing
+ * the app, not a defect in it — retrying once is the honest fix, and anything
+ * still failing afterwards is real.
+ */
+async function retryOnNavigation(page, read) {
+  try {
+    return await read();
+  } catch (e) {
+    if (!/Execution context was destroyed|Target closed/.test(String(e))) throw e;
+    await page.waitForTimeout(400);
+    return read();
+  }
 }
 
 /** The two scores, left to right as rendered. */
@@ -107,8 +127,10 @@ export const tap = (page, teamName) =>
 
 /** The connection banner's text, or null when no banner is shown. */
 export async function banner(page) {
-  const el = await page.$("p[role='status']");
-  return el ? (await el.textContent()).replace(/\s+/g, " ").trim() : null;
+  return retryOnNavigation(page, async () => {
+    const el = await page.$("p[role='status']");
+    return el ? (await el.textContent()).replace(/\s+/g, " ").trim() : null;
+  });
 }
 
 /** What is actually sitting in the offline queue, read from the page. */
