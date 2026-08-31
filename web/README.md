@@ -1,6 +1,6 @@
 # RISE Sports — web platform
 
-Next.js 16 (App Router) + TypeScript on Vercel, with Neon Postgres. This is the
+Next.js 16 (App Router) + TypeScript on Vercel, with Postgres. This is the
 rebuild described in `../CLAUDE.md` under "Architecture reversal (2026-08-29)".
 
 The single-file app at the repository root still serves production while this
@@ -28,18 +28,50 @@ Three requirements the single-file architecture could not meet:
   good for.
 - **Massive traffic.** Spectator pages are Server Components cached at the edge
   and revalidated on write. Scoring pages are dynamic.
-- **Easy to maintain.** TypeScript, one module per domain, 252 unit tests plus
-  four end-to-end suites (`e2e/README.md`).
+- **Easy to maintain.** TypeScript, one module per domain, 362 unit tests plus
+  six end-to-end suites (`e2e/README.md`).
+
+## The database
+
+**Production is the Supabase project `utfvjsvvbifwcektzrwj`** — the same project
+the legacy `Format/` apps use, on its own set of tables. It is reached through
+the **transaction pooler** (port 6543), which is why `src/lib/db/index.ts` sets
+`prepare: false`; pgBouncer in transaction mode has no prepared statements.
+
+`DATABASE_URL` is the only setting. Point it at:
+
+| Value | What runs |
+|---|---|
+| `pglite://.pgdata` | Postgres compiled to WASM, in that directory. No server, no account. This is what local dev, all unit tests and all six e2e suites use. |
+| a `postgresql://…:6543/…` string | The real thing. |
+
+**Both are Postgres and both support transactions, and that is the point.** This
+was previously `drizzle-orm/neon-http`, whose `transaction()` method is a single
+`throw`. The app opens transactions in four places — submitting a registration,
+approving one into a team, applying ratings, reverting them — so all four would
+have failed on the first deploy, two of them silently inside a `try/catch`. It
+survived three milestones undetected because every test ran on PGlite and
+nothing had ever run against the production driver. Do not swap this back for an
+HTTP driver.
+
+RLS is enabled on every table with **no policies**, which closes Supabase's
+public PostgREST API completely — `people` holds names and phone numbers, and
+the anon key is published in the old app's HTML. The app is unaffected: it
+connects as the table owner, and owners bypass RLS. Supabase's linter reports
+"RLS enabled, no policy" on all 14 tables; that is the intended state, not a
+finding.
 
 ## Quick start
 
 ```bash
 pnpm install
-vercel install neon          # provisions Postgres, sets DATABASE_URL
-vercel env pull .env.local
-pnpm drizzle-kit push        # apply the schema
+echo 'DATABASE_URL=pglite://.pgdata' > .env.local
+pnpm db:setup                # create the tables (and seed demo data)
 pnpm dev
 ```
+
+PGlite is **single-process**: stop the dev server before running `db:setup`,
+`seed` or any script that opens `.pgdata`, or it corrupts.
 
 ```bash
 pnpm test                    # unit tests
@@ -51,6 +83,8 @@ pnpm e2e            # smoke
 pnpm e2e:event      # a whole event, groups to knockout
 pnpm e2e:offline    # scoring with no network, the queue, the service worker
 pnpm e2e:divergence # two devices on one match, and the conflict prompt
+pnpm e2e:carryover  # a rating that follows a player between tournaments
+pnpm e2e:registration # a stranger enters from the public page; an organiser approves
 ```
 
 ## Access control is OFF for now

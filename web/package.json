@@ -18,13 +18,14 @@
     "e2e:event": "node e2e/event.mjs",
     "e2e:offline": "node e2e/offline.mjs",
     "e2e:divergence": "node e2e/divergence.mjs",
+    "e2e:carryover": "node e2e/carryover.mjs",
     "e2e:registration": "node e2e/registration.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",
-    "@neondatabase/serverless": "^1.1.0",
     "next": "16.3.3",
     "next-auth": "5.0.0-beta.32",
+    "postgres": "^3.4.9",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "server-only": "^0.0.1",

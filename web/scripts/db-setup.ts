@@ -29,12 +29,15 @@ async function main() {
     for (const s of statements) await client.exec(s);
     await seed(drizzle(client, { schema }) as never);
   } else {
-    const { neon } = await import("@neondatabase/serverless");
-    const { drizzle } = await import("drizzle-orm/neon-http");
-    const sql = neon(url!);
-    /* neon() is a tagged-template function; .query() takes a plain string. */
-    for (const s of statements) await sql.query(s);
+    /* postgres-js rather than an HTTP driver — see lib/db/index.ts for why:
+       the HTTP one cannot open a transaction, and the seed writes several
+       related rows. `prepare: false` for Supabase's pgBouncer pooler. */
+    const { default: postgres } = await import("postgres");
+    const { drizzle } = await import("drizzle-orm/postgres-js");
+    const sql = postgres(url!, { prepare: false, max: 1 });
+    for (const s of statements) await sql.unsafe(s);
     await seed(drizzle(sql, { schema }) as never);
+    await sql.end();
   }
   console.log("Database ready. Try /t/club-night and /t/osl-2026");
 }

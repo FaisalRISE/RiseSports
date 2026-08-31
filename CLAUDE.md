@@ -77,8 +77,7 @@ Three deliberate reversals, decided 2026-08-27:
 ## Architecture reversal (2026-08-29): Next.js after all
 
 The 2026-08-27 decision to stay single-file is **reversed**. The rebuild lives in `web/`
-(Next.js 16 App Router + TypeScript, Neon Postgres, deployed as a separate Vercel project);
-see `web/README.md`.
+(Next.js 16 App Router + TypeScript, Supabase Postgres); see `web/README.md`.
 
 **Do not treat this as drift.** The earlier decision was correct on the evidence it had. It
 weighed exactly one thing — the multi-device gap — and concluded that Supabase sync solved it
@@ -99,13 +98,22 @@ than 13.3k lines mixing minified single-letter locals with readable ones.
 
 Consequences for anyone working in this repo:
 
-- The root single-file app is **still production** and still deploys from `main`. Do not break
-  it. Feature work on it is frozen; fixes only, until `web/` reaches parity.
-- `web/` is developed on the `next` branch against a **second Vercel project** with its own
-  preview domain. `rise-sports.vercel.app` keeps serving the single-file app until cutover.
-- The new app has its **own Neon database**. It does not touch the Supabase project
-  (`utfvjsvvbifwcektzrwj`), which stays with the legacy per-event `Format/` apps — those keep
-  their own PIN access and serve a different purpose.
+- The root single-file app is **frozen, and no longer served** (cutover 2026-08-31). It stays
+  in the repo — it is still the only home of community play, venues, the ledger screen and
+  Americano/Mexicano — but the Vercel project now builds `web/`. Do not break it; fixes only.
+- **`rise-sports.vercel.app` serves the Next.js app.** One Vercel project, Root Directory
+  `web`. There is no second project; anything named `rise-sports-web` is a stray to delete.
+- The new app uses the **same Supabase project** (`utfvjsvvbifwcektzrwj`) as the legacy
+  per-event `Format/` apps, on its own 14 tables — no name collides with `osl_live`,
+  `live_scores` or `app_backups`. Neon was briefly used during development and is gone; it was
+  an unnecessary second vendor, and its HTTP driver could not open a transaction (see
+  `web/README.md`). It connects through the **transaction pooler**, port 6543.
+  - **Its tables have RLS on and no policies**, which shuts Supabase's public PostgREST API
+    off entirely — `people` holds names and phone numbers, and the anon key is published in
+    the old app's HTML. The app is unaffected because it connects as the table owner, and
+    owners bypass RLS. The linter's 14 "RLS enabled, no policy" notices are the intended
+    state. Adding a policy would *open* those tables to the world; don't, without deciding
+    what should be public.
 - Domain logic was **ported, not rewritten**. `web/src/lib/` carries the scoring engine, sports
   registry, ledger money engine and rating engine across, with the legacy engine extracted by
   text from `app.source.js` and used as a differential test oracle. Two deliberate behaviour
@@ -115,9 +123,8 @@ Consequences for anyone working in this repo:
   format module, `web/src/lib/formats/osl.ts`, rather than a separate event app.
 
 Also superseded: the note above that `Files for claude code/CLAUDE.md` "was not adopted". Its
-**architecture** section (Next.js + Supabase) is now closer to the direction of travel, though
-its scope section still is not — multi-sport and the auction module are in scope, and the
-database is Neon rather than Supabase.
+**architecture** section (Next.js + Supabase) is now what was built. Its scope section still
+is not — multi-sport and the auction module are in scope.
 
 ## Critical constraints
 
@@ -276,7 +283,13 @@ apps and, from Wave 0.3, by RISE Sports itself. Rows are namespaced by an event 
 `<event>:<kind>:<id>`.
 
 **Tables:** `osl_live` (live state, one row per match/nomination/config), `app_backups`,
-`live_scores`.
+`live_scores` — all three belong to the legacy apps and everything below describes them.
+
+The Next.js app added **14 tables of its own** here on 2026-08-31 (`tournaments`, `people`,
+`players`, `teams`, `matches`, `registrations`, `rating_history`, …). They share nothing but
+the project: different access path (a pooled Postgres connection as the owner, not PostgREST),
+different lock (RLS on with no policies, so the anon key cannot reach them at all), and no
+`osl_put`. Schema is `web/src/lib/db/schema.ts`; migrations are `web/drizzle/*.sql`.
 
 **Write path — locked down 2026-08-28.** All writes go through the `osl_put` RPC, which
 enforces the Lamport counter the clients keep (`where excluded.rev >= l.rev`) so a stale
