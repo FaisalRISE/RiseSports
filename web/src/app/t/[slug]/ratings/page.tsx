@@ -30,7 +30,7 @@ export default async function RatingsPage({ params }: { params: Promise<{ slug: 
   const loaded = await loadTournament(slug);
   if (!loaded) notFound();
   const t = loaded.tournament;
-  if (!canView(await principalFor(t.id), t.published)) notFound();
+  if (!canView(await principalFor(t.id), t.status)) notFound();
 
   const people = await db.select().from(playersTable).where(eq(playersTable.tournamentId, t.id));
   const rows = await tournamentRatings(t, people);

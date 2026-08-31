@@ -42,7 +42,38 @@ export const tournaments = pgTable(
     /** Argon2/scrypt hash of the scorer PIN. Never the PIN itself. */
     scorerPinHash: text("scorer_pin_hash"),
     startsAt: timestamp("starts_at", { withTimezone: true }),
-    published: boolean("published").notNull().default(false),
+
+    /* The lifecycle, replacing the old `published` boolean.
+     *
+     *   draft    — being set up; only the organiser sees it
+     *   open     — the public registration page accepts entries
+     *   live     — play has started; registration closed
+     *   finished — done
+     *
+     * ONE field, not a status plus a `published` flag: two columns that can
+     * disagree is the trap this codebase keeps avoiding. `canView` derives
+     * visibility from it. */
+    status: text("status").$type<TournamentStatus>().notNull().default("draft"),
+
+    /* ── Registration settings ─────────────────────────────────────────── */
+    /** Shown at the top of the public page. */
+    about: text("about"),
+    registrationOpensAt: timestamp("registration_opens_at", { withTimezone: true }),
+    registrationClosesAt: timestamp("registration_closes_at", { withTimezone: true }),
+    /** Squad-size limits enforced when an entry is submitted. */
+    minTeamSize: integer("min_team_size").notNull().default(1),
+    maxTeamSize: integer("max_team_size").notNull().default(2),
+    /** INTEGER PAISE, never a float — see lib/finance for why. 0 = free. */
+    entryFee: integer("entry_fee_paise").notNull().default(0),
+    /** Keep the entrant list off the public page until the draw is made. */
+    hideEntrants: boolean("hide_entrants").notNull().default(false),
+    /** Extra questions on the entry form. Configuration, not entities — nothing
+     *  joins to them, so they live here rather than in their own table. */
+    formFields: jsonb("form_fields").$type<FormField[]>().notNull().default([]),
+    /** Each must be accepted before an entry can be submitted. */
+    waivers: jsonb("waivers").$type<Waiver[]>().notNull().default([]),
+    venue: text("venue"),
+
     createdAt: created(),
   },
   (t) => [uniqueIndex("tournaments_slug_idx").on(t.slug)],
@@ -183,6 +214,103 @@ export const scorerGrants = pgTable(
   (t) => [uniqueIndex("scorer_grants_token_idx").on(t.token), index("scorer_grants_tournament_idx").on(t.tournamentId)],
 );
 
+export type TournamentStatus = "draft" | "open" | "live" | "finished";
+
+/** An organiser-defined question on the entry form. */
+export type FormField = {
+  id: string;
+  question: string;
+  type: "text" | "choice" | "number";
+  /** For `choice`. */
+  options?: string[];
+  required: boolean;
+};
+
+export type Waiver = { id: string; title: string; body: string };
+
+/* ── Registration ─────────────────────────────────────────────────────────
+ *
+ * The point of all of this: players supply their OWN name and phone, instead of
+ * an organiser typing both. A phone number is what makes a RISE Rating follow
+ * someone between events, so this is where ratings actually start working
+ * without data entry.
+ *
+ * An entry never touches the draw on its own. It sits as `pending` until an
+ * organiser approves it, and only then does it become a team with players
+ * linked to people. */
+
+/** Optional skill bands a registrant picks between. */
+export const divisions = pgTable(
+  "divisions",
+  {
+    id: id(),
+    tournamentId: text("tournament_id").notNull().references(() => tournaments.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** Free text — "3.0-3.5", "Advanced", whatever the organiser runs. */
+    description: text("description"),
+    position: integer("position").notNull().default(0),
+    createdAt: created(),
+  },
+  (t) => [index("divisions_tournament_idx").on(t.tournamentId)],
+);
+
+export type RegistrationStatus = "pending" | "approved" | "declined" | "withdrawn";
+export type PaymentState = "unpaid" | "paid" | "waived";
+
+export const registrations = pgTable(
+  "registrations",
+  {
+    id: id(),
+    tournamentId: text("tournament_id").notNull().references(() => tournaments.id, { onDelete: "cascade" }),
+    divisionId: text("division_id").references(() => divisions.id, { onDelete: "set null" }),
+    teamName: text("team_name").notNull(),
+    /** Whoever submitted it — the person to contact about this entry. */
+    contactName: text("contact_name").notNull(),
+    contactPhone: text("contact_phone"),
+    contactEmail: text("contact_email"),
+    /** Answers keyed by FormField id. */
+    answers: jsonb("answers").$type<Record<string, string>>().notNull().default({}),
+    waiversAccepted: jsonb("waivers_accepted").$type<string[]>().notNull().default([]),
+
+    /* Declined and withdrawn are STATES, not deletions: an organiser needs to
+       see who applied and what became of them. */
+    status: text("status").$type<RegistrationStatus>().notNull().default("pending"),
+    /** Set when approved, so the entry points at what it became. */
+    teamId: text("team_id").references(() => teams.id, { onDelete: "set null" }),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    /** Why it was declined — the registrant deserves a reason. */
+    note: text("note"),
+
+    /* Money is RECORDED here, never moved. Collection stays off-app (UPI or
+       cash), exactly as venue bookings already work. */
+    paymentState: text("payment_state").$type<PaymentState>().notNull().default("unpaid"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+
+    createdAt: created(),
+  },
+  (t) => [
+    index("registrations_tournament_idx").on(t.tournamentId),
+    index("registrations_status_idx").on(t.tournamentId, t.status),
+  ],
+);
+
+/** The players on an entry. Phone is the field that makes this worth building. */
+export const registrationPlayers = pgTable(
+  "registration_players",
+  {
+    id: id(),
+    registrationId: text("registration_id").notNull().references(() => registrations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    phone: text("phone"),
+    gender: text("gender").$type<"M" | "F">().notNull().default("M"),
+    position: integer("position").notNull().default(0),
+    /** Filled in on approval, once matched or created in the roster. */
+    personId: text("person_id").references(() => people.id, { onDelete: "set null" }),
+    createdAt: created(),
+  },
+  (t) => [index("registration_players_registration_idx").on(t.registrationId)],
+);
+
 /* ── The person ───────────────────────────────────────────────────────────
  *
  * A RISE Rating is only useful if it follows the player, so it hangs off a
@@ -302,6 +430,9 @@ export type Player = typeof players.$inferSelect;
 export type Match = typeof matches.$inferSelect;
 export type EventRole = typeof eventRoles.$inferSelect;
 export type ScorerGrant = typeof scorerGrants.$inferSelect;
+export type Division = typeof divisions.$inferSelect;
+export type Registration = typeof registrations.$inferSelect;
+export type RegistrationPlayer = typeof registrationPlayers.$inferSelect;
 export type Person = typeof people.$inferSelect;
 export type RatingHistory = typeof ratingHistory.$inferSelect;
 export type RatingLedger = typeof ratingLedger.$inferSelect;

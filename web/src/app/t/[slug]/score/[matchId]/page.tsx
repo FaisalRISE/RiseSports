@@ -30,7 +30,7 @@ export default async function ScorePage({
   if (!row) notFound();
 
   const principal = await principalFor(row.tournament.id);
-  if (!canView(principal, row.tournament.published)) notFound();
+  if (!canView(principal, row.tournament.status)) notFound();
 
   const [teamRows, playerRows] = await Promise.all([
     db.select().from(teams).where(eq(teams.tournamentId, row.tournament.id)),

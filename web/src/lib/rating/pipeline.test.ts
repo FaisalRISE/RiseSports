@@ -54,7 +54,7 @@ beforeAll(async () => {
   await db.insert(users).values({ id: ids.owner, email: "t@e.st", name: "Organiser" });
   await db.insert(tournaments).values({
     id: ids.tournament, slug: "pipeline", name: "Pipeline", sport: "pb",
-    format: "standard", ownerId: ids.owner, published: true,
+    format: "standard", ownerId: ids.owner, status: "live",
   });
   await db.insert(teams).values([
     { id: ids.teamA, tournamentId: ids.tournament, name: "A", seed: 1 },

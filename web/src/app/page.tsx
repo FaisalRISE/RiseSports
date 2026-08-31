@@ -70,7 +70,7 @@ export default async function Home() {
                     <p className="text-[11px] font-bold uppercase tracking-widest text-neutral-500">
                       {sport.name}
                       {t.format === "osl" ? " · OSL team format" : ""}
-                      {t.published ? "" : " · draft"}
+                      {t.status === "draft" ? " · draft" : t.status === "open" ? " · entries open" : t.status === "live" ? " · live" : ""}
                     </p>
                   </div>
                   <Link

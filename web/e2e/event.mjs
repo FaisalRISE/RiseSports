@@ -1,4 +1,4 @@
-import { launch, BASE } from './harness.mjs';
+import { launch, BASE, createTournament } from './harness.mjs';
 const B=BASE;
 let fails=0; const ok=(c,m)=>{console.log((c?'  ok   ':'  FAIL ')+m); if(!c)fails++;};
 const b=await launch();
@@ -8,11 +8,9 @@ p.on('console',m=>{if(m.type()==='error')errs.push('console: '+m.text().slice(0,
 const txt=async(sel='body')=>(await p.textContent(sel)).replace(/\s+/g,' ');
 
 console.log('\n== create a Pickleboss tournament ==');
-await p.goto(B+'/new'); await p.waitForTimeout(500);
-await p.fill('input[name="name"]','Friyayy Cup');
-await p.check('input[value="pickleboss"]');
-await p.click('button[type="submit"]');
-await p.waitForURL(/\/manage/,{timeout:20000}); await p.waitForTimeout(500);
+/* Through the wizard now — /new is three steps with the sport and format as
+   cards. The helper lives in harness.mjs so this is not re-derived per script. */
+await createTournament(p,'Friyayy Cup',{sport:'Pickleball',format:'Pickleboss'});
 ok((await txt()).includes('Friyayy Cup'),'created and on the manage page');
 
 console.log('\n== add 6 teams ==');

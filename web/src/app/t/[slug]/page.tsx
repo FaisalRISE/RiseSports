@@ -19,7 +19,7 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
   if (!loaded) notFound();
 
   const t = loaded.tournament;
-  if (!canView(await principalFor(t.id), t.published)) notFound();
+  if (!canView(await principalFor(t.id), t.status)) notFound();
 
   const sport = sportOf(t.sport);
   const tables = groupTables(loaded);

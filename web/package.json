@@ -17,7 +17,8 @@
     "e2e": "node e2e/smoke.mjs",
     "e2e:event": "node e2e/event.mjs",
     "e2e:offline": "node e2e/offline.mjs",
-    "e2e:divergence": "node e2e/divergence.mjs"
+    "e2e:divergence": "node e2e/divergence.mjs",
+    "e2e:registration": "node e2e/registration.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

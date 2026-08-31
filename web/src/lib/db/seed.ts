@@ -45,8 +45,15 @@ export function buildLog(a: number, b: number): Side[] {
 }
 
 export async function seed(db: Db) {
-  const insert = <T,>(table: T, values: unknown) =>
-    (db.insert as unknown as (t: T) => { values: (v: unknown) => Promise<unknown> })(table).values(values);
+  /* `values: unknown` costs real safety, and it has already bitten: `published:
+     true` survived here long after the column was replaced by `status`, because
+     drizzle silently ignores keys it does not recognise. It typechecked, it
+     ran, and every seeded tournament quietly came out as a draft.
+     `$inferInsert` per table is what makes that a compile error instead. */
+  const insert = <T extends { $inferInsert: unknown }>(
+    table: T,
+    values: T["$inferInsert"] | T["$inferInsert"][],
+  ) => (db.insert as unknown as (t: T) => { values: (v: unknown) => Promise<unknown> })(table).values(values);
 
   const ownerId = id();
   await insert(users, { id: ownerId, email: "demo@rise.sports", name: "Demo Organiser" });
@@ -55,7 +62,11 @@ export async function seed(db: Db) {
   const clubId = id();
   await insert(tournaments, {
     id: clubId, slug: "club-night", name: "Thursday Club Night",
-    sport: "pb", format: "standard", ownerId, published: true,
+    sport: "pb", format: "standard", ownerId, status: "open" as const,
+    /* Entries open, with a fee, so the public /e/ page has something to show. */
+    entryFee: 30000, minTeamSize: 2, maxTeamSize: 2,
+    about: "Casual doubles every Thursday. All levels welcome.",
+    venue: "Arena Sports Club",
   });
 
   const clubTeams = ["Smashers", "Dinkers", "Volley Llamas", "Net Gains"].map((name, i) => ({
@@ -121,7 +132,7 @@ export async function seed(db: Db) {
   const oslId = id();
   await insert(tournaments, {
     id: oslId, slug: "osl-2026", name: "Odyssey Sports League 2026",
-    sport: "pb", format: "osl", ownerId, published: true,
+    sport: "pb", format: "osl", ownerId, status: "live" as const,
   });
 
   const oslTeams = ["Zen Masters", "Smash Syndicate", "C & C Warriors", "Podium Finishers"].map((name, i) => ({

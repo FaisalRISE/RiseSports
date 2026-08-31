@@ -44,8 +44,9 @@ describe("the generated migration applies to a real Postgres", () => {
     );
     const names = (rows.rows as { table_name: string }[]).map((r) => r.table_name);
     expect(names).toEqual([
-      "event_roles", "groups", "matches", "people", "players",
-      "rating_history", "rating_ledger", "scorer_grants", "teams", "tournaments", "users",
+      "divisions", "event_roles", "groups", "matches", "people", "players",
+      "rating_history", "rating_ledger", "registration_players", "registrations",
+      "scorer_grants", "teams", "tournaments", "users",
     ]);
   });
 

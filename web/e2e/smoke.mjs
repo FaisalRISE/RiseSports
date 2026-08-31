@@ -1,4 +1,4 @@
-import { launch, BASE } from './harness.mjs';
+import { launch, BASE, createTournament } from './harness.mjs';
 const B=BASE;
 let fails=0; const ok=(c,m)=>{console.log((c?'  ok   ':'  FAIL ')+m); if(!c)fails++;};
 const b=await launch();
@@ -63,10 +63,8 @@ await semi.locator('a:has-text("Score")').click(); await p.waitForTimeout(700);
 ok((await p.textContent('body')).includes('Golden point'),'24-24 shows the golden point');
 
 console.log('\n== create a tournament ==');
-await p.goto(B+'/new'); await p.waitForTimeout(400);
-await p.fill('input[name="name"]','E2E Test Cup');
-await p.selectOption('select[name="sport"]','bd');
-await p.click('button[type="submit"]'); await p.waitForTimeout(1200);
+/* The wizard: sport card, format card, then the name. */
+await createTournament(p,'E2E Test Cup',{sport:'Badminton',format:'Standard'});
 ok(p.url().includes('/manage'),'create redirects to manage ('+p.url()+')');
 ok((await p.textContent('body')).includes('E2E Test Cup'),'new tournament shown');
 

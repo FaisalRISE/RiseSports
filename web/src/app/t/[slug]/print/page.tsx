@@ -31,7 +31,7 @@ export default async function PrintPage({
   const loaded = await loadTournament(slug);
   if (!loaded) notFound();
   const t = loaded.tournament;
-  if (!canView(await principalFor(t.id), t.published)) notFound();
+  if (!canView(await principalFor(t.id), t.status)) notFound();
 
   const tables = groupTables(loaded);
   const resolver = refResolver(loaded, tables);

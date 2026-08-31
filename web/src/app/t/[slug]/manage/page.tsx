@@ -63,6 +63,23 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
             {sportOf(t.sport).name}{isOsl ? " · OSL team format" : ""} ·{" "}
             <Link href={`/t/${slug}`} className="text-amber-400 underline">public page</Link>
           </p>
+
+          {/* Where entries are configured and decided on. Split out rather than
+              added to this page, which is already long. */}
+          <nav className="mt-3 flex flex-wrap gap-2">
+            <Link
+              href={`/t/${slug}/manage/registration`}
+              className="rounded-lg border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-xs font-black text-amber-300 hover:bg-amber-500/20"
+            >
+              📝 Registration
+            </Link>
+            <Link
+              href={`/e/${slug}`}
+              className="rounded-lg border border-neutral-700 px-3 py-2 text-xs font-bold text-neutral-300 hover:border-neutral-500"
+            >
+              Public entry page ↗
+            </Link>
+          </nav>
         </header>
 
         {/* ---------- teams and squads ---------- */}

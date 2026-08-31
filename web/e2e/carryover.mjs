@@ -12,7 +12,7 @@
  *
  * Run against a production build, same as the other suites. */
 
-import { launch, BASE, makeOk, watchErrors, text, realErrors } from "./harness.mjs";
+import { launch, BASE, makeOk, watchErrors, text, realErrors, createTournament as wizardCreate } from "./harness.mjs";
 
 const ok = makeOk();
 const b = await launch();
@@ -32,15 +32,6 @@ const PLAYERS = [
   { name: `Dev ${stamp}`, phone: phoneOf(4), team: 1, gender: "M" },
 ];
 
-async function createTournament(name) {
-  await p.goto(`${BASE}/new`);
-  await p.waitForTimeout(500);
-  await p.fill('input[name="name"]', name);
-  await p.click('button[type="submit"]');
-  await p.waitForURL(/\/manage/, { timeout: 20000 });
-  await p.waitForTimeout(600);
-  return new URL(p.url()).pathname.split("/")[2];
-}
 
 async function addTeams(names) {
   for (const n of names) {
@@ -93,7 +84,7 @@ const ratingOnRatingsPage = async (slug, name) => {
 /* ── Event one ───────────────────────────────────────────────────────────── */
 console.log("\n== first event: people join with phone numbers ==");
 
-const slugA = await createTournament(`Carry Cup A ${stamp}`);
+const slugA = await wizardCreate(p, `Carry Cup A ${stamp}`);
 ok(!!slugA, `created ${slugA}`);
 await addTeams(["Falcons", "Owls"]);
 
@@ -142,7 +133,7 @@ ok(Number.isFinite(carriedRating), `she leaves the event rated ${carriedRating}`
 /* ── Event two: the whole point ──────────────────────────────────────────── */
 console.log("\n== second event: the SAME person, by phone ==");
 
-const slugB = await createTournament(`Carry Cup B ${stamp}`);
+const slugB = await wizardCreate(p, `Carry Cup B ${stamp}`);
 await addTeams(["Kites", "Wrens"]);
 
 /* Same phone, no band this time: if the person is matched, the band is
@@ -180,7 +171,7 @@ ok(/margin ×/.test(profile), "the working names the margin multiplier");
    the whole failure this milestone exists to prevent. */
 console.log("\n== reuse a player by NAME, without their phone ==");
 
-const slugC = await createTournament(`Carry Cup C ${stamp}`);
+const slugC = await wizardCreate(p, `Carry Cup C ${stamp}`);
 await addTeams(["Larks", "Swifts"]);
 
 const pickForm = p.locator('form:has(input[placeholder="Player name"])').nth(0);

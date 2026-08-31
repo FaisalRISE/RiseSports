@@ -248,3 +248,27 @@ export async function firstScorableMatch(page, slug) {
   }
   return null;
 }
+
+/**
+ * Create a tournament through the wizard.
+ *
+ * `/new` used to be one flat form, so every script did `fill('input[name=name]')`
+ * and submitted. It is now three steps with the sport and format as cards, and
+ * the name box only exists on the last one — so this lives here rather than
+ * being re-derived (and re-broken) in four scripts.
+ */
+export async function createTournament(page, name, { sport = "Pickleball", format = "Pickleboss" } = {}) {
+  await page.goto(`${BASE}/new`);
+  await page.waitForTimeout(600);
+
+  await page.locator(`button:has-text("${sport}")`).first().click();
+  await page.waitForTimeout(400);
+  await page.locator(`button:has-text("${format}")`).first().click();
+  await page.waitForTimeout(400);
+
+  await page.fill('input[name="name"]', name);
+  await page.click('button[type="submit"]');
+  await page.waitForURL(/\/manage/, { timeout: 20000 });
+  await page.waitForTimeout(600);
+  return new URL(page.url()).pathname.split("/")[2];
+}

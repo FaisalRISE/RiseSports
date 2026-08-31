@@ -54,7 +54,11 @@ export async function createTournament(formData: FormData) {
     sport: sport as never,
     format,
     ownerId,
-    published: true,
+    /* A new tournament is a DRAFT. It was briefly created "open", carried over
+       from the old `published: true`, which meant a public entry page went live
+       the instant someone typed a name — before the format, fee, squad size or
+       questions were set. The organiser opens entries deliberately. */
+    status: "draft",
   });
 
   revalidatePath("/");

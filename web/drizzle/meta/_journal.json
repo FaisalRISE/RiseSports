@@ -22,6 +22,20 @@
       "when": 1788157663763,
       "tag": "0002_amusing_living_lightning",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788165705813,
+      "tag": "0003_curly_dreaming_celestial",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788165715272,
+      "tag": "0004_optimal_weapon_omega",
+      "breakpoints": true
     }
   ]
 }

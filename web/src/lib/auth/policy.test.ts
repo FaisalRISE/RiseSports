@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  canView, canScore, canManage, canAdminister, anonymous, assert,
+  canView, acceptsEntries, canScore, canManage, canAdminister, anonymous, assert,
   AuthorizationError, grantIsUsable, type Principal,
 } from "./policy";
 import type { Role } from "@/lib/db/schema";
@@ -9,19 +9,32 @@ const p = (over: Partial<Principal> = {}): Principal => ({ ...anonymous(), ...ov
 const ROLES: Role[] = ["PLAYER", "SCORER", "ORGANIZER", "ADMIN"];
 
 describe("viewing", () => {
-  it("anyone may read a published tournament", () => {
-    expect(canView(anonymous(), true)).toBe(true);
+  /* Visibility is derived from the LIFECYCLE now, not a separate `published`
+     flag — one field, so the two can never disagree. */
+  it("anyone may read a tournament that has left draft", () => {
+    expect(canView(anonymous(), "open")).toBe(true);
+    expect(canView(anonymous(), "live")).toBe(true);
+    expect(canView(anonymous(), "finished")).toBe(true);
   });
 
   it("a draft is hidden from the public and from players", () => {
-    expect(canView(anonymous(), false)).toBe(false);
-    expect(canView(p({ userId: "u", role: "PLAYER" }), false)).toBe(false);
-    expect(canView(p({ userId: "u", role: "SCORER" }), false)).toBe(false);
+    expect(canView(anonymous(), "draft")).toBe(false);
+    expect(canView(p({ userId: "u", role: "PLAYER" }), "draft")).toBe(false);
+    expect(canView(p({ userId: "u", role: "SCORER" }), "draft")).toBe(false);
   });
 
   it("the organiser and owner can see their own draft", () => {
-    expect(canView(p({ userId: "u", role: "ORGANIZER" }), false)).toBe(true);
-    expect(canView(p({ userId: "u", isOwner: true }), false)).toBe(true);
+    expect(canView(p({ userId: "u", role: "ORGANIZER" }), "draft")).toBe(true);
+    expect(canView(p({ userId: "u", isOwner: true }), "draft")).toBe(true);
+  });
+
+  /* Entries are taken ONLY while open. A live tournament is visible but its
+     draw is made — an entry arriving then has nowhere to go. */
+  it("only an open tournament accepts entries", () => {
+    expect(acceptsEntries("open")).toBe(true);
+    expect(acceptsEntries("draft")).toBe(false);
+    expect(acceptsEntries("live")).toBe(false);
+    expect(acceptsEntries("finished")).toBe(false);
   });
 });
 

@@ -15,7 +15,7 @@ import "server-only";
  * so a user could simply set themselves to ADMIN. Roles now live server-side,
  * per tournament, and are checked on every mutation. */
 
-import type { Role } from "@/lib/db/schema";
+import type { Role, TournamentStatus } from "@/lib/db/schema";
 
 /** Higher number wins. SCORER is deliberately NOT below PLAYER: a courtside
  *  volunteer who redeemed a PIN can score, but can do nothing else. */
@@ -38,9 +38,14 @@ export const anonymous = (): Principal => ({
 const atLeast = (p: Principal, role: Role): boolean =>
   p.isOwner || (p.role != null && RANK[p.role] >= RANK[role]);
 
-/** Anyone may read a published tournament; drafts are for the organiser. */
-export const canView = (p: Principal, published: boolean): boolean =>
-  published || atLeast(p, "ORGANIZER");
+/** Anyone may read a tournament that has left draft; drafts are the
+ *  organiser's own. Derived from the lifecycle rather than a separate
+ *  `published` flag, so the two can never disagree. */
+export const canView = (p: Principal, status: TournamentStatus): boolean =>
+  status !== "draft" || atLeast(p, "ORGANIZER");
+
+/** Whether the public registration page will take an entry right now. */
+export const acceptsEntries = (status: TournamentStatus): boolean => status === "open";
 
 /** Record points, undo, confirm rotations. A PIN grant is enough on its own. */
 export const canScore = (p: Principal): boolean => p.hasScorerGrant || atLeast(p, "SCORER");
