@@ -100,6 +100,17 @@ export function describeDbTarget(raw = process.env.DATABASE_URL): string {
       : sent === typed ? "password=present, reaches the driver exactly as typed"
       : "password=present, but DECODING CHANGES IT before it is sent — percent-encode the special characters",
     );
+
+    /* Encoding is not the only way a correct password arrives wrong. A space or
+       newline caught in a copy-paste survives every check above — `new URL`
+       encodes it and the driver decodes it straight back — so it reads as
+       "exactly as typed" while Postgres rejects it. Same for the curly quotes a
+       document editor substitutes. */
+    const suspects: string[] = [];
+    if (sent !== sent.trim()) suspects.push("leading or trailing whitespace");
+    if (/[\r\n\t]/.test(sent)) suspects.push("a line break or tab");
+    if (/[^\x20-\x7E]/.test(sent)) suspects.push("non-ASCII characters (curly quotes?)");
+    if (suspects.length > 0) bits.push(`password CONTAINS ${suspects.join(" and ")}`);
   }
 
   return bits.join("  ");

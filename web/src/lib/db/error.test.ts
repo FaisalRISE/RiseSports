@@ -100,6 +100,23 @@ describe("describeDbTarget", () => {
     expect(out).toContain("#");
   });
 
+  /* The gap the first version had: a space survives encoding and decoding
+     intact, so it reads as "exactly as typed" while Postgres rejects it. */
+  it("catches whitespace a copy-paste dragged in", () => {
+    const out = describeDbTarget(url("goodpassword "));
+    expect(out).toContain("reaches the driver exactly as typed");
+    expect(out).toContain("CONTAINS leading or trailing whitespace");
+  });
+
+  it("catches a newline and curly quotes", () => {
+    expect(describeDbTarget(url("good%0Apass"))).toContain("a line break or tab");
+    expect(describeDbTarget(url("good“pass"))).toContain("non-ASCII");
+  });
+
+  it("says nothing extra about a clean password", () => {
+    expect(describeDbTarget(url("abc123XYZ"))).not.toContain("CONTAINS");
+  });
+
   it("notices a missing password", () => {
     expect(describeDbTarget(`postgresql://postgres.abc@${POOLER}:6543/postgres`)).toContain(
       "password=MISSING",
