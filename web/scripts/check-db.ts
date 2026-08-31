@@ -14,7 +14,6 @@
  *   pnpm db:check "postgresql://…"     # or check a whole connection string
  */
 
-import { createInterface } from "node:readline";
 import postgres from "postgres";
 
 /* The parts already proven correct against the Rise Sports project, so a check
@@ -24,27 +23,70 @@ const USER = "postgres.utfvjsvvbifwcektzrwj";
 const PORT = 6543;
 const DB = "postgres";
 
-/** Ask for the password without echoing it to the terminal. */
+/* Keys, as typed. */
+const CTRL_C = "\u0003";
+const CTRL_D = "\u0004";
+const BACKSPACE = "\u007f";
+
+/* Ask for the password without echoing it.
+ *
+ * This was readline with its private `_writeToOutput` overridden — the widely
+ * copied trick. On a real Windows terminal it ATE THE PROMPT: readline redraws
+ * the current line, the nulled writer drew nothing, and the question vanished,
+ * leaving a blank screen with no way to tell a captured password from a dropped
+ * one. It had looked fine under test because the test piped input, and piped
+ * input never enters terminal mode — the same "tested the branch nobody uses"
+ * mistake this whole cutover kept making.
+ *
+ * Reading the keys directly sidesteps readline's redraw, so the prompt stays
+ * on screen and the input is unambiguous. */
 function askHidden(prompt: string): Promise<string> {
+  const stdin = process.stdin;
+
+  /* Piped or redirected: take the first line, and do not touch raw mode, which
+     does not exist without a terminal. */
+  if (!stdin.isTTY) {
+    return new Promise((resolve) => {
+      let buf = "";
+      stdin.setEncoding("utf8");
+      stdin.on("data", (d: string) => {
+        buf += d;
+      });
+      stdin.on("end", () => resolve(buf.split(/\r?\n/)[0]));
+    });
+  }
+
   return new Promise((resolve) => {
-    /* `terminal` follows stdin: on a real terminal readline echoes what you
-       type, which is what the override below suppresses; when input is piped
-       there is nothing to echo, and forcing terminal mode only sprays cursor
-       escapes into the output. */
-    const rl = createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      terminal: Boolean(process.stdin.isTTY),
-    });
     process.stdout.write(prompt);
-    /* readline has no "silent" mode; suppressing its echo is the documented
-       workaround. The prompt above is already on screen. */
-    (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput = () => {};
-    rl.question("", (answer) => {
-      rl.close();
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+
+    let typed = "";
+    const finish = (value: string) => {
+      stdin.setRawMode(false);
+      stdin.pause();
+      stdin.removeListener("data", onData);
       process.stdout.write("\n");
-      resolve(answer);
-    });
+      resolve(value);
+    };
+
+    const onData = (chunk: string) => {
+      for (const ch of chunk) {
+        if (ch === "\r" || ch === "\n" || ch === CTRL_D) return finish(typed);
+        if (ch === CTRL_C) {
+          /* Raw mode swallows the usual interrupt, so honour it here or the
+             terminal is left with its echo off. */
+          stdin.setRawMode(false);
+          process.stdout.write("\n");
+          process.exit(130);
+        }
+        if (ch === BACKSPACE || ch === "\b") typed = typed.slice(0, -1);
+        else if (ch >= " ") typed += ch;
+      }
+    };
+
+    stdin.on("data", onData);
   });
 }
 
@@ -76,13 +118,18 @@ async function main() {
       console.error("\nNo password entered.");
       process.exit(1);
     }
-    /* encodeURIComponent so a password with punctuation is checked as typed —
-       the same escaping the connection string in Vercel needs. */
-    url = `postgresql://${USER}:${encodeURIComponent(pw)}@${HOST}:${PORT}/${DB}`;
 
+    /* How many characters arrived — never the characters themselves. A silent
+       terminal gives no way to know whether every keystroke registered, and a
+       count that disagrees with what you typed IS the answer. */
+    console.log(`Read ${pw.length} characters.`);
     if (pw !== pw.trim()) {
       console.warn("Note: what you entered has leading or trailing whitespace.");
     }
+
+    /* encodeURIComponent so a password with punctuation is checked exactly as
+       the connection string in Vercel would need it written. */
+    url = `postgresql://${USER}:${encodeURIComponent(pw)}@${HOST}:${PORT}/${DB}`;
   }
 
   /* Exactly the app's connection — see src/lib/db/index.ts. */
@@ -103,8 +150,8 @@ async function main() {
     console.error(`  ${reason(e)}\n`);
     console.error(
       "  28P01 means the password is wrong — the host, port and user are already known good.\n" +
-        "  Reset it at Supabase → Database → Settings → Reset password, and try again here\n" +
-        "  BEFORE putting it in Vercel.\n",
+        "  Check the character count above against what you meant to type, then reset at\n" +
+        "  Supabase → Database → Settings → Reset password and try again HERE, before Vercel.\n",
     );
     process.exitCode = 1;
   } finally {
