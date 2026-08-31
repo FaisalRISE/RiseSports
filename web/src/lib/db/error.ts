@@ -33,3 +33,74 @@ export function describeDbError(e: unknown): string {
   /* Reversed, so the driver's reason leads and the wrapper trails it. */
   return chain.reverse().join("  ←  ");
 }
+
+/* WHAT the app thinks it is connecting to.
+ *
+ * "password authentication failed" is honest but not actionable: it cannot
+ * distinguish a genuinely wrong password from a correct one that was rewritten
+ * on the way to the driver. `postgres-js` does, in `parseOptions`:
+ *
+ *     password: decodeURIComponent(urlObj.password)
+ *
+ * so a pasted password containing a `%` is DECODED before Postgres sees it —
+ * `pa%73s` is sent as `pass` — and fails exactly like a mistyped one. A `#` or
+ * `/` is worse: `new URL` ends the userinfo there, so the password is truncated
+ * and the host comes out wrong too.
+ *
+ * This is for the SERVER LOG, never the page. The parts it names are not
+ * secret, but a public error page is no place to publish which host and user a
+ * deployment connects as — and the password is never included in any form, not
+ * its value and not its length.
+ */
+export function describeDbTarget(raw = process.env.DATABASE_URL): string {
+  if (!raw) return "DATABASE_URL is not set";
+  if (raw.startsWith("pglite:")) return `local PGlite (${raw})`;
+
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return (
+      "DATABASE_URL is not a parseable URL — look for an unencoded #, / or ? in the password, " +
+      "or a stray space, quote or line break"
+    );
+  }
+
+  const bits = [
+    `scheme=${u.protocol.replace(":", "")}`,
+    `user=${u.username || "(none)"}`,
+    `host=${u.hostname || "(none)"}`,
+    `port=${u.port || "(default)"}`,
+    `db=${u.pathname.replace(/^\//, "") || "(none)"}`,
+  ];
+
+  if (!u.password) {
+    bits.push("password=MISSING");
+  } else {
+    /* What the driver will actually send, against the characters that were
+       literally typed between the userinfo ':' and the last '@'. If those
+       differ, the fix is percent-encoding, not another password reset. */
+    const afterScheme = raw.indexOf("//") + 2;
+    const colon = raw.indexOf(":", afterScheme);
+    const at = raw.lastIndexOf("@");
+    const typed = colon > 0 && at > colon ? raw.slice(colon + 1, at) : null;
+
+    let sent: string;
+    try {
+      sent = decodeURIComponent(u.password);
+    } catch {
+      /* A lone '%' is not a valid escape; decodeURIComponent throws and the
+         driver never connects at all. */
+      bits.push("password=present, but contains a stray % the driver cannot decode — write it as %25");
+      return bits.join("  ");
+    }
+
+    bits.push(
+      typed === null ? "password=present"
+      : sent === typed ? "password=present, reaches the driver exactly as typed"
+      : "password=present, but DECODING CHANGES IT before it is sent — percent-encode the special characters",
+    );
+  }
+
+  return bits.join("  ");
+}

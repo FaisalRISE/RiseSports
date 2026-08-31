@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { desc } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { describeDbError } from "@/lib/db/error";
+import { describeDbError, describeDbTarget } from "@/lib/db/error";
 import { tournaments } from "@/lib/db/schema";
 import { sportOf } from "@/lib/sports/registry";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
@@ -15,6 +15,11 @@ export default async function Home() {
     rows = await db.select().from(tournaments).orderBy(desc(tournaments.createdAt));
   } catch (e) {
     dbError = describeDbError(e);
+    /* The page gets the reason; the SERVER LOG also gets what was connected to.
+       Which host and user a deployment uses is not for a public error page, and
+       without it "password authentication failed" cannot tell a wrong password
+       apart from a correct one the URL parser rewrote. */
+    console.error("[db]", dbError, "||", describeDbTarget());
   }
 
   return (

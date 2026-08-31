@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { describeDbError } from "./error";
+import { describeDbError, describeDbTarget } from "./error";
 
 /* The first Supabase deploy rendered a red box quoting the SELECT it had tried
  * and nothing about why it failed, because the page printed `e.message` and
@@ -51,5 +51,67 @@ describe("describeDbError", () => {
     const out = describeDbError(long);
     expect(out).not.toContain("second line");
     expect(out.length).toBeLessThanOrEqual(300);
+  });
+});
+
+const POOLER = "aws-0-ap-south-1.pooler.supabase.com";
+const url = (pw: string) => `postgresql://postgres.abc:${pw}@${POOLER}:6543/postgres`;
+
+describe("describeDbTarget", () => {
+  it("names the parts that are safe to name", () => {
+    const out = describeDbTarget(url("plainpassword"));
+    expect(out).toContain("user=postgres.abc");
+    expect(out).toContain(`host=${POOLER}`);
+    expect(out).toContain("port=6543");
+    expect(out).toContain("db=postgres");
+  });
+
+  /* The whole point. Nothing about the password may reach the caller — not the
+     value, not the length — because this line ends up in a log. */
+  it("never reveals the password or its length", () => {
+    const secret = "s3cr3t-do-not-print";
+    const out = describeDbTarget(url(secret));
+    expect(out).not.toContain(secret);
+    expect(out).not.toContain(String(secret.length));
+  });
+
+  it("says so when the password reaches the driver as typed", () => {
+    expect(describeDbTarget(url("abc123XYZ"))).toContain("exactly as typed");
+  });
+
+  /* postgres-js does `decodeURIComponent(urlObj.password)`, so a pasted `%73`
+     is sent as `s` and fails identically to a mistyped password. This is the
+     line that tells those two apart. */
+  it("flags a password that decoding rewrites before it is sent", () => {
+    expect(describeDbTarget(url("pa%73s"))).toContain("DECODING CHANGES IT");
+  });
+
+  /* A lone % is not a valid escape: decodeURIComponent throws and the driver
+     never opens a connection at all. */
+  it("flags a stray percent sign, without throwing", () => {
+    expect(describeDbTarget(url("100%sure"))).toContain("stray %");
+  });
+
+  /* A '#' in the password does not merely truncate it — it makes the whole
+     string unparseable, so this is caught before any part is named. */
+  it("catches a # in the password and points at it", () => {
+    const out = describeDbTarget(url("pa#ss"));
+    expect(out).toContain("not a parseable URL");
+    expect(out).toContain("#");
+  });
+
+  it("notices a missing password", () => {
+    expect(describeDbTarget(`postgresql://postgres.abc@${POOLER}:6543/postgres`)).toContain(
+      "password=MISSING",
+    );
+  });
+
+  it("reports an unset or unparseable value plainly", () => {
+    expect(describeDbTarget(undefined)).toBe("DATABASE_URL is not set");
+    expect(describeDbTarget("not a url at all")).toContain("not a parseable URL");
+  });
+
+  it("recognises the local driver", () => {
+    expect(describeDbTarget("pglite://.pgdata")).toContain("PGlite");
   });
 });
