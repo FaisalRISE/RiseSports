@@ -98,12 +98,26 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
           </ol>
         </section>
 
-        <p className="text-xs text-neutral-600">
-          Scoring?{" "}
-          <Link href={`/t/${slug}/score`} className="font-semibold text-amber-400 underline">
-            Open the referee console
+        <nav className="flex flex-wrap items-center gap-2 border-t border-neutral-900 pt-4">
+          <Link
+            href={`/t/${slug}/print?blank=1`}
+            className="rounded-lg border border-neutral-700 px-3 py-2 text-xs font-bold text-neutral-300 hover:border-neutral-500"
+          >
+            🖨 Print sheets
           </Link>
-        </p>
+          <Link
+            href={`/t/${slug}/ratings`}
+            className="rounded-lg border border-neutral-700 px-3 py-2 text-xs font-bold text-neutral-300 hover:border-neutral-500"
+          >
+            📈 Ratings
+          </Link>
+          <Link
+            href={`/t/${slug}/score`}
+            className="ml-auto rounded-lg bg-amber-400 px-3 py-2 text-xs font-black text-amber-950 hover:bg-amber-300"
+          >
+            Referee console
+          </Link>
+        </nav>
       </main>
     </>
   );

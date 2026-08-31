@@ -68,7 +68,11 @@ function libModules(): string[] {
       if (entry.isDirectory()) {
         if (entry.name === "__tests__" || entry.name === "__fixtures__") continue;
         walk(full);
-      } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
+        /* .tsx as well as .ts. A server-rendered module under lib/ may return
+           JSX — the print sheets do — and walking only .ts silently skipped
+           them, which is exactly the "passes while checking nothing" failure
+           this file exists to prevent. */
+      } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
         out.push(path.relative(LIB, full).split(path.sep).join("/"));
       }
     }

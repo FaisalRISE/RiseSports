@@ -96,6 +96,85 @@ ok(sp.includes('Knockout'),'spectator shows the knockout');
 ok(sp.includes('Pickleboss'),'format named');
 await p.screenshot({path:'shot-event.png',fullPage:true});
 
+/* The print pack. This tournament has two groups with every match scored, which
+   is exactly the shape the sheets are for. Four rules were got wrong once in the
+   single-file app; they are asserted here so they cannot regress. */
+console.log('\n== print pack ==');
+await p.goto(B+'/t/friyayy-cup/print'); await p.waitForTimeout(1200);
+const perSheet=await p.$$eval('.psheet',ss=>ss.map(s=>({
+  head:s.querySelector('.sport')?.textContent||'',
+  fx:s.querySelectorAll('table.fx').length,
+  mg:s.querySelectorAll('table.mg').length,
+  caps:s.querySelectorAll('.cap').length,
+})));
+ok(perSheet.length===3,'one sheet per group plus the knockout, got '+perSheet.length);
+/* The knockout sheet has one table per round but must still explain itself
+   ONCE, not under each round. */
+const koSheet=perSheet.find(s=>/Knockout/.test(s.head));
+ok(koSheet&&koSheet.fx>1,'knockout has a table per round ('+(koSheet&&koSheet.fx)+')');
+ok(koSheet&&koSheet.caps===1,'knockout caption appears once, not per round (got '+(koSheet&&koSheet.caps)+')');
+const groupSheets=perSheet.filter(s=>/Group/.test(s.head));
+ok(groupSheets.length===2,'two group sheets: '+groupSheets.map(s=>s.head).join(', '));
+/* Matches are ROWS IN ONE TABLE, not a table each. */
+ok(groupSheets.every(s=>s.fx===1),'each group has exactly one fixture table');
+ok(groupSheets.every(s=>s.mg===1),'each group carries its margin grid');
+/* The caption appears ONCE per table, not under every match. */
+ok(groupSheets.every(s=>s.caps===2),'one caption per table, not per match');
+/* No standings table — the margin grid already carries wins, diff and rank. */
+ok(!(await txt()).includes('Standings'),'no standings table on the print pack');
+/* The diagonal is found by POSITION: an unplayed match is null too, so testing
+   the value would shade the wrong cell. */
+const selfCells=await p.$$eval('td.self',es=>es.length);
+ok(selfCells===6,'diagonal shaded by position (3 teams x 2 groups), got '+selfCells);
+const gridText=await p.$eval('table.mg',t=>t.innerText.replace(/\n/g,' | '));
+ok(/[+-]\d+/.test(gridText),'margins printed with sign: '+gridText.slice(0,90));
+
+console.log('\n== print pack, blank ==');
+await p.goto(B+'/t/friyayy-cup/print?blank=1'); await p.waitForTimeout(1200);
+const blank=await p.$$eval('td.sbox',es=>es.map(e=>e.textContent.trim()));
+ok(blank.length>0&&blank.every(t=>t===''),'every score box is blank to fill in by hand');
+ok((await p.$$eval('td.self',es=>es.length))===6,'diagonals still shaded when blank');
+ok((await txt()).includes('Alpha'),'team names still printed when blank');
+
+/* Ratings are DERIVED from finished matches, never stored — this page is the
+   proof the ported engine is wired to something at last.
+
+   club-night rather than friyayy-cup because ratings are per PLAYER and the
+   tournament built above has teams but no players. A match has to be FINISHED
+   before anything moves, so finish one here rather than depending on the seed:
+   on a fresh database none of the seeded matches is complete, and the
+   assertions below would pass only on a database somebody had already scored
+   by hand. */
+console.log('\n== ratings ==');
+await p.goto(B+'/t/club-night/manage'); await p.waitForTimeout(1000);
+const cnLinks=await p.$$eval("a[href*='/score/']",as=>[...new Set(as.map(a=>a.getAttribute('href')))]);
+let finished=false;
+for(const href of cnLinks){
+  await p.goto(B+href); await p.waitForTimeout(900);
+  const names=await p.$$eval("button[aria-label^='Point to']",es=>es.map(e=>e.getAttribute('aria-label').replace('Point to ','')));
+  if(names.length!==2) continue;
+  /* Side-out scoring: only the serving side scores, so roughly two rallies per
+     point. Tap one side until the buttons disable themselves. */
+  for(let i=0;i<70;i++){
+    const disabled=await p.$$eval("button[aria-label^='Point to']",es=>es.every(e=>e.disabled));
+    if(disabled){ finished=true; break; }
+    await p.click(`button[aria-label="Point to ${names[0]}"]`).catch(()=>{});
+    await p.waitForTimeout(320);
+  }
+  if(finished) break;
+}
+ok(finished,'drove a club-night match to completion');
+
+await p.goto(B+'/t/club-night/ratings'); await p.waitForTimeout(1200);
+const rrows=await p.$$eval('tbody tr',rs=>rs.map(r=>[...r.children].map(c=>c.textContent.trim())));
+ok(rrows.length>0,'ratings table has rows ('+rrows.length+')');
+const dnum=r=>Number(String(r[4]).replace('—','0').replace('+',''));
+const moved=rrows.filter(r=>dnum(r)!==0);
+ok(moved.length>0,'at least one player moved: '+moved.map(r=>r[0]+' '+r[4]).join(', '));
+/* The conservation property: one delta out of the losers, the same delta in. */
+ok(rrows.reduce((s,r)=>s+dnum(r),0)===0,'movements sum to zero across the table');
+ok(rrows.some(r=>/Beginner|Intermediate|Advanced|Pro|Elite/i.test(r[6])),'tier shown');
+
 console.log('\n== errors ==');
 const real=errs.filter(e=>!/favicon|net::ERR/.test(e));
 ok(real.length===0,'no runtime errors: '+JSON.stringify(real.slice(0,3)));
