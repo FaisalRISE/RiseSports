@@ -27,7 +27,15 @@ const DB = "postgres";
 /** Ask for the password without echoing it to the terminal. */
 function askHidden(prompt: string): Promise<string> {
   return new Promise((resolve) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    /* `terminal` follows stdin: on a real terminal readline echoes what you
+       type, which is what the override below suppresses; when input is piped
+       there is nothing to echo, and forcing terminal mode only sprays cursor
+       escapes into the output. */
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: Boolean(process.stdin.isTTY),
+    });
     process.stdout.write(prompt);
     /* readline has no "silent" mode; suppressing its echo is the documented
        workaround. The prompt above is already on screen. */
