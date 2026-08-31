@@ -8,8 +8,9 @@ import { viewMatch } from "@/lib/matchState";
 import { sportOf } from "@/lib/sports/registry";
 import { oslLineupIssues } from "@/lib/formats/osl";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
-import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, generateGroups, generateKnockout, fillKnockoutSlots, seedByRating } from "./actions";
+import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, generateGroups, generateKnockout, fillKnockoutSlots, seedByRating, searchRoster } from "./actions";
 import { SEED_BANDS } from "@/lib/rating";
+import { PersonPicker } from "@/components/PersonPicker";
 import { loadTournament, groupTables, refResolver, resolveSlots } from "@/lib/tournamentState";
 import { StandingsTable } from "@/components/StandingsTable";
 import { allowsDraws } from "@/lib/matchState";
@@ -123,6 +124,10 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                       </select>
                       <button className="rounded-lg border border-neutral-600 px-3 text-xs font-bold">Add</button>
                     </div>
+                    {/* Reuse an existing player when their number is not to
+                        hand. Phone stays the only automatic match; this is the
+                        deliberate, organiser-confirmed one. */}
+                    <PersonPicker search={searchRoster} />
                     <div className="flex flex-wrap gap-2">
                       <input name="phone" inputMode="tel" placeholder="Phone (optional)"
                         className="min-w-0 flex-1 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-xs" />

@@ -2,17 +2,19 @@
 
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/lib/db";
-import { groups, matches, people, players, teams, tournaments } from "@/lib/db/schema";
+import { groups, matches, people, players, ratingHistory, teams, tournaments } from "@/lib/db/schema";
 import { principalFor } from "@/lib/auth/guard";
 import { canManage, assert } from "@/lib/auth/policy";
 import { planGroups, knockoutRefsFromGroups } from "@/lib/formats/pickleboss";
 import { resolveRef } from "@/lib/brackets";
 import { loadTournament, groupTables, refResolver } from "@/lib/tournamentState";
-import { findOrCreatePerson, carriedRating, peopleForTournament } from "@/lib/people";
+import { findOrCreatePerson, carriedRating, peopleForTournament, searchPeople } from "@/lib/people";
+import { reliabilityForPerson } from "@/lib/rating/reliability";
+import type { PickerResult } from "@/components/PersonPicker";
 import { ratingFormatFor } from "@/lib/rating/tournament";
 import { ratingKey } from "@/lib/sports/registry";
 
@@ -368,4 +370,48 @@ export async function fillKnockoutSlots(tournamentId: string) {
 
   revalidatePath(`/t/${t.slug}/manage`);
   revalidatePath(`/t/${t.slug}`);
+}
+
+/**
+ * Roster search for the person picker.
+ *
+ * Returns display-ready strings, not domain objects: this crosses to a client
+ * component, so the rating engine and the reliability rules stay on the server
+ * exactly as the bundle-leak guard requires.
+ */
+export async function searchRoster(query: string): Promise<PickerResult[]> {
+  const q = z.string().trim().max(60).catch("").parse(query);
+  if (q.length < 2) return [];
+
+  const found = await searchPeople(q, 8);
+  const now = new Date();
+  const ids = found.map((f) => f.id);
+  const history = ids.length
+    ? await db
+        .select({
+          personId: ratingHistory.personId,
+          createdAt: ratingHistory.createdAt,
+          ratingBefore: ratingHistory.ratingBefore,
+          notes: ratingHistory.notes,
+        })
+        .from(ratingHistory)
+        .where(inArray(ratingHistory.personId, ids))
+    : [];
+
+  return found.map((f) => {
+    /* Computed, not read from the column — reliability decays with time. */
+    const rel = reliabilityForPerson(history, f.id, now);
+    return {
+      id: f.id,
+      name: f.name,
+      phoneMasked: f.phoneMasked,
+      rating: f.rating,
+      tier: f.tier ? `${f.tier.emoji} ${f.tier.name}` : null,
+      reliability: f.lastPlayedAt ? rel.band : null,
+      lastPlayed: f.lastPlayedAt
+        ? f.lastPlayedAt.toLocaleDateString("en-GB", { month: "short", year: "numeric" })
+        : null,
+      appearances: f.appearances,
+    };
+  });
 }

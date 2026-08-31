@@ -25,12 +25,22 @@ export default async function Home() {
             <h1 className="text-3xl font-black tracking-tight">RISE Sports</h1>
             <p className="text-sm text-neutral-400">Tournaments, scoring and ledgers.</p>
           </div>
-          <Link
-            href="/new"
-            className="rounded-xl bg-amber-400 px-4 py-2 text-sm font-black text-amber-950"
-          >
-            New tournament
-          </Link>
+          <div className="flex items-center gap-2">
+            {/* The roster is the reference RiseR exists to be — it was only
+                reachable by typing the URL. */}
+            <Link
+              href="/people"
+              className="rounded-xl border border-neutral-700 px-4 py-2 text-sm font-bold text-neutral-200 hover:border-neutral-500"
+            >
+              Players
+            </Link>
+            <Link
+              href="/new"
+              className="rounded-xl bg-amber-400 px-4 py-2 text-sm font-black text-amber-950"
+            >
+              New tournament
+            </Link>
+          </div>
         </header>
 
         {dbError && (

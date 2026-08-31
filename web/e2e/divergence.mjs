@@ -10,7 +10,7 @@
 
 import {
   launch, BASE, makeOk, watchErrors, text,
-  rallyCount, tap, queued, clearQueue, until, firstScorableMatch, realErrors, teamsOf,
+  rallyCount, stableRallyCount, tap, queued, clearQueue, until, firstScorableMatch, realErrors, teamsOf,
 } from "./harness.mjs";
 
 const ok = makeOk();
@@ -47,7 +47,7 @@ const A = await console_(url);
 const B = await console_(url);
 
 const teams = await teamsOf(A.p);
-const start = await rallyCount(A.p);
+const start = await stableRallyCount(A.p);
 ok((await rallyCount(B.p)) === start, `both devices agree at the start (${start} rallies)`);
 
 await A.ctx.setOffline(true);
@@ -133,7 +133,7 @@ ok(!!matchId2, `a scorable match for the second conflict (${matchId2})`);
 
 const E = await console_(url2);
 const F = await console_(url2);
-const start2 = await rallyCount(E.p);
+const start2 = await stableRallyCount(E.p);
 const teams2 = await teamsOf(E.p);   // this match may be a different pairing
 
 await E.ctx.setOffline(true);
@@ -186,7 +186,7 @@ const url3 = `${BASE}/t/club-night/score/${matchId3}`;
 
 const C = await console_(url3);
 const D = await console_(url3);
-const base = await rallyCount(C.p);
+const base = await stableRallyCount(C.p);
 const teams3 = await teamsOf(C.p);
 
 await tap(C.p, teams3[0]);
@@ -198,7 +198,12 @@ ok(!(await conflictShown(C.p)), "device C is not prompted");
 await D.p.reload();
 await D.p.waitForTimeout(2500);
 ok(!(await conflictShown(D.p)), "the watching device is never prompted");
-ok((await rallyCount(D.p)) === base + 1, `the watching device just shows the new score (${await rallyCount(D.p)})`);
+/* Waited for rather than sampled once: a reload is a round trip, and reading
+   mid-flight showed the pre-reload number and failed a working feature. */
+ok(
+  await until(async () => (await rallyCount(D.p)) === base + 1, { label: "the watcher to catch up" }),
+  `the watching device just shows the new score (${await rallyCount(D.p)})`,
+);
 ok((await queued(D.p)).length === 0, "the watching device has nothing queued");
 
 await C.ctx.close();

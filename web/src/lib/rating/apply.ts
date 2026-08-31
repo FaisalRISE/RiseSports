@@ -36,6 +36,8 @@ import { phaseOf, ratingFormatFor } from "@/lib/rating/tournament";
 import { ratingKey } from "@/lib/sports/registry";
 import { viewMatch, rulesFor } from "@/lib/matchState";
 import type { Rules } from "@/lib/scoring/rules";
+import { playedFromHistory, reliabilityForPerson } from "@/lib/rating/reliability";
+import { detectSandbagging, type RatedMatch } from "@/lib/rating/sandbagging";
 
 const DAY = 86_400_000;
 
@@ -236,7 +238,16 @@ export async function applyMatchRatings(
       personId: W.personIds[i],
       before: W.ratings[i],
       delta: Math.round(raw),
-      note: { won: true, damped, carried, opponentIds: L.personIds, partnerIds: W.personIds.filter((_, j) => j !== i) },
+      /* The RATINGS, not just the ids. §6.2, §7 independence and §8.1 are all
+         defined against the values AT THE TIME, which cannot be recovered once
+         everyone's rating has moved on. Recording only ids is what left the
+         independence signal permanently inert. */
+      note: {
+        won: true, damped, carried,
+        opponentIds: L.personIds, opponentRatings: L.ratings,
+        partnerIds: W.personIds.filter((_, j) => j !== i),
+        partnerRatings: W.ratings.filter((_, j) => j !== i),
+      },
     });
   }
   for (let i = 0; i < L.personIds.length; i++) {
@@ -244,7 +255,12 @@ export async function applyMatchRatings(
       personId: L.personIds[i],
       before: L.ratings[i],
       delta: -Math.round(baseLoss),
-      note: { won: false, damped, carried: false, opponentIds: W.personIds, partnerIds: L.personIds.filter((_, j) => j !== i) },
+      note: {
+        won: false, damped, carried: false,
+        opponentIds: W.personIds, opponentRatings: W.ratings,
+        partnerIds: L.personIds.filter((_, j) => j !== i),
+        partnerRatings: L.ratings.filter((_, j) => j !== i),
+      },
     });
   }
 
@@ -278,6 +294,11 @@ export async function applyMatchRatings(
       const person = byId.get(r.personId)!;
       const ratings = { ...(person.riseRatings ?? {}), [key]: after };
       const counts = { ...(person.matchCount ?? {}), [key]: (person.matchCount?.[key] ?? 0) + 1 };
+
+      const note = r.note as {
+        won: boolean; partnerIds: string[]; partnerRatings: number[]; opponentRatings: number[];
+      };
+
       await tx
         .update(people)
         .set({
@@ -285,6 +306,10 @@ export async function applyMatchRatings(
           riseBest: Math.max(...Object.values(ratings)),
           matchCount: counts,
           lastPlayedAt: now,
+          /* §6.2 — who this player wins with. The evidence behind the
+             independence component, and what lets a profile say WHO carried
+             someone rather than only that they were carried. */
+          partnerStats: mergePartnerStats(person.partnerStats, note),
         })
         .where(eq(people.id, r.personId));
     }
@@ -301,6 +326,11 @@ export async function applyMatchRatings(
       });
     }
   });
+
+  /* Derived signals, recomputed from the history now that this match is in it.
+     Outside the transaction on purpose: they are advisory, and a failure here
+     must not roll back a rating that is already correct. */
+  await refreshDerived(capped.map((r) => r.personId), now);
 
   return { status: "applied", people: capped.length, imbalance };
 }
@@ -414,4 +444,105 @@ async function applyDailyCap<T extends { personId: string; delta: number }>(
   for (const t of today) used.set(t.personId, (used.get(t.personId) ?? 0) + t.delta);
 
   return rows.map((r) => ({ ...r, delta: capDelta(used.get(r.personId) ?? 0, r.delta) }));
+}
+
+/* ── Derived signals ─────────────────────────────────────────────────────── */
+
+export type PartnerStat = {
+  matches: number;
+  wins: number;
+  avgPartnerRating: number;
+  avgOpponentRating: number;
+};
+
+/**
+ * Spec §6.2. Running averages, so the whole history never has to be re-read.
+ *
+ * Kept per PARTNER rather than as one aggregate: "wins with a much stronger
+ * partner" is a statement about a specific person, and it is what the
+ * independence component and a disputed carry-guard both need to point at.
+ */
+export function mergePartnerStats(
+  existing: Record<string, unknown> | null,
+  note: { won: boolean; partnerIds: string[]; partnerRatings: number[]; opponentRatings: number[] },
+): Record<string, PartnerStat> {
+  const out: Record<string, PartnerStat> = { ...((existing ?? {}) as Record<string, PartnerStat>) };
+  const avgOpp = note.opponentRatings.length
+    ? note.opponentRatings.reduce((s, n) => s + n, 0) / note.opponentRatings.length
+    : 0;
+
+  note.partnerIds.forEach((id, i) => {
+    const prev = out[id] ?? { matches: 0, wins: 0, avgPartnerRating: 0, avgOpponentRating: 0 };
+    const n = prev.matches + 1;
+    out[id] = {
+      matches: n,
+      wins: prev.wins + (note.won ? 1 : 0),
+      avgPartnerRating: Math.round((prev.avgPartnerRating * prev.matches + (note.partnerRatings[i] ?? 0)) / n),
+      avgOpponentRating: Math.round((prev.avgOpponentRating * prev.matches + avgOpp) / n),
+    };
+  });
+  return out;
+}
+
+/**
+ * Recompute what is derived from a person's whole history: the §8.1 under-rated
+ * flag and the reliability snapshot.
+ *
+ * Both are ADVISORY. Neither touches the rating — §8.1 is explicit that a flag
+ * is for a human to judge, and reliability is a statement about confidence, not
+ * about level.
+ */
+async function refreshDerived(personIds: string[], now: Date): Promise<void> {
+  const ids = [...new Set(personIds)];
+  if (ids.length === 0) return;
+
+  const rows = await db
+    .select({
+      personId: ratingHistory.personId,
+      createdAt: ratingHistory.createdAt,
+      ratingBefore: ratingHistory.ratingBefore,
+      notes: ratingHistory.notes,
+    })
+    .from(ratingHistory)
+    .where(inArray(ratingHistory.personId, ids));
+
+  const current = await db.select().from(people).where(inArray(people.id, ids));
+
+  for (const person of current) {
+    const played = playedFromHistory(rows, person.id);
+    if (played.length === 0) continue;
+
+    const rated: RatedMatch[] = played
+      .filter((m) => (m.opponentRatings?.length ?? 0) > 0)
+      .map((m) => ({
+        avgOpponentRating:
+          m.opponentRatings!.reduce((s, n) => s + n, 0) / m.opponentRatings!.length,
+        won: m.won,
+        playedAt: m.playedAt,
+      }));
+
+    const flag = detectSandbagging(rated, person.riseBest ?? DEFAULT_SEED);
+    const flags = { ...((person.flags ?? {}) as Record<string, unknown>) };
+    if (flag.underRated) {
+      flags.underRated = true;
+      flags.underRatedBy = flag.gap;
+      flags.flaggedAt = now.toISOString();
+    } else {
+      delete flags.underRated;
+      delete flags.underRatedBy;
+      delete flags.flaggedAt;
+    }
+
+    await db
+      .update(people)
+      .set({
+        flags,
+        /* A SNAPSHOT, for sorting and filtering in SQL. Every display path
+           recomputes instead of reading this, because recency decays
+           reliability — a stored value goes stale with nobody playing a match,
+           and two numbers that can disagree is the trap to avoid. */
+        reliability: reliabilityForPerson(rows, person.id, now).score,
+      })
+      .where(eq(people.id, person.id));
+  }
 }

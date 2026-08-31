@@ -175,6 +175,51 @@ ok(/expected \d/.test(profile), "the working names the expected result");
 ok(/margin ×/.test(profile), "the working names the margin multiplier");
 
 /* ── Seeding by rating ───────────────────────────────────────────────────── */
+/* The picker is the path for reusing someone whose number the organiser does
+   not have. Without it a rating silently stops following that player, which is
+   the whole failure this milestone exists to prevent. */
+console.log("\n== reuse a player by NAME, without their phone ==");
+
+const slugC = await createTournament(`Carry Cup C ${stamp}`);
+await addTeams(["Larks", "Swifts"]);
+
+const pickForm = p.locator('form:has(input[placeholder="Player name"])').nth(0);
+await pickForm.locator('input[placeholder="Player name"]').fill(PLAYERS[0].name);
+await pickForm.locator('input[placeholder="Find an existing player…"]').fill(PLAYERS[0].name.split(" ")[0]);
+await pickForm.locator('button:has-text("Find")').click();
+await p.waitForTimeout(1500);
+
+const hit0 = pickForm.locator("li button").first();
+ok((await hit0.count()) > 0, "the picker finds her by name");
+const hitText = await hit0.innerText();
+/* The disambiguating detail is the point — a bare name is a coin flip. */
+ok(/\d{3,4}/.test(hitText), `the result shows her rating: ${hitText.replace(/\n/g, " | ")}`);
+
+await hit0.click();
+await p.waitForTimeout(600);
+ok((await pickForm.innerText()).includes("Linked:"), "picking links her");
+
+await pickForm.locator('button:has-text("Add")').click();
+await p.waitForTimeout(1200);
+
+const anyaC = await ratingOnRatingsPage(slugC, PLAYERS[0].name);
+ok(!!anyaC, "she is on the third event");
+ok(
+  Number(anyaC?.[5]) === carriedRating,
+  `picked by NAME, still carrying: ${anyaC?.[5]} (expected ${carriedRating})`,
+);
+
+await p.goto(`${BASE}/people?q=${encodeURIComponent(PLAYERS[0].name)}`);
+await p.waitForTimeout(900);
+const stillOne = await p.$$eval("a[href^='/people/']", (as) => as.length);
+ok(stillOne === 1, `still ONE person, not a duplicate (${stillOne})`);
+ok(/3 events/.test(await text(p)), "now three events against the same profile");
+
+console.log("\n== the roster is reachable ==");
+await p.goto(BASE);
+await p.waitForTimeout(800);
+ok((await p.$("a[href='/people']")) !== null, "home page links to the roster");
+
 console.log("\n== seed the draw by rating, not arrival order ==");
 
 await p.goto(`${BASE}/t/${slugB}/manage`);

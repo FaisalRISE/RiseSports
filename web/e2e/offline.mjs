@@ -21,7 +21,7 @@
 
 import {
   launch, BASE, makeOk, watchErrors, text,
-  rallyCount, scores, tap, banner, queued, clearQueue,
+  rallyCount, stableRallyCount, scores, tap, banner, queued, clearQueue,
   killNetwork, restoreNetwork, until, firstScorableMatch, realErrors,
 } from "./harness.mjs";
 
@@ -62,7 +62,7 @@ const teams = await p.$$eval("button[aria-label^='Point to']", (els) =>
 );
 ok(teams.length === 2, `two tap targets: ${teams.join(" / ")}`);
 
-const startRallies = await rallyCount(p);
+const startRallies = await stableRallyCount(p);
 ok(typeof startRallies === "number", `starting rally count ${startRallies}`);
 
 console.log("\n-- online, a healthy match --");
@@ -79,7 +79,7 @@ console.log("\n-- kill the route to the server --");
 await killNetwork(p);
 ok(await p.evaluate(() => navigator.onLine), "navigator.onLine is still TRUE (the hard case)");
 
-const before = await rallyCount(p);
+const before = await stableRallyCount(p);
 await tap(p, teams[0]);
 await p.waitForTimeout(700);
 await tap(p, teams[1]);
@@ -161,7 +161,7 @@ await clearQueue(p2);
 await p2.reload();
 await p2.waitForTimeout(1200);
 
-const base2 = await rallyCount(p2);
+const base2 = await stableRallyCount(p2);
 await ctx2.setOffline(true);
 ok(!(await p2.evaluate(() => navigator.onLine)), "navigator.onLine is false");
 

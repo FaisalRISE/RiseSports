@@ -94,14 +94,40 @@ export async function rallyCount(page) {
  * the app, not a defect in it — retrying once is the honest fix, and anything
  * still failing afterwards is real.
  */
+/* Playwright reports the same race in several wordings depending on exactly
+   where the navigation landed, so match on all of them rather than the one that
+   happened to show up first. */
+const NAVIGATION_RACE =
+  /Execution context was destroyed|Target closed|Unable to adopt element handle|detached|Frame was detached/i;
+
 async function retryOnNavigation(page, read) {
-  try {
-    return await read();
-  } catch (e) {
-    if (!/Execution context was destroyed|Target closed/.test(String(e))) throw e;
-    await page.waitForTimeout(400);
-    return read();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await read();
+    } catch (e) {
+      if (!NAVIGATION_RACE.test(String(e)) || attempt === 2) throw e;
+      await page.waitForTimeout(400);
+    }
   }
+}
+
+/**
+ * A rally count that has stopped moving.
+ *
+ * Scoring triggers a server round trip and a router refresh, so a plain read
+ * taken straight afterwards can still show the PREVIOUS value. Sampling a
+ * mid-flight number as the baseline made a later "+3" assertion look like "+4"
+ * and failed a working feature. Two agreeing reads mean the UI has settled.
+ */
+export async function stableRallyCount(page, { tries = 12, gap = 400 } = {}) {
+  let last = await rallyCount(page);
+  for (let i = 0; i < tries; i++) {
+    await page.waitForTimeout(gap);
+    const next = await rallyCount(page);
+    if (next === last) return next;
+    last = next;
+  }
+  return last;
 }
 
 /** The two scores, left to right as rendered. */

@@ -4,7 +4,8 @@ import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { matches, people, ratingHistory, tournaments } from "@/lib/db/schema";
 import { getTier } from "@/lib/rating";
-import { reliabilityFromHistory, type PlayedMatch } from "@/lib/rating/reliability";
+import { reliabilityForPerson, playedFromHistory } from "@/lib/rating/reliability";
+import { detectSandbagging, sandbaggingNote } from "@/lib/rating/sandbagging";
 import { maskPhone } from "@/lib/people";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 
@@ -32,21 +33,24 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
     .orderBy(desc(ratingHistory.createdAt))
     .limit(100);
 
-  /* Opponents were recorded at the time the rating moved, so the reliability
-     inputs come from the same rows that produced the number. */
-  const played: PlayedMatch[] = history.map((r) => {
-    const notes = (r.h.notes ?? {}) as { won?: boolean; opponentIds?: string[]; partnerIds?: string[] };
-    return {
-      matchId: r.h.matchId,
-      playedAt: r.h.createdAt,
-      opponentIds: notes.opponentIds ?? [],
-      partnerIds: notes.partnerIds ?? [],
-      won: !!notes.won,
-      myRating: r.h.ratingBefore,
-      partnerRatings: [],
-    };
-  });
-  const reliability = reliabilityFromHistory(played, new Date());
+  /* Everything derived comes through the one shared reader, so this page cannot
+     drift from the roster or the tournament view. */
+  const reliability = reliabilityForPerson(history.map((r) => r.h), id, new Date());
+
+  /* §8.1 — recomputed here rather than trusting `people.flags`, so the profile
+     shows the current picture even if the stored flag is behind. */
+  const played = playedFromHistory(history.map((r) => r.h), id);
+  const flag = detectSandbagging(
+    played
+      .filter((m) => (m.opponentRatings?.length ?? 0) > 0)
+      .map((m) => ({
+        avgOpponentRating: m.opponentRatings!.reduce((s, n) => s + n, 0) / m.opponentRatings!.length,
+        won: m.won,
+        playedAt: m.playedAt,
+      })),
+    person.riseBest ?? 0,
+  );
+  const flagNote = sandbaggingNote(flag);
 
   const names = await opponentNames(history);
   const tier = person.riseBest == null ? null : getTier(person.riseBest);
@@ -67,6 +71,15 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
             {person.phone ? ` · ${maskPhone(person.phone)}` : " · no phone on file"}
           </p>
         </header>
+
+        {/* §8.1. Neutral wording on purpose: this fires just as readily on a
+            player improving fast as on one hiding, and the spec is explicit
+            that it is a prompt for a human, never an automatic correction. */}
+        {flagNote && (
+          <p className="rounded-xl border border-amber-500/50 bg-amber-500/10 p-3 text-sm font-bold text-amber-300">
+            ⚠ {flagNote}
+          </p>
+        )}
 
         <section className="grid gap-3 sm:grid-cols-3">
           <div className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">

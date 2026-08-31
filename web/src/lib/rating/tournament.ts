@@ -19,7 +19,7 @@ import "server-only";
  * they are decisions, not lookups, and apply.ts uses them too. */
 
 import { getTier, DEFAULT_SEED, type Phase, type Tier } from "@/lib/rating";
-import { reliabilityFromHistory, type PlayedMatch } from "@/lib/rating/reliability";
+import { reliabilityForPerson } from "@/lib/rating/reliability";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { matches as matchesTable, people, ratingHistory, type Player, type Tournament } from "@/lib/db/schema";
@@ -132,7 +132,7 @@ export async function tournamentRatings(
           .select({
             personId: ratingHistory.personId,
             createdAt: ratingHistory.createdAt,
-            before: ratingHistory.ratingBefore,
+            ratingBefore: ratingHistory.ratingBefore,
             notes: ratingHistory.notes,
           })
           .from(ratingHistory)
@@ -140,19 +140,13 @@ export async function tournamentRatings(
       : Promise.resolve([]),
   ]);
 
+  /* One shared reader — see lib/rating/reliability.ts. Three hand-rolled copies
+     of this mapping is what kept the independence signal dead. */
   const now = new Date();
   const reliabilityBy = new Map<string, number>();
   for (const id of new Set(personIds)) {
-    const played: PlayedMatch[] = allHistory
-      .filter((h) => h.personId === id)
-      .map((h) => {
-        const notes = (h.notes ?? {}) as { won?: boolean; opponentIds?: string[] };
-        return {
-          matchId: "", playedAt: h.createdAt, opponentIds: notes.opponentIds ?? [],
-          partnerIds: [], won: !!notes.won, myRating: h.before, partnerRatings: [],
-        };
-      });
-    if (played.length > 0) reliabilityBy.set(id, reliabilityFromHistory(played, now).score);
+    const r = reliabilityForPerson(allHistory, id, now);
+    if (r.parts.volume > 0) reliabilityBy.set(id, r.score);
   }
 
   const byPerson = new Map(roster.map((p) => [p.id, p]));

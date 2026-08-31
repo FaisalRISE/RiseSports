@@ -107,6 +107,8 @@ export type PlayedMatch = {
   myRating: number;
   /** Partner ratings at the time, for the carry test. */
   partnerRatings: number[];
+  /** Opponent ratings at the time, for §8.1. Empty on pre-existing rows. */
+  opponentRatings?: number[];
 };
 
 /** Spec §7: `carriedShare` is the fraction of WINS with a partner 200+ above. */
@@ -137,3 +139,61 @@ export function reliabilityFromHistory(history: PlayedMatch[], now: Date): Relia
     daysSinceLastPlayed: Math.floor((now.getTime() - last) / 86_400_000),
   });
 }
+
+/* ── The single reader ───────────────────────────────────────────────────
+ *
+ * This mapping used to be copy-pasted into three pages, and that is precisely
+ * how the independence signal stayed dead: every copy passed
+ * `partnerRatings: []`, so `carriedShare` was always 0, everyone scored full
+ * independence, and the spec's own headline example — "78% of wins came with
+ * stronger partners" — could never appear. Fixing one copy would not have
+ * fixed the others.
+ *
+ * One reader, used everywhere. */
+
+/** A `rating_history` row, as much of it as these rules need. */
+export type HistoryRow = {
+  personId: string;
+  createdAt: Date;
+  ratingBefore: number;
+  notes: unknown;
+};
+
+type Notes = {
+  won?: boolean;
+  opponentIds?: string[];
+  partnerIds?: string[];
+  partnerRatings?: number[];
+  opponentRatings?: number[];
+};
+
+/**
+ * Turn stored history into the shape the reliability and sandbagging rules
+ * want.
+ *
+ * Rows written before ratings were recorded in `notes` simply carry no partner
+ * or opponent ratings. They degrade quietly — no carry evidence, no sandbagging
+ * evidence — rather than throwing or, worse, being counted as clean.
+ */
+export function playedFromHistory(rows: HistoryRow[], personId?: string): PlayedMatch[] {
+  return rows
+    .filter((r) => personId == null || r.personId === personId)
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+    .map((r) => {
+      const n = (r.notes ?? {}) as Notes;
+      return {
+        matchId: "",
+        playedAt: r.createdAt,
+        opponentIds: n.opponentIds ?? [],
+        partnerIds: n.partnerIds ?? [],
+        won: !!n.won,
+        myRating: r.ratingBefore,
+        partnerRatings: n.partnerRatings ?? [],
+        opponentRatings: n.opponentRatings ?? [],
+      };
+    });
+}
+
+/** Reliability for one person, straight from their stored history. */
+export const reliabilityForPerson = (rows: HistoryRow[], personId: string, now: Date) =>
+  reliabilityFromHistory(playedFromHistory(rows, personId), now);

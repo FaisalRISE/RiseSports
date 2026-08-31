@@ -4,7 +4,7 @@ import { db } from "@/lib/db";
 import { people, players, ratingHistory } from "@/lib/db/schema";
 import { getTier } from "@/lib/rating";
 import { maskPhone, normalisePhone } from "@/lib/people";
-import { reliabilityFromHistory, type PlayedMatch } from "@/lib/rating/reliability";
+import { reliabilityForPerson } from "@/lib/rating/reliability";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 
 /* The roster — every player RISE knows about, and what their rating is.
@@ -58,7 +58,7 @@ export default async function PeoplePage({
           .select({
             personId: ratingHistory.personId,
             createdAt: ratingHistory.createdAt,
-            before: ratingHistory.ratingBefore,
+            ratingBefore: ratingHistory.ratingBefore,
             notes: ratingHistory.notes,
           })
           .from(ratingHistory)
@@ -72,7 +72,7 @@ export default async function PeoplePage({
     events: eventsBy.get(person.id) ?? 0,
     /* Computed, never read from the column: reliability DECAYS WITH TIME, so a
        stored value goes stale without anyone playing a match. */
-    reliability: reliabilityFor(person.id, history),
+    reliability: reliabilityForPerson(history, person.id, new Date()),
   }));
 
   return (
@@ -143,25 +143,4 @@ export default async function PeoplePage({
       </main>
     </>
   );
-}
-
-/** One person's reliability, from the history rows already loaded. */
-function reliabilityFor(
-  personId: string,
-  history: { personId: string; createdAt: Date; before: number; notes: unknown }[],
-) {
-  const mine = history.filter((h) => h.personId === personId);
-  const played: PlayedMatch[] = mine.map((h) => {
-    const notes = (h.notes ?? {}) as { won?: boolean; opponentIds?: string[] };
-    return {
-      matchId: "",
-      playedAt: h.createdAt,
-      opponentIds: notes.opponentIds ?? [],
-      partnerIds: [],
-      won: !!notes.won,
-      myRating: h.before,
-      partnerRatings: [],
-    };
-  });
-  return reliabilityFromHistory(played, new Date());
 }
