@@ -98,11 +98,23 @@ than 13.3k lines mixing minified single-letter locals with readable ones.
 
 Consequences for anyone working in this repo:
 
-- The root single-file app is **frozen, and no longer served** (cutover 2026-08-31). It stays
-  in the repo — it is still the only home of community play, venues, the ledger screen and
-  Americano/Mexicano — but the Vercel project now builds `web/`. Do not break it; fixes only.
-- **`rise-sports.vercel.app` serves the Next.js app.** One Vercel project, Root Directory
-  `web`. There is no second project; anything named `rise-sports-web` is a stray to delete.
+- **The cutover was made on 2026-08-31 and REVERSED on 2026-09-01.** Serving `web/` took
+  community play, venues, the ledger and Americano/Mexicano off the live site, and Faisal had
+  only ever asked for the tournament side to be upgraded. The consent for that was one line in
+  a long plan document, which is not consent. `rise-sports.vercel.app` **serves the root
+  single-file app again**: Vercel Root Directory empty, framework preset `Other`.
+- **The direction is still `web/`, but as ONE app, not a replacement.** Confirmed by Faisal on
+  2026-09-01: the code must stay hard to copy, this is a business, any organiser in India may
+  use it, and the target is thousands of players across ~50 tournaments — none of which a
+  single self-contained HTML file can serve. So `web/` absorbs community play, the social
+  formats, venues and the ledger, and only then takes the address. Order of work and the
+  answers behind it: `.claude/plans/i-want-to-develop-stateful-pascal.md`.
+- **Ask before changing anything the user can see.** Standing agreement, 2026-09-01: the
+  interface, which app the address serves, or any feature already in use — one plain question,
+  wait for a yes. Not a line item inside a plan.
+- **Empty commits may not trigger a Vercel build.** "Skip deployments when there are no changes
+  to the root directory" is on, and an empty commit changes no files. To force a rebuild, touch
+  a real file under the build root.
 - The new app uses the **same Supabase project** (`utfvjsvvbifwcektzrwj`) as the legacy
   per-event `Format/` apps, on its own 14 tables — no name collides with `osl_live`,
   `live_scores` or `app_backups`. Neon was briefly used during development and is gone; it was
