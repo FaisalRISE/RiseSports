@@ -1,16 +1,82 @@
 @import "tailwindcss";
 
-/* The console is a dark surface by design: it is read at arm's length on a
-   phone, courtside, often under floodlights, and a light background there is
-   glare. Every component assumes it, so the theme is committed rather than
-   following prefers-color-scheme — a half-applied light mode reads as broken
-   (black text in black inputs), which is exactly what happened when this was
-   left on the scaffold's default. */
+/* ── Light, matching the original RISE Sports app ─────────────────────────
+ *
+ * Faisal, 2026-09-13, comparing the two side by side: "What happened to the
+ * interface? it is looking very bad and also very bad to use." He is right —
+ * the original is a designed product and this was scaffolding built to
+ * exercise an engine. He chose to match the original rather than invent a new
+ * look, so these are ITS colours, read out of `C` in app.source.js:440 rather
+ * than guessed from a screenshot.
+ *
+ * ── Why a palette remap and not 402 hand edits ───────────────────────────
+ * Every screen here was written against Tailwind's neutral scale used as an
+ * inverted palette: `bg-neutral-950` for surfaces, `text-neutral-500` for
+ * muted text, `bg-neutral-200` + `text-neutral-900` for a primary button. That
+ * is 402 class usages across 18 files. Tailwind v4 lets the scale itself be
+ * redefined, so the whole app turns over at once and the roles stay coherent —
+ * rather than a sweep that leaves black text in a black input somewhere nobody
+ * looked, which is the exact failure the previous version of this file warned
+ * about.
+ *
+ * Read this as: surface, border, muted, ink. The numbers are historical.
+ */
+@theme {
+  /* Surfaces. 950 was the page and input background; 900 was a card at /60. */
+  --color-neutral-950: #ffffff;
+  --color-neutral-900: #ffffff;
+
+  /* Borders, lightest to strongest. */
+  --color-neutral-800: #e2e8f0;
+  --color-neutral-700: #cbd5e1;
+  --color-neutral-600: #94a3b8;
+
+  /* Text, dimmest to strongest. 500 is the most common muted tone in the app. */
+  --color-neutral-500: #64748b;
+  --color-neutral-400: #475569;
+  --color-neutral-300: #334155;
+
+  /* Ink. Also the primary button's FILL — `bg-neutral-200` with
+     `text-neutral-900` was a light button on a dark page, and stays a
+     high-contrast button now that the two have swapped places. */
+  --color-neutral-200: #0f172a;
+  --color-neutral-100: #0f172a;
+
+  /* The brand. The original app's accent is lime, with teal alongside it —
+     the same gradient as the favicon. */
+  --color-amber-400: #65a30d;
+  --color-amber-300: #4d7c0f;
+  --color-amber-950: #ffffff;
+  --color-amber-500: #65a30d;
+
+  /* ── Semantic colours ──────────────────────────────────────────────────
+   * Warnings, confirmations and gender tags were all written in the -300/-400
+   * shades, which are the LIGHT end of each ramp: correct on a dark page,
+   * washed out to the point of unreadable on a pale one. Sixty-seven usages,
+   * so they move here with the rest rather than one at a time.
+   *
+   * The values are the original app's own (`C` in app.source.js:445): red
+   * #e11d48, teal #0d9488, purple #7c3aed, blue #2563eb. The -500 shades are
+   * deliberately left alone — they are only ever used at low alpha as a tint
+   * behind these, and a tint should stay pale. */
+  --color-rose-400: #e11d48;
+  --color-rose-300: #be123c;
+  --color-rose-200: #9f1239;
+
+  --color-emerald-400: #0d9488;
+  --color-emerald-300: #0f766e;
+  /* Its button's label, which was near-black on a bright fill and is now the
+     other way round. */
+  --color-emerald-950: #ffffff;
+
+  --color-violet-300: #6d28d9;
+  --color-blue-300: #2563eb;
+}
 
 :root {
-  --background: #0a0a0a;
-  --foreground: #ededed;
-  color-scheme: dark;
+  --background: #eef1f6;
+  --foreground: #0f172a;
+  color-scheme: light;
 }
 
 @theme inline {
@@ -26,7 +92,7 @@ body {
   font-family: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-/* Form controls inherit the dark surface rather than the UA's light default.
+/* Form controls inherit the surface rather than the UA default.
    This MUST sit in @layer base: Tailwind's utilities live in a layer, and
    un-layered CSS beats a layer regardless of specificity — an un-layered
    `color: inherit` here silently overrode every text-* utility on a button and
@@ -42,6 +108,6 @@ body {
 
 /* Native select popups and date pickers follow color-scheme above. */
 option {
-  background: #171717;
-  color: #ededed;
+  background: #ffffff;
+  color: #0f172a;
 }
