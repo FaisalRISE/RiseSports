@@ -55,10 +55,16 @@ export async function submitEntry(slug: string, formData: FormData): Promise<Sub
     .filter((w) => formData.get(`waiver:${w.id}`) === "on")
     .map((w) => w.id);
 
+  /* With one category the form shows no picker, so nothing comes back — record
+     the category anyway rather than leaving it null, or approval would have to
+     guess later what the entry already implied. */
+  const chosen = str(formData.get("divisionId"), 64) || null;
+  const divisionId = chosen ?? (divs.length === 1 ? divs[0].id : null);
+
   const entry = {
     teamName: str(formData.get("teamName"), 60),
     players: names.map((name, i) => ({ name, phone: phones[i] ?? null, gender: genders[i] ?? "M" })),
-    divisionId: str(formData.get("divisionId"), 64) || null,
+    divisionId,
     answers,
     waiversAccepted,
   };

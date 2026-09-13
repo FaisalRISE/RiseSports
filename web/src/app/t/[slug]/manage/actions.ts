@@ -2,16 +2,17 @@
 
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/lib/db";
 import { groups, matches, people, players, ratingHistory, teams, tournaments } from "@/lib/db/schema";
 import { principalFor } from "@/lib/auth/guard";
 import { canManage, assert } from "@/lib/auth/policy";
+import { resolveDivisionId } from "@/lib/divisions";
 import { planGroups, knockoutRefsFromGroups } from "@/lib/formats/pickleboss";
 import { resolveRef } from "@/lib/brackets";
-import { loadTournament, groupTables, refResolver } from "@/lib/tournamentState";
+import { loadTournament, groupTables, resolverFactory } from "@/lib/tournamentState";
 import { findOrCreatePerson, carriedRating, peopleForTournament, searchPeople } from "@/lib/people";
 import { reliabilityForPerson } from "@/lib/rating/reliability";
 import type { PickerResult } from "@/components/PersonPicker";
@@ -31,17 +32,30 @@ async function requireManager(tournamentId: string) {
 
 const name = z.string().trim().min(1).max(60);
 
+/* Which category an action applies to. Every form that draws or adds carries
+   it; an event with one category sends nothing and gets its "Main" back, which
+   is why single-category events need no UI for this at all. */
+const divisionFrom = (tournamentId: string, formData: FormData) =>
+  resolveDivisionId(tournamentId, (formData.get("divisionId") as string | null) ?? null);
+
 export async function addTeam(tournamentId: string, formData: FormData) {
   const t = await requireManager(tournamentId);
   const parsed = name.safeParse(formData.get("name"));
   if (!parsed.success) return;
 
-  const existing = await db.select({ id: teams.id }).from(teams).where(eq(teams.tournamentId, t.id));
+  const divisionId = await divisionFrom(t.id, formData);
+  /* Seed and colour run per CATEGORY, not per event: Mixed starting at seed 9
+     because Men's Doubles filled the first eight would be nonsense. */
+  const existing = await db
+    .select({ id: teams.id })
+    .from(teams)
+    .where(and(eq(teams.tournamentId, t.id), eq(teams.divisionId, divisionId)));
   const COLOURS = ["#2450c8", "#c98d1c", "#07705b", "#ab1730", "#5f28c4", "#a85400", "#0b6f68", "#a8256e"];
 
   await db.insert(teams).values({
     id: randomUUID(),
     tournamentId: t.id,
+    divisionId,
     name: parsed.data,
     seed: existing.length + 1,
     colour: COLOURS[existing.length % COLOURS.length],
@@ -171,6 +185,18 @@ export async function addMatch(tournamentId: string, formData: FormData) {
   const b = String(formData.get("teamB") ?? "");
   if (!a || !b || a === b) return;
 
+  /* The category comes from the TEAMS, never from the form: a match belongs to
+     whichever category its entrants are in, and two teams from different
+     categories have no business playing a fixture. Refusing here is cheap;
+     tracking down a Mixed pair in the Men's Doubles table later is not. */
+  const sides = await db
+    .select({ id: teams.id, divisionId: teams.divisionId })
+    .from(teams)
+    .where(and(eq(teams.tournamentId, t.id), inArray(teams.id, [a, b])));
+  if (sides.length !== 2) return;
+  const [first, second] = sides;
+  if (first.divisionId !== second.divisionId) return;
+
   /* Seed the line-up with the team's squad in listed order. For the OSL format
      that IS the declared pair order (A1+A2, A3+A4, A5+A6), so a match is
      immediately scoreable and the organiser can reorder afterwards. */
@@ -180,6 +206,7 @@ export async function addMatch(tournamentId: string, formData: FormData) {
   await db.insert(matches).values({
     id: randomUUID(),
     tournamentId: t.id,
+    divisionId: first.divisionId,
     round,
     teamAId: a,
     teamBId: b,
@@ -234,17 +261,27 @@ export async function generateGroups(tournamentId: string, formData: FormData) {
   const courtNames = String(formData.get("courts") ?? "")
     .split(",").map((c) => c.trim()).filter(Boolean);
 
-  const teamRows = await db.select().from(teams).where(eq(teams.tournamentId, t.id));
+  const divisionId = await divisionFrom(t.id, formData);
+
+  const teamRows = await db
+    .select()
+    .from(teams)
+    .where(and(eq(teams.tournamentId, t.id), eq(teams.divisionId, divisionId)));
   if (teamRows.length < 2) return;
 
   const squads = await db.select().from(players).where(eq(players.tournamentId, t.id));
   const six = (teamId: string) => squads.filter((p) => p.teamId === teamId).slice(0, 6).map((p) => p.id);
 
-  const existing = await db.select({ id: groups.id }).from(groups).where(eq(groups.tournamentId, t.id));
+  /* Redraw THIS category only. Drawing Mixed must not wipe the Men's Doubles
+     groups that were drawn an hour ago and may already have results in them. */
+  const existing = await db
+    .select({ id: groups.id })
+    .from(groups)
+    .where(and(eq(groups.tournamentId, t.id), eq(groups.divisionId, divisionId)));
   for (const g of existing) {
     await db.delete(matches).where(eq(matches.groupId, g.id));
   }
-  await db.delete(groups).where(eq(groups.tournamentId, t.id));
+  await db.delete(groups).where(and(eq(groups.tournamentId, t.id), eq(groups.divisionId, divisionId)));
 
   const seeded = [...teamRows].sort((a, b) => a.seed - b.seed);
   const plans = planGroups(seeded, count, courtNames);
@@ -253,7 +290,7 @@ export async function generateGroups(tournamentId: string, formData: FormData) {
     if (plan.entrants.length < 2) continue;
     const groupId = randomUUID();
     await db.insert(groups).values({
-      id: groupId, tournamentId: t.id, key: plan.key,
+      id: groupId, tournamentId: t.id, divisionId, key: plan.key,
       name: `Group ${plan.key}`, court: plan.court, position: i,
     });
 
@@ -263,6 +300,7 @@ export async function generateGroups(tournamentId: string, formData: FormData) {
         return {
           id: randomUUID(),
           tournamentId: t.id,
+          divisionId,
           groupId,
           round: `Group ${plan.key} · R${ri + 1}`,
           teamAId: teamA.id,
@@ -293,12 +331,22 @@ export async function generateKnockout(tournamentId: string, formData: FormData)
   const t = await requireManager(tournamentId);
   const perGroup = z.coerce.number().int().min(1).max(4).catch(2).parse(formData.get("qualify"));
 
-  const groupRows = await db.select().from(groups).where(eq(groups.tournamentId, t.id));
+  const divisionId = await divisionFrom(t.id, formData);
+
+  const groupRows = await db
+    .select()
+    .from(groups)
+    .where(and(eq(groups.tournamentId, t.id), eq(groups.divisionId, divisionId)));
   if (groupRows.length < 1) return;
 
-  /* Replace any previous, unplayed knockout draw. A played one is left alone:
-     redrawing over results would destroy them. */
-  const existing = await db.select().from(matches).where(eq(matches.tournamentId, t.id));
+  /* Replace any previous, unplayed knockout draw IN THIS CATEGORY. A played one
+     is left alone: redrawing over results would destroy them. Scoping to the
+     division also stops a Mixed redraw deleting the Men's Doubles semi-finals,
+     which share a tournament and nothing else. */
+  const existing = await db
+    .select()
+    .from(matches)
+    .where(and(eq(matches.tournamentId, t.id), eq(matches.divisionId, divisionId)));
   for (const m of existing) {
     if (m.groupId === null && (m.log as unknown[]).length === 0 && m.typedScoreA === null) {
       await db.delete(matches).where(eq(matches.id, m.id));
@@ -311,6 +359,7 @@ export async function generateKnockout(tournamentId: string, formData: FormData)
   const rows = pairs.map((pair, i) => ({
     id: randomUUID(),
     tournamentId: t.id,
+    divisionId,
     groupId: null,
     round: pairs.length === 1 ? "Final" : `${label} ${i + 1}`,
     teamAId: null,
@@ -329,6 +378,7 @@ export async function generateKnockout(tournamentId: string, formData: FormData)
     await db.insert(matches).values({
       id: randomUUID(),
       tournamentId: t.id,
+      divisionId,
       groupId: null,
       round: "Final",
       slotA: "W:Semi-Final 1",
@@ -351,17 +401,24 @@ export async function fillKnockoutSlots(tournamentId: string) {
   if (!loaded) return;
 
   const tables = groupTables(loaded);
-  const resolver = refResolver(loaded, tables);
+
+  /* One resolver PER CATEGORY. A single shared resolver would read "A1" out of
+     whichever category happened to come back from the database last — see
+     refResolver's note. */
+  const resolverFor = resolverFactory(loaded, tables);
+
+  /* Hoisted out of the loop: it does not vary per match, and re-reading the
+     whole squad once per knockout slot was a query per match for no reason. */
+  const squads = await db.select().from(players).where(eq(players.tournamentId, t.id));
+  const six = (teamId: string | null) =>
+    teamId ? squads.filter((p) => p.teamId === teamId).slice(0, 6).map((p) => p.id) : [];
 
   for (const m of loaded.matches) {
     if (m.groupId !== null) continue;
+    const resolver = resolverFor(m.divisionId);
     const a = m.teamAId ?? (m.slotA ? resolveRef(m.slotA, resolver) : null);
     const b = m.teamBId ?? (m.slotB ? resolveRef(m.slotB, resolver) : null);
     if (a === m.teamAId && b === m.teamBId) continue;
-
-    const squads = await db.select().from(players).where(eq(players.tournamentId, t.id));
-    const six = (teamId: string | null) =>
-      teamId ? squads.filter((p) => p.teamId === teamId).slice(0, 6).map((p) => p.id) : [];
 
     await db.update(matches)
       .set({ teamAId: a, teamBId: b, lineupA: six(a), lineupB: six(b) })

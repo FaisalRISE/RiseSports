@@ -62,17 +62,40 @@ describe("the generated migration applies to a real Postgres", () => {
       .toEqual(["group_id", "slot_a", "slot_b"]);
   });
 
-  it("keeps group keys unique within a tournament but not across them", async () => {
+  it("keeps group keys unique within a CATEGORY, not within a tournament", async () => {
     const t2 = await db.insert(schema.tournaments).values({
       id: "other", slug: "other-cup", name: "Other Cup", ownerId: seeded.ownerId,
     }).returning({ id: schema.tournaments.id });
+    await db.insert(schema.divisions).values({ id: "dOther", tournamentId: t2[0].id, name: "Main" });
 
-    await db.insert(schema.groups).values({ id: "g1", tournamentId: seeded.oslId, key: "A" });
+    const [oslMain] = await db.select().from(schema.divisions)
+      .where(eq(schema.divisions.tournamentId, seeded.oslId));
+
+    /* A second category in the SAME event — the case the index exists for. */
+    await db.insert(schema.divisions).values({
+      id: "dMixed", tournamentId: seeded.oslId, name: "Mixed Doubles", position: 1,
+    });
+
+    await db.insert(schema.groups).values({
+      id: "g1", tournamentId: seeded.oslId, divisionId: oslMain.id, key: "A",
+    });
+
     // same key, different tournament: allowed
-    await db.insert(schema.groups).values({ id: "g2", tournamentId: t2[0].id, key: "A" });
-    // same key, same tournament: refused
+    await db.insert(schema.groups).values({
+      id: "g2", tournamentId: t2[0].id, divisionId: "dOther", key: "A",
+    });
+
+    /* Same key, same tournament, DIFFERENT category: allowed, and this is the
+       whole point — Men's Doubles and Mixed each get their own Group A. */
+    await db.insert(schema.groups).values({
+      id: "g3", tournamentId: seeded.oslId, divisionId: "dMixed", key: "A",
+    });
+
+    // same key, same category: still refused
     await expect(
-      db.insert(schema.groups).values({ id: "g3", tournamentId: seeded.oslId, key: "A" }),
+      db.insert(schema.groups).values({
+        id: "g4", tournamentId: seeded.oslId, divisionId: oslMain.id, key: "A",
+      }),
     ).rejects.toThrow();
 
     /* Clean up so later tests see only the seeded tournaments — these run
@@ -80,6 +103,7 @@ describe("the generated migration applies to a real Postgres", () => {
        its neighbours. */
     await db.delete(schema.tournaments).where(eq(schema.tournaments.id, t2[0].id));
     await db.delete(schema.groups).where(eq(schema.groups.id, "g1"));
+    await db.delete(schema.divisions).where(eq(schema.divisions.id, "dMixed"));
   });
 
   it("enforces the unique slug", async () => {

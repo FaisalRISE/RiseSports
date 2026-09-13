@@ -50,15 +50,18 @@ beforeAll(async () => {
     }
   }
 
-  const { users, tournaments, teams, players, matches, people } = schema;
+  const { users, tournaments, divisions, teams, players, matches, people } = schema;
   await db.insert(users).values({ id: ids.owner, email: "t@e.st", name: "Organiser" });
   await db.insert(tournaments).values({
     id: ids.tournament, slug: "pipeline", name: "Pipeline", sport: "pb",
     format: "standard", ownerId: ids.owner, status: "live",
   });
+  /* Every tournament has at least one category — see lib/divisions. */
+  const divisionId = randomUUID();
+  await db.insert(divisions).values({ id: divisionId, tournamentId: ids.tournament, name: "Main" });
   await db.insert(teams).values([
-    { id: ids.teamA, tournamentId: ids.tournament, name: "A", seed: 1 },
-    { id: ids.teamB, tournamentId: ids.tournament, name: "B", seed: 2 },
+    { id: ids.teamA, tournamentId: ids.tournament, divisionId, name: "A", seed: 1 },
+    { id: ids.teamB, tournamentId: ids.tournament, divisionId, name: "B", seed: 2 },
   ]);
 
   /* A 400-point gap inside the winning pair — the §6.1 carry case, and the
@@ -86,7 +89,7 @@ beforeAll(async () => {
   ]);
 
   await db.insert(matches).values({
-    id: ids.match, tournamentId: ids.tournament, round: "Round 1",
+    id: ids.match, tournamentId: ids.tournament, divisionId, round: "Round 1",
     teamAId: ids.teamA, teamBId: ids.teamB,
     log: [], lineupA: [], lineupB: [], ackedGates: [],
     typedScoreA: 11, typedScoreB: 3, rev: 1,

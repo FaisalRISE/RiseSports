@@ -156,6 +156,19 @@ describe("validateEntry", () => {
       expect.objectContaining({ field: "division" }),
     );
   });
+
+  /* Every event now has at least one category behind the scenes. Asking a club
+     night's entrants to choose from a list of one — and refusing the entry when
+     they did not — is the regression this pins. */
+  it("asks nothing when the event runs a single category", () => {
+    expect(validateEntry(t(), entry(), ["only"])).toEqual([]);
+  });
+
+  it("still rejects a forged id, even with only one category", () => {
+    expect(validateEntry(t(), entry({ divisionId: "nope" }), ["only"])).toContainEqual(
+      expect.objectContaining({ field: "division" }),
+    );
+  });
 });
 
 /* Money is integer paise throughout — ₹ arithmetic in floats is how a book

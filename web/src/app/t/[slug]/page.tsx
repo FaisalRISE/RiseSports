@@ -6,7 +6,7 @@ import { canView } from "@/lib/auth/policy";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { StandingsTable } from "@/components/StandingsTable";
 import { viewMatch, allowsDraws } from "@/lib/matchState";
-import { loadTournament, groupTables, refResolver, resolveSlots } from "@/lib/tournamentState";
+import { loadTournament, groupTables, resolverFactory, resolveSlots } from "@/lib/tournamentState";
 
 /* Spectator view. A Server Component: the scoring engine, the tie-break chain
  * and the knockout resolution all run here; the browser receives finished rows.
@@ -23,7 +23,8 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
 
   const sport = sportOf(t.sport);
   const tables = groupTables(loaded);
-  const resolver = refResolver(loaded, tables);
+  /* Per category: "A1" means the A of the match's OWN category. */
+  const resolverFor = resolverFactory(loaded, tables);
   const nameOf = (id: string) => loaded.teams.find((x) => x.id === id)?.name ?? "—";
 
   const knockout = loaded.matches.filter((m) => m.groupId === null);
@@ -31,7 +32,7 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
 
   const matchRow = (m: (typeof loaded.matches)[number]) => {
     const view = viewMatch(t, m);
-    const [a, b] = resolveSlots(m, resolver, nameOf);
+    const [a, b] = resolveSlots(m, resolverFor(m.divisionId), nameOf);
     const [sa, sb] = view.typed ? [m.typedScoreA, m.typedScoreB] : [view.a, view.b];
     const live = view.rallies > 0 && !view.over;
     const decided = view.over || view.typed;

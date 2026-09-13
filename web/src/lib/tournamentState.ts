@@ -75,10 +75,29 @@ export function groupTables(loaded: LoadedTournament): GroupTable[] {
   });
 }
 
-/** Resolver that fills knockout slots from group placings and earlier ties. */
-export function refResolver(loaded: LoadedTournament, tables: GroupTable[]): RefResolver {
-  const byKey = new Map(tables.map((tb) => [tb.group.key, tb]));
-  const byRound = new Map(loaded.matches.map((m) => [m.round, m]));
+/**
+ * Resolver that fills knockout slots from group placings and earlier ties.
+ *
+ * **Scoped to one division, and that is not optional.** Both lookups below are
+ * keyed on strings that are unique in a single-category event and stop being
+ * unique the moment there is a second: every category has a Group A, and every
+ * category has a Semi-Final 1. Unscoped, the later row silently wins the Map
+ * and `A1` in Men's Doubles resolves to the *Mixed* group winner — no error, no
+ * warning, just the wrong pair walking onto court for a final.
+ *
+ * `divisionId` is a required argument for exactly that reason: there is no
+ * sensible default, so every caller is made to say which category it means.
+ */
+export function refResolver(
+  loaded: LoadedTournament,
+  tables: GroupTable[],
+  divisionId: string,
+): RefResolver {
+  const mine = loaded.matches.filter((m) => m.divisionId === divisionId);
+  const byKey = new Map(
+    tables.filter((tb) => tb.group.divisionId === divisionId).map((tb) => [tb.group.key, tb]),
+  );
+  const byRound = new Map(mine.map((m) => [m.round, m]));
 
   const outcome = (code: string, want: "w" | "l"): string | null => {
     const m = byRound.get(code);
@@ -101,6 +120,29 @@ export function refResolver(loaded: LoadedTournament, tables: GroupTable[]): Ref
     },
     tieWinner: (code) => outcome(code, "w"),
     tieLoser: (code) => outcome(code, "l"),
+  };
+}
+
+/**
+ * A resolver per category, built on demand.
+ *
+ * What every page and action actually needs: they walk a list of matches from
+ * several categories and must resolve each one's slots inside its own. Handing
+ * them one resolver is the bug; making each of them write this memo is four
+ * chances to forget.
+ */
+export function resolverFactory(
+  loaded: LoadedTournament,
+  tables: GroupTable[],
+): (divisionId: string) => RefResolver {
+  const cache = new Map<string, RefResolver>();
+  return (divisionId) => {
+    let r = cache.get(divisionId);
+    if (!r) {
+      r = refResolver(loaded, tables, divisionId);
+      cache.set(divisionId, r);
+    }
+    return r;
   };
 }
 

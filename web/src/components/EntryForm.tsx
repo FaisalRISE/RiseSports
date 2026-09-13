@@ -85,7 +85,10 @@ export function EntryForm(props: EntryFormProps) {
         <FieldError message={errorFor("teamName")} />
       </div>
 
-      {divisions.length > 0 && (
+      {/* Only when there is a real choice. Every event has at least one
+          category behind the scenes, and asking a club night's entrants to pick
+          from a list of one is a question with no information in it. */}
+      {divisions.length > 1 && (
         <div>
           <label className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Division</label>
           <select

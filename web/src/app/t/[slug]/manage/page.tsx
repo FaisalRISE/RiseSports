@@ -11,7 +11,7 @@ import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, generateGroups, generateKnockout, fillKnockoutSlots, seedByRating, searchRoster } from "./actions";
 import { SEED_BANDS } from "@/lib/rating";
 import { PersonPicker } from "@/components/PersonPicker";
-import { loadTournament, groupTables, refResolver, resolveSlots } from "@/lib/tournamentState";
+import { loadTournament, groupTables, resolverFactory, resolveSlots } from "@/lib/tournamentState";
 import { StandingsTable } from "@/components/StandingsTable";
 import { allowsDraws } from "@/lib/matchState";
 
@@ -40,15 +40,16 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
 
   const loaded = await loadTournament(slug);
   const tables = loaded ? groupTables(loaded) : [];
-  const resolver = loaded ? refResolver(loaded, tables) : null;
+  /* Per category: "A1" means the A of the match's OWN category. */
+  const resolverFor = loaded ? resolverFactory(loaded, tables) : null;
   const teamNameOf = (id: string) => teamRows.find((x) => x.id === id)?.name ?? "—";
 
   /* An unfilled knockout side shows its seed reference in words rather than
      "TBD", so an organiser can see where the team will come from. */
   const slotLabel = (m: (typeof matchRows)[number], side: "a" | "b", teamName?: string) => {
     if (teamName) return teamName;
-    if (!resolver) return "TBD";
-    const [ra, rb] = resolveSlots(m, resolver, teamNameOf);
+    if (!resolverFor) return "TBD";
+    const [ra, rb] = resolveSlots(m, resolverFor(m.divisionId), teamNameOf);
     return (side === "a" ? ra : rb).label;
   };
 

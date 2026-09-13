@@ -8,6 +8,7 @@ import { z } from "zod";
 
 import { db } from "@/lib/db";
 import { tournaments } from "@/lib/db/schema";
+import { createDefaultDivision } from "@/lib/divisions";
 import { SPORT_IDS } from "@/lib/sports/registry";
 
 /** URL-safe slug from a name, with a short suffix if it is already taken. */
@@ -47,8 +48,9 @@ export async function createTournament(formData: FormData) {
      created from the UI. Auth.js replaces this with the real user id. */
   const ownerId = await demoOwnerId();
 
+  const tournamentId = randomUUID();
   await db.insert(tournaments).values({
-    id: randomUUID(),
+    id: tournamentId,
     slug,
     name,
     sport: sport as never,
@@ -60,6 +62,11 @@ export async function createTournament(formData: FormData) {
        questions were set. The organiser opens entries deliberately. */
     status: "draft",
   });
+
+  /* Every event has at least one category, so the draw only ever has one code
+     path. An organiser who runs a single-category event never sees it — the
+     manage screen hides the tabs until there is a second. */
+  await createDefaultDivision(tournamentId);
 
   revalidatePath("/");
   redirect(`/t/${slug}/manage`);

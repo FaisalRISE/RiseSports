@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { loadTournament, refResolver, groupTables, resolveSlots } from "@/lib/tournamentState";
+import { loadTournament, resolverFactory, groupTables, resolveSlots } from "@/lib/tournamentState";
 import { principalFor } from "@/lib/auth/guard";
 import { canView } from "@/lib/auth/policy";
 import { PrintButton } from "@/components/PrintButton";
@@ -34,7 +34,8 @@ export default async function PrintPage({
   if (!canView(await principalFor(t.id), t.status)) notFound();
 
   const tables = groupTables(loaded);
-  const resolver = refResolver(loaded, tables);
+  /* Per category: "A1" means the A of the match's OWN category. */
+  const resolverFor = resolverFactory(loaded, tables);
   const byId = new Map(loaded.teams.map((x) => [x.id, x]));
   const nameOf = (id: string) => byId.get(id)?.name ?? "—";
 
@@ -43,7 +44,7 @@ export default async function PrintPage({
   }).replace(",", " ·");
 
   const asPrint = (m: (typeof loaded.matches)[number]): PrintMatch => {
-    const [a, b] = resolveSlots(m, resolver, nameOf);
+    const [a, b] = resolveSlots(m, resolverFor(m.divisionId), nameOf);
     return toPrintMatch(t, m, [a.label, b.label], withData);
   };
 

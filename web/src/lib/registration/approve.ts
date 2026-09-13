@@ -19,6 +19,7 @@ import {
   players, registrationPlayers, registrations, teams, tournaments,
   type Registration,
 } from "@/lib/db/schema";
+import { resolveDivisionId } from "@/lib/divisions";
 import { findOrCreatePerson, carriedRating } from "@/lib/people";
 import { ratingFormatFor } from "@/lib/rating/tournament";
 import { ratingKey } from "@/lib/sports/registry";
@@ -90,10 +91,17 @@ export async function approveRegistration(
     }),
   );
 
+  /* The category the entrant chose on the public page, validated against this
+     tournament — a stale or forged id would otherwise file the team under
+     another event's category. Falls back to the event's first division, which
+     for a single-category event is the "Main" it was created with. */
+  const divisionId = await resolveDivisionId(t.id, reg.divisionId);
+
   await db.transaction(async (tx) => {
     await tx.insert(teams).values({
       id: teamId,
       tournamentId: t.id,
+      divisionId,
       name: reg.teamName,
       /* Arrival order, as before. "Seed by RISE Rating" on the manage page is
          what replaces it with a skill order, deliberately as a separate act. */

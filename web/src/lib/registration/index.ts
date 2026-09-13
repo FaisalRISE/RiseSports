@@ -94,8 +94,14 @@ export function validateEntry(
   }
 
   /* A division must be one the organiser actually created — a stale or forged
-     id would otherwise attach the entry to nothing. */
-  if (divisionIds.length > 0 && !entry.divisionId) {
+     id would otherwise attach the entry to nothing.
+
+     Only ASKED for when there is a real choice. Every event now has at least
+     one category (see lib/divisions), so requiring a pick whenever any exist
+     would make a one-category club night demand that entrants choose from a
+     list of one — and reject the entry when they did not. A single category is
+     implied, not selected. */
+  if (divisionIds.length > 1 && !entry.divisionId) {
     problems.push({ field: "division", message: "Choose a division." });
   }
   if (entry.divisionId && divisionIds.length > 0 && !divisionIds.includes(entry.divisionId)) {

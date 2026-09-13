@@ -11,7 +11,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { matches, people, players, teams, tournaments, users } from "./schema";
+import { divisions, matches, people, players, teams, tournaments, users } from "./schema";
 import type { Side } from "@/lib/scoring/replay";
 
 type Db = {
@@ -69,8 +69,15 @@ export async function seed(db: Db) {
     venue: "Arena Sports Club",
   });
 
+  /* Every tournament has at least one category — see lib/divisions. A club
+     night runs only one, so it gets the "Main" an organiser never sees. */
+  const clubDivisionId = id();
+  await insert(divisions, {
+    id: clubDivisionId, tournamentId: clubId, name: "Main", position: 0,
+  });
+
   const clubTeams = ["Smashers", "Dinkers", "Volley Llamas", "Net Gains"].map((name, i) => ({
-    id: id(), tournamentId: clubId, name, seed: i + 1, colour: TEAM_COLOURS[i],
+    id: id(), tournamentId: clubId, divisionId: clubDivisionId, name, seed: i + 1, colour: TEAM_COLOURS[i],
   }));
   await insert(teams, clubTeams);
 
@@ -114,15 +121,15 @@ export async function seed(db: Db) {
   const lineupFor = (teamId: string) => clubPlayers.filter((p) => p.teamId === teamId).map((p) => p.id);
 
   await insert(matches, [
-    { id: id(), tournamentId: clubId, round: "Round 1", court: 1,
+    { id: id(), tournamentId: clubId, divisionId: clubDivisionId, round: "Round 1", court: 1,
       teamAId: clubTeams[0].id, teamBId: clubTeams[1].id,
       lineupA: lineupFor(clubTeams[0].id), lineupB: lineupFor(clubTeams[1].id),
       log: buildLog(11, 7), server: "a" },                       // finished
-    { id: id(), tournamentId: clubId, round: "Round 1", court: 2,
+    { id: id(), tournamentId: clubId, divisionId: clubDivisionId, round: "Round 1", court: 2,
       teamAId: clubTeams[2].id, teamBId: clubTeams[3].id,
       lineupA: lineupFor(clubTeams[2].id), lineupB: lineupFor(clubTeams[3].id),
       log: buildLog(6, 4), server: "b" },                        // in progress
-    { id: id(), tournamentId: clubId, round: "Round 2", court: 1,
+    { id: id(), tournamentId: clubId, divisionId: clubDivisionId, round: "Round 2", court: 1,
       teamAId: clubTeams[0].id, teamBId: clubTeams[2].id,
       lineupA: lineupFor(clubTeams[0].id), lineupB: lineupFor(clubTeams[2].id),
       log: [], server: "a" },                                    // not started
@@ -135,8 +142,13 @@ export async function seed(db: Db) {
     sport: "pb", format: "osl", ownerId, status: "live" as const,
   });
 
+  const oslDivisionId = id();
+  await insert(divisions, {
+    id: oslDivisionId, tournamentId: oslId, name: "Main", position: 0,
+  });
+
   const oslTeams = ["Zen Masters", "Smash Syndicate", "C & C Warriors", "Podium Finishers"].map((name, i) => ({
-    id: id(), tournamentId: oslId, name, seed: i + 1, colour: TEAM_COLOURS[i],
+    id: id(), tournamentId: oslId, divisionId: oslDivisionId, name, seed: i + 1, colour: TEAM_COLOURS[i],
   }));
   await insert(teams, oslTeams);
 
@@ -153,21 +165,21 @@ export async function seed(db: Db) {
   await insert(matches, [
     /* Parked one point BEFORE the first rotation, so opening this match and
        tapping once demonstrates the blocking Pair B confirmation immediately. */
-    { id: id(), tournamentId: oslId, round: "Group A", court: 1,
+    { id: id(), tournamentId: oslId, divisionId: oslDivisionId, round: "Group A", court: 1,
       teamAId: oslTeams[0].id, teamBId: oslTeams[1].id,
       lineupA: oslSix(oslTeams[0].id), lineupB: oslSix(oslTeams[1].id),
       log: buildLog(6, 4), server: "a", ackedGates: [] },
     /* Past the 14 gate, so the ends change and Pair C are already showing. */
-    { id: id(), tournamentId: oslId, round: "Group A", court: 2,
+    { id: id(), tournamentId: oslId, divisionId: oslDivisionId, round: "Group A", court: 2,
       teamAId: oslTeams[2].id, teamBId: oslTeams[3].id,
       lineupA: oslSix(oslTeams[2].id), lineupB: oslSix(oslTeams[3].id),
       log: buildLog(16, 12), server: "b", ackedGates: [7, 14] },
     /* Golden point: 24-24, next rally decides it (Rules 3.3). */
-    { id: id(), tournamentId: oslId, round: "Semi-Final", court: 1,
+    { id: id(), tournamentId: oslId, divisionId: oslDivisionId, round: "Semi-Final", court: 1,
       teamAId: oslTeams[0].id, teamBId: oslTeams[2].id,
       lineupA: oslSix(oslTeams[0].id), lineupB: oslSix(oslTeams[2].id),
       log: buildLog(24, 24), server: "a", ackedGates: [7, 14] },
-    { id: id(), tournamentId: oslId, round: "Final", court: 1,
+    { id: id(), tournamentId: oslId, divisionId: oslDivisionId, round: "Final", court: 1,
       teamAId: null, teamBId: null, lineupA: [], lineupB: [], log: [], server: "a" },
   ]);
 

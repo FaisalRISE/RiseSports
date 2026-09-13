@@ -84,12 +84,18 @@ export const teams = pgTable(
   {
     id: id(),
     tournamentId: text("tournament_id").notNull().references(() => tournaments.id, { onDelete: "cascade" }),
+    /* Which category this team entered. A person may appear in two divisions
+       with different partners — that is two teams, one person. */
+    divisionId: text("division_id").notNull().references(() => divisions.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     seed: integer("seed").notNull().default(0),
     colour: text("colour"),
     createdAt: created(),
   },
-  (t) => [index("teams_tournament_idx").on(t.tournamentId)],
+  (t) => [
+    index("teams_tournament_idx").on(t.tournamentId),
+    index("teams_division_idx").on(t.divisionId),
+  ],
 );
 
 export const players = pgTable(
@@ -119,6 +125,7 @@ export const groups = pgTable(
   {
     id: id(),
     tournamentId: text("tournament_id").notNull().references(() => tournaments.id, { onDelete: "cascade" }),
+    divisionId: text("division_id").notNull().references(() => divisions.id, { onDelete: "cascade" }),
     /** "A", "B", ... — the letter used by seed references like "A1". */
     key: text("key").notNull(),
     name: text("name"),
@@ -128,7 +135,10 @@ export const groups = pgTable(
   },
   (t) => [
     index("groups_tournament_idx").on(t.tournamentId),
-    uniqueIndex("groups_key_idx").on(t.tournamentId, t.key),
+    index("groups_division_idx").on(t.divisionId),
+    /* Per DIVISION, not per tournament: Men's Doubles and Mixed each get their
+       own Group A, and a seed reference "A1" means the A of its own category. */
+    uniqueIndex("groups_key_idx").on(t.tournamentId, t.divisionId, t.key),
   ],
 );
 
@@ -137,6 +147,11 @@ export const matches = pgTable(
   {
     id: id(),
     tournamentId: text("tournament_id").notNull().references(() => tournaments.id, { onDelete: "cascade" }),
+    /* Carried on the match itself, not inferred from the group, because a
+       knockout match has no group — and its seed references ("A1",
+       "W:Semi-Final 1") must resolve inside its own category or they resolve to
+       the wrong team in silence. See lib/tournamentState refResolver. */
+    divisionId: text("division_id").notNull().references(() => divisions.id, { onDelete: "cascade" }),
     round: text("round").notNull().default("group"),
     court: integer("court"),
     scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
@@ -178,6 +193,7 @@ export const matches = pgTable(
   },
   (t) => [
     index("matches_tournament_idx").on(t.tournamentId),
+    index("matches_division_idx").on(t.divisionId),
     index("matches_group_idx").on(t.groupId),
   ],
 );
@@ -240,6 +256,23 @@ export type Waiver = { id: string; title: string; body: string };
  * linked to people. */
 
 /** Optional skill bands a registrant picks between. */
+/* How one division is run. Faisal, 2026-09-13: "every tournament is different …
+ * some are team events, some have various categories" — and the categories in
+ * ONE event may run differently from each other, so the shape belongs here and
+ * not on the tournament.
+ *
+ * Deliberately excludes double elimination. `buildLoserBracket`/`advanceDE` are
+ * ported and tested in lib/brackets, but running it was declined; leave them
+ * dead rather than half-wiring a shape nobody asked for. */
+export type DivisionShape = "groups_ko" | "league" | "single_elim";
+
+/* A category within an event: Men's Doubles, Mixed, U-17, Beginners.
+ *
+ * EVERY tournament has at least one, named "Main" when the organiser never
+ * asked for categories. The alternative — divisions optional, with a fallback
+ * when absent — means two code paths through every draw function, and the
+ * no-division path is the one that rots unseen. One path; the manage screen
+ * simply hides the tabs when there is only one. */
 export const divisions = pgTable(
   "divisions",
   {
@@ -249,6 +282,11 @@ export const divisions = pgTable(
     /** Free text — "3.0-3.5", "Advanced", whatever the organiser runs. */
     description: text("description"),
     position: integer("position").notNull().default(0),
+    /** Default matches what every existing event already does. */
+    shape: text("shape").$type<DivisionShape>().notNull().default("groups_ko"),
+    /** Losing semi-finalists play off for third. Costs one match row — the
+     *  `L:` seed reference that fills it already resolves (lib/brackets). */
+    thirdPlace: boolean("third_place").notNull().default(false),
     createdAt: created(),
   },
   (t) => [index("divisions_tournament_idx").on(t.tournamentId)],
