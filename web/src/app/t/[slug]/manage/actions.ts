@@ -6,11 +6,12 @@ import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/lib/db";
-import { groups, matches, people, players, ratingHistory, teams, tournaments } from "@/lib/db/schema";
+import { divisions, groups, matches, people, players, ratingHistory, teams, tournaments } from "@/lib/db/schema";
 import { principalFor } from "@/lib/auth/guard";
 import { canManage, assert } from "@/lib/auth/policy";
-import { resolveDivisionId } from "@/lib/divisions";
+import { divisionsOf, resolveDivisionId } from "@/lib/divisions";
 import { planGroups, knockoutRefsFromGroups } from "@/lib/formats/pickleboss";
+import { singleElimMatches, thirdPlaceMatch } from "@/lib/formats/singleElim";
 import { resolveRef } from "@/lib/brackets";
 import { loadTournament, groupTables, resolverFactory } from "@/lib/tournamentState";
 import { findOrCreatePerson, carriedRating, peopleForTournament, searchPeople } from "@/lib/people";
@@ -246,6 +247,64 @@ export async function setLineup(tournamentId: string, matchId: string, side: "a"
 }
 
 
+/* ---------- categories ---------- */
+
+/**
+ * Add a category to an event: Men's Doubles, Mixed, U-17, Beginners.
+ *
+ * Until this existed, every tournament had exactly the one category it was
+ * created with, so the draw's support for several of them was unreachable —
+ * plumbing with no tap on the end of it.
+ */
+export async function addDivision(tournamentId: string, formData: FormData) {
+  const t = await requireManager(tournamentId);
+  const parsed = name.safeParse(formData.get("name"));
+  if (!parsed.success) return;
+
+  const existing = await divisionsOf(t.id);
+  /* Same name twice is almost always a mis-click, and two categories called
+     "Mixed" are indistinguishable everywhere they appear. */
+  if (existing.some((d) => d.name.toLowerCase() === parsed.data.toLowerCase())) return;
+
+  await db.insert(divisions).values({
+    id: randomUUID(),
+    tournamentId: t.id,
+    name: parsed.data,
+    position: existing.length,
+  });
+
+  revalidatePath(`/t/${t.slug}/manage`);
+  revalidatePath(`/t/${t.slug}`);
+}
+
+/* ---------- how a category is run ---------- */
+
+/**
+ * Set the shape of one category, and whether it plays for third place.
+ *
+ * Per CATEGORY rather than per tournament, because Faisal runs events where
+ * Men's Doubles goes groups→knockout while a beginners' category is a simple
+ * league. Changing the shape does NOT redraw: an organiser choosing a shape has
+ * not yet said they want the existing fixtures thrown away.
+ */
+export async function setDivisionShape(tournamentId: string, formData: FormData) {
+  const t = await requireManager(tournamentId);
+  const divisionId = await divisionFrom(t.id, formData);
+
+  const shape = z
+    .enum(["groups_ko", "league", "single_elim"])
+    .catch("groups_ko")
+    .parse(formData.get("shape"));
+  const thirdPlace = formData.get("thirdPlace") === "on";
+
+  await db
+    .update(divisions)
+    .set({ shape, thirdPlace })
+    .where(and(eq(divisions.id, divisionId), eq(divisions.tournamentId, t.id)));
+
+  revalidatePath(`/t/${t.slug}/manage`);
+}
+
 /* ---------- group stage and knockout ---------- */
 
 /**
@@ -254,14 +313,24 @@ export async function setLineup(tournamentId: string, matchId: string, side: "a"
  * Destructive by design: it clears any existing groups and their matches, so an
  * organiser who mis-set the group count can simply redraw. Knockout matches
  * (which have no groupId) are left alone.
+ *
+ * A LEAGUE is this with exactly one group: every team plays every other, one
+ * table, no knockout. That is not a special case in the draw, only a constraint
+ * on the count — so it is forced here rather than trusted from the form.
  */
 export async function generateGroups(tournamentId: string, formData: FormData) {
   const t = await requireManager(tournamentId);
-  const count = z.coerce.number().int().min(1).max(8).catch(2).parse(formData.get("groups"));
+  const asked = z.coerce.number().int().min(1).max(8).catch(2).parse(formData.get("groups"));
   const courtNames = String(formData.get("courts") ?? "")
     .split(",").map((c) => c.trim()).filter(Boolean);
 
   const divisionId = await divisionFrom(t.id, formData);
+  const [division] = await db.select().from(divisions).where(eq(divisions.id, divisionId));
+
+  /* A league is one group by definition. Enforced here rather than left to the
+     form, so the shape cannot be contradicted by a stale field or a crafted
+     post. */
+  const count = division?.shape === "league" ? 1 : asked;
 
   const teamRows = await db
     .select()
@@ -320,6 +389,72 @@ export async function generateGroups(tournamentId: string, formData: FormData) {
 }
 
 /**
+ * Draw a straight knockout from the category's teams — no group stage.
+ *
+ * The seeding is `seedBracket`, which has been in the repository, tested and
+ * uncalled since the port. Team seed 1 is the strongest, and `seedBracket`
+ * sorts by descending strength, so the seed is simply negated.
+ *
+ * Byes produce no match row (see lib/formats/singleElim): a bye is not a
+ * fixture, and the team that got one appears in the next round as a real team
+ * rather than waiting on a match nobody can play.
+ */
+export async function generateSingleElim(tournamentId: string, formData: FormData) {
+  const t = await requireManager(tournamentId);
+  const divisionId = await divisionFrom(t.id, formData);
+  const [division] = await db.select().from(divisions).where(eq(divisions.id, divisionId));
+
+  const teamRows = await db
+    .select()
+    .from(teams)
+    .where(and(eq(teams.tournamentId, t.id), eq(teams.divisionId, divisionId)));
+  if (teamRows.length < 2) return;
+
+  const drawn = singleElimMatches(
+    [...teamRows].map((x) => ({ id: x.id, name: x.name, strength: -x.seed })),
+  );
+  if (!drawn) return;
+
+  /* Replace the unplayed draw in THIS category only, and leave anything with a
+     result alone — redrawing over a played match destroys it. */
+  const existing = await db
+    .select()
+    .from(matches)
+    .where(and(eq(matches.tournamentId, t.id), eq(matches.divisionId, divisionId)));
+  for (const m of existing) {
+    if ((m.log as unknown[]).length === 0 && m.typedScoreA === null) {
+      await db.delete(matches).where(eq(matches.id, m.id));
+    }
+  }
+
+  const squads = await db.select().from(players).where(eq(players.tournamentId, t.id));
+  const six = (teamId: string | null) =>
+    teamId ? squads.filter((p) => p.teamId === teamId).slice(0, 6).map((p) => p.id) : [];
+
+  const third = division?.thirdPlace ? thirdPlaceMatch(drawn) : null;
+
+  const rows = [...drawn, ...(third ? [third] : [])].map((m) => ({
+    id: randomUUID(),
+    tournamentId: t.id,
+    divisionId,
+    groupId: null,
+    round: m.round,
+    teamAId: m.teamAId,
+    teamBId: m.teamBId,
+    slotA: m.slotA,
+    slotB: m.slotB,
+    lineupA: six(m.teamAId) as never,
+    lineupB: six(m.teamBId) as never,
+    log: [] as never,
+    server: "a" as const,
+  }));
+  if (rows.length) await db.insert(matches).values(rows);
+
+  revalidatePath(`/t/${t.slug}/manage`);
+  revalidatePath(`/t/${t.slug}`);
+}
+
+/**
  * Create the knockout round from group placings, as seed references.
  *
  * The slots are NOT resolved to teams here — they are stored as "A1", "B2" and
@@ -372,6 +507,25 @@ export async function generateKnockout(tournamentId: string, formData: FormData)
     server: "a" as const,
   }));
   if (rows.length) await db.insert(matches).values(rows);
+
+  /* A third-place playoff costs one row, because `L:` references resolve just
+     as `W:` ones do — the losing semi-finalists fill it themselves. */
+  const [division] = await db.select().from(divisions).where(eq(divisions.id, divisionId));
+  if (pairs.length === 2 && division?.thirdPlace) {
+    await db.insert(matches).values({
+      id: randomUUID(),
+      tournamentId: t.id,
+      divisionId,
+      groupId: null,
+      round: "Third Place",
+      slotA: "L:Semi-Final 1",
+      slotB: "L:Semi-Final 2",
+      lineupA: [] as never,
+      lineupB: [] as never,
+      log: [] as never,
+      server: "a",
+    });
+  }
 
   /* A final fed by the two semi-final winners, so the bracket is complete. */
   if (pairs.length === 2) {

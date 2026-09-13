@@ -8,7 +8,8 @@ import { viewMatch } from "@/lib/matchState";
 import { sportOf } from "@/lib/sports/registry";
 import { oslLineupIssues } from "@/lib/formats/osl";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
-import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, generateGroups, generateKnockout, fillKnockoutSlots, seedByRating, searchRoster } from "./actions";
+import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, generateGroups, generateKnockout, generateSingleElim, fillKnockoutSlots, seedByRating, searchRoster, addDivision, setDivisionShape } from "./actions";
+import { divisionsOf } from "@/lib/divisions";
 import { SEED_BANDS } from "@/lib/rating";
 import { PersonPicker } from "@/components/PersonPicker";
 import { loadTournament, groupTables, resolverFactory, resolveSlots } from "@/lib/tournamentState";
@@ -22,10 +23,11 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
   const [t] = await db.select().from(tournaments).where(eq(tournaments.slug, slug)).limit(1);
   if (!t) notFound();
 
-  const [teamRows, playerRows, matchRows] = await Promise.all([
+  const [teamRows, playerRows, matchRows, divisionRows] = await Promise.all([
     db.select().from(teams).where(eq(teams.tournamentId, t.id)),
     db.select().from(players).where(eq(players.tournamentId, t.id)),
     db.select().from(matches).where(eq(matches.tournamentId, t.id)),
+    divisionsOf(t.id),
   ]);
   const byTeam = new Map(teamRows.map((x) => [x.id, x]));
   const playerNameOf = new Map(playerRows.map((p) => [p.id, p.name]));
@@ -97,6 +99,13 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                   <div className="mb-2 flex items-center gap-2">
                     <span className="h-3 w-3 rounded" style={{ background: team.colour ?? "#666" }} />
                     <span className="font-bold">{team.name}</span>
+                    {/* Which category, but only when there is more than one to
+                        be in — otherwise it is the same word on every card. */}
+                    {divisionRows.length > 1 && (
+                      <span className="rounded-full border border-neutral-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-neutral-400">
+                        {divisionRows.find((d) => d.id === team.divisionId)?.name ?? "—"}
+                      </span>
+                    )}
                     <span className="ml-auto text-[11px] font-bold uppercase tracking-widest text-neutral-500">
                       {squad.length} player{squad.length === 1 ? "" : "s"}
                       {isOsl && squad.length < 6 ? " · needs 6" : ""}
@@ -168,9 +177,19 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
             })}
           </div>
 
-          <form action={addTeamHere} className="mt-3 flex gap-2">
+          <form action={addTeamHere} className="mt-3 flex flex-wrap gap-2">
             <input name="name" required placeholder="New team name"
               className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm" />
+            {/* Only when there is a choice to make. With one category the team
+                goes there and the question is noise. */}
+            {divisionRows.length > 1 && (
+              <select name="divisionId" defaultValue={divisionRows[0]?.id}
+                className="rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-2 text-sm">
+                {divisionRows.map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
+            )}
             <button className="rounded-lg bg-neutral-200 px-4 text-xs font-black text-neutral-900">Add team</button>
           </form>
           {isOsl && (
@@ -181,27 +200,128 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
           )}
         </section>
 
-        {/* ---------- draw ---------- */}
+        {/* ---------- draw, one block per category ---------- */}
         <section>
-          <h2 className="mb-3 text-lg font-black">Draw</h2>
-          <div className="space-y-3 rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
-            <form action={generateGroups.bind(null, t.id)} className="grid gap-2 sm:grid-cols-[auto_1fr_auto]">
-              <label className="flex items-center gap-2 text-sm">
-                <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Groups</span>
-                <input name="groups" type="number" min={1} max={8} defaultValue={2}
-                  className="w-16 rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm" />
-              </label>
-              <input name="courts" placeholder="Court names, comma separated (optional)"
-                className="min-w-0 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm" />
-              <button className="rounded-lg bg-neutral-200 px-4 py-2 text-xs font-black text-neutral-900">
-                Draw groups &amp; fixtures
+          <h2 className="mb-1 text-lg font-black">Draw</h2>
+          <p className="mb-3 text-[11px] text-neutral-500">
+            {divisionRows.length > 1
+              ? "Each category is drawn separately and can be run a different way — groups and knockout for one, a straight league for another."
+              : "One category. Add another below if this event runs Men’s Doubles and Mixed side by side."}
+          </p>
+
+          <div className="space-y-4">
+            {divisionRows.map((d) => {
+              const entered = teamRows.filter((x) => x.divisionId === d.id).length;
+              /* data-category is a stable hook for e2e: the draw controls are
+                 identical across categories and differ only by a hidden
+                 division id, so a test needs some way to say "the Mixed one"
+                 that is not a chain of Tailwind classes. */
+              return (
+                <div key={d.id} data-category={d.name}
+                  className="space-y-3 rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <h3 className="text-sm font-black">{d.name}</h3>
+                    <span className="text-[11px] text-neutral-500">
+                      {entered} {entered === 1 ? "team" : "teams"}
+                    </span>
+                  </div>
+
+                  {/* How this category is run. Saving the shape does NOT redraw —
+                      choosing a format is not the same as asking for the
+                      existing fixtures to be thrown away. */}
+                  <form action={setDivisionShape.bind(null, t.id)} className="flex flex-wrap items-center gap-2">
+                    <input type="hidden" name="divisionId" value={d.id} />
+                    <select name="shape" defaultValue={d.shape}
+                      className="rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm">
+                      <option value="groups_ko">Groups, then knockout</option>
+                      <option value="league">League — everyone plays everyone</option>
+                      <option value="single_elim">Straight knockout</option>
+                    </select>
+                    <label className="flex items-center gap-1.5 text-[11px] text-neutral-400">
+                      <input type="checkbox" name="thirdPlace" defaultChecked={d.thirdPlace} />
+                      Third-place playoff
+                    </label>
+                    <button className="rounded-lg border border-neutral-600 px-3 py-1.5 text-xs font-bold">
+                      Save format
+                    </button>
+                  </form>
+
+                  {d.shape === "single_elim" ? (
+                    <>
+                      <form action={generateSingleElim.bind(null, t.id)} className="border-t border-neutral-800 pt-3">
+                        <input type="hidden" name="divisionId" value={d.id} />
+                        <button className="rounded-lg bg-neutral-200 px-4 py-2 text-xs font-black text-neutral-900">
+                          Draw the bracket
+                        </button>
+                      </form>
+                      <p className="text-[11px] text-neutral-500">
+                        Teams are seeded so the strongest meets the weakest first and the top two can only
+                        meet in the final. An odd entry count gives byes — a bye is not a fixture, so no
+                        match appears for it and that team simply starts a round later.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <form action={generateGroups.bind(null, t.id)} className="grid gap-2 border-t border-neutral-800 pt-3 sm:grid-cols-[auto_1fr_auto]">
+                        <input type="hidden" name="divisionId" value={d.id} />
+                        {d.shape === "league" ? (
+                          <span className="self-center text-[11px] font-bold uppercase tracking-widest text-neutral-400">
+                            One table
+                          </span>
+                        ) : (
+                          <label className="flex items-center gap-2 text-sm">
+                            <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Groups</span>
+                            <input name="groups" type="number" min={1} max={8} defaultValue={2}
+                              className="w-16 rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm" />
+                          </label>
+                        )}
+                        <input name="courts" placeholder="Court names, comma separated (optional)"
+                          className="min-w-0 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm" />
+                        <button className="rounded-lg bg-neutral-200 px-4 py-2 text-xs font-black text-neutral-900">
+                          {d.shape === "league" ? "Draw league fixtures" : "Draw groups & fixtures"}
+                        </button>
+                      </form>
+                      <p className="text-[11px] text-neutral-500">
+                        {d.shape === "league"
+                          ? "Everyone plays everyone once, in one table, with the rounds spread so a team rarely plays twice in a row. No knockout."
+                          : "Teams are snaked across the groups so the strong ones do not all land in group A, and each group plays a full round robin. Redrawing replaces this category’s groups and their matches."}
+                      </p>
+
+                      {d.shape === "groups_ko" && (
+                        <>
+                          <form action={generateKnockout.bind(null, t.id)} className="flex flex-wrap items-center gap-2 border-t border-neutral-800 pt-3">
+                            <input type="hidden" name="divisionId" value={d.id} />
+                            <label className="flex items-center gap-2 text-sm">
+                              <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Qualify per group</span>
+                              <input name="qualify" type="number" min={1} max={4} defaultValue={2}
+                                className="w-16 rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm" />
+                            </label>
+                            <button className="rounded-lg bg-neutral-200 px-4 py-2 text-xs font-black text-neutral-900">
+                              Draw knockout
+                            </button>
+                          </form>
+                          <p className="text-[11px] text-neutral-500">
+                            Knockout places are stored as references — A1, B2, W:Semi-Final 1 — and resolve
+                            themselves as each group finishes, so a bracket can never be seeded from a
+                            half-played table.
+                          </p>
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-3 space-y-3 rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
+            <form action={addDivision.bind(null, t.id)} className="flex flex-wrap items-center gap-2">
+              <input name="name" placeholder="Add a category — Men’s Doubles, Mixed, U-17…"
+                className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm" />
+              <button className="rounded-lg border border-neutral-600 px-3 py-1.5 text-xs font-bold">
+                Add category
               </button>
             </form>
-            <p className="text-[11px] text-neutral-500">
-              Teams are snaked across the groups so the strong ones do not all land in group A, and each
-              group plays a full round robin with the rounds spread so a team rarely plays twice in a row.
-              Redrawing replaces the existing groups and their matches.
-            </p>
 
             {/* The point of the whole rating: the snake above draws from the
                 seed order, so putting SKILL into that column is the entire
@@ -218,27 +338,13 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
               </span>
             </form>
 
-            <form action={generateKnockout.bind(null, t.id)} className="flex flex-wrap items-center gap-2 border-t border-neutral-800 pt-3">
-              <label className="flex items-center gap-2 text-sm">
-                <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Qualify per group</span>
-                <input name="qualify" type="number" min={1} max={4} defaultValue={2}
-                  className="w-16 rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm" />
-              </label>
-              <button className="rounded-lg bg-neutral-200 px-4 py-2 text-xs font-black text-neutral-900">
-                Draw knockout
-              </button>
-            </form>
             {/* A separate form: HTML forbids nesting one form inside another,
                 and React hydration fails outright if you try. */}
-            <form action={fillKnockoutSlots.bind(null, t.id)}>
+            <form action={fillKnockoutSlots.bind(null, t.id)} className="border-t border-neutral-800 pt-3">
               <button className="rounded-lg border border-neutral-600 px-3 py-2 text-xs font-bold">
                 Fill resolved slots
               </button>
             </form>
-            <p className="text-[11px] text-neutral-500">
-              Knockout places are stored as references — A1, B2, W:Semi-Final 1 — and resolve themselves as
-              each group finishes, so a bracket can never be seeded from a half-played table.
-            </p>
           </div>
         </section>
 
