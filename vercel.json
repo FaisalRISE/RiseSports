@@ -1,5 +1,16 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "_why_every_source_is_a_literal_path": [
+    "Two of these rules used unnamed capture groups — /(index|rise-sports).html",
+    "and /icons/(.*) — which newer path-to-regexp rejects outright with",
+    "'Unexpected (' rather than ignoring. This file is only read when the build",
+    "root is the repository root, which is why it never mattered while Vercel was",
+    "building web/, and why every deploy has failed since the root directory was",
+    "changed on 2026-09-01: the last good build was 2026-08-31 and the first",
+    "failure was an EMPTY commit, so no code was involved.",
+    "There are four icons and two HTML entry points, all known by name, so the",
+    "patterns bought nothing. Literal paths are valid under every version."
+  ],
   "headers": [
     {
       "source": "/sw.js",
@@ -15,13 +26,37 @@
       ]
     },
     {
-      "source": "/(index|rise-sports).html",
+      "source": "/index.html",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
       ]
     },
     {
-      "source": "/icons/(.*)",
+      "source": "/rise-sports.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/icons/apple-touch-icon.png",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    },
+    {
+      "source": "/icons/icon-192.png",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    },
+    {
+      "source": "/icons/icon-512.png",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    },
+    {
+      "source": "/icons/icon-512-maskable.png",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
       ]
