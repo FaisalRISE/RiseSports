@@ -98,11 +98,23 @@ than 13.3k lines mixing minified single-letter locals with readable ones.
 
 Consequences for anyone working in this repo:
 
-- **The cutover was made on 2026-08-31 and REVERSED on 2026-09-01.** Serving `web/` took
-  community play, venues, the ledger and Americano/Mexicano off the live site, and Faisal had
-  only ever asked for the tournament side to be upgraded. The consent for that was one line in
-  a long plan document, which is not consent. `rise-sports.vercel.app` **serves the root
-  single-file app again**: Vercel Root Directory empty, framework preset `Other`.
+- **The cutover was made on 2026-08-31 and the decision to reverse it was taken 2026-09-01 —
+  but the reversal HAS NOT LANDED.** Serving `web/` took community play, venues, the ledger
+  and Americano/Mexicano off the live site, and Faisal had only ever asked for the tournament
+  side to be upgraded. The consent for that was one line in a long plan document, which is not
+  consent.
+  - **As of 2026-09-13 `rise-sports.vercel.app` still serves `web/`.** Vercel Root Directory
+    is still `web`. It needs to be emptied in the dashboard (framework preset then
+    re-detects as `Other` on its own) followed by a rebuild.
+  - **Verify this by BEHAVIOUR, never by reading the setting back.** An earlier version of
+    this note claimed the reversal was done, because the Root Directory field was read a few
+    seconds after page load and came back empty before it had populated. The ground truth is
+    one request:
+
+        curl -s -o /dev/null -w "%{http_code}" https://rise-sports.vercel.app/rise-sports.html
+
+    `200` means the repo root is being served (the single-file app). `404` means it is still
+    building `web/`. `index.html` works the same way. Both files are committed at the root.
 - **The direction is still `web/`, but as ONE app, not a replacement.** Confirmed by Faisal on
   2026-09-01: the code must stay hard to copy, this is a business, any organiser in India may
   use it, and the target is thousands of players across ~50 tournaments — none of which a
