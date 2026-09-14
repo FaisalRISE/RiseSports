@@ -534,8 +534,30 @@ original (`app.source.js:11698`). Shipped 2026-09-14.
 - Only a booking with a linked person can be cancelled by the person who made it — a guest
   booking has nobody to prove ownership, so the venue host handles those.
 
-Next areas by size: engines & draws (45), foundations (29), the Court Ledger (23), the UI kit
-(22), the referee console (20), live scoring (15).
+### Court Ledger
+
+`lib/ledger/store.ts` + `/ledger`, shipped 2026-09-14. Its own nav tab.
+
+**Not a line of money arithmetic was written for it.** `lib/finance` already carried the engine
+across from the standalone ledger app; the store's only job is to load a book into the exact
+`LedgerBook` shape that engine takes. Every figure is a call into it, computed server-side and
+handed down as formatted strings. **Do not recompute a balance anywhere else** — one engine,
+one set of invariants.
+
+- **`ledgerNet(m, a, b)` is how much A OWES B** (`ledgerOwedMap` keys as `m[debtor][creditor]`),
+  so a POSITIVE net makes **a** the debtor. Taking it the other way rendered "You owes Nadeem"
+  directly above "Nadeem pays You" — every amount correct, the direction inverted. Pinned by
+  tests that assert the pair list and the settle-up plan agree about direction.
+- **Payments land PENDING; only the recipient confirming moves a balance.** That is what stops
+  one side clearing a debt by asserting they paid, and why `ledgerOwedMap` counts only
+  CONFIRMED.
+- Members are **not** rows in `people`: a book often includes a flatmate or a driver who settles
+  up but never plays. `personId` links the ones who are players and is null for the rest.
+- The category emoji and labels come from `LEDGER_TYPES` in one place — the picker briefly had
+  its own copy and disagreed with the entries list.
+
+Next areas by size: engines & draws (45), foundations (29), the UI kit (22), the referee
+console (20), live scoring (15).
 
 ## Access: the site is deliberately open, and the switch is a trap
 
