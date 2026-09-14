@@ -554,9 +554,18 @@ UPI registration, venue booking.
   deployed copy and buys nothing; tighten policies instead.
   - The **cleartext organiser password those files used to ship was removed on 2026-09-14** —
     see "The repo is PUBLIC" above. Do not reintroduce a hard-coded one.
-  - **It must still be treated as compromised and rotated wherever it is in force**, because it
-    sat in the public repo's `CLAUDE.md` from `fde7431` until `6b3d124` and remains reachable
-    in history. Removing it from the file does not unpublish it.
+  - **Rotated on 2026-09-14, and verified.** It had sat in the public repo's `CLAUDE.md` from
+    `fde7431` until `6b3d124` and is still reachable in history, so it was treated as
+    compromised. Both live events were changed by Faisal:
+    - `pboss35` — the stored hash WAS the leaked password's (checked before rotating, so this
+      was live exposure, not a theoretical one). Changed.
+    - `osl2026` — had **no** stored password and was relying on the shipped default, i.e. it
+      was unclaimed the moment that default was removed. Now set.
+    - Verified from a device with its storage cleared, so it pulled the real settings from
+      Supabase rather than trusting anything local: the leaked password is refused by both
+      apps, and OSL no longer offers to set one. The two apps key their config row
+      differently — `<event>:cfg` for pickleboss, **`<event>:cfg:access` for OSL** — which is
+      easy to miss when checking.
 - The UI still says **"GSR"**; it becomes RISE Rating in Wave 3. `gsrMin`/`gsrMax` are
   persisted inside `rs_cg`, so that rename touches stored data, not just labels.
 - **Demo player names do not match their gender.** `genPlayers` picks the first name from one
