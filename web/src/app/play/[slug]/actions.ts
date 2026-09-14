@@ -1,0 +1,158 @@
+"use server";
+
+/* Roster actions for one community session.
+ *
+ * ── The authorisation rule, which is the whole point of this file ─────────
+ * There are exactly two kinds of action here and they are checked differently:
+ *
+ *   A player acts on THEMSELVES. The person id is never taken from the form —
+ *   it is read from the cookie on the server. A form field would let anyone
+ *   withdraw anyone else by editing one value in the page.
+ *
+ *   A host acts on OTHERS. The person id does come from the form, and the
+ *   caller must pass hostGuard first.
+ *
+ * That is why these are separate exports rather than one action with a role
+ * flag: a flag is a thing a caller can get wrong, and every caller of the
+ * player actions would have to be trusted to set it.
+ */
+
+import { revalidatePath } from "next/cache";
+import { z } from "zod";
+
+import { gameBySlug } from "@/lib/community/store";
+import { hostGuard } from "@/lib/community/guard";
+import { myPersonId } from "@/lib/community/me";
+import * as roster from "@/lib/community/roster";
+import type { RosterResult } from "@/lib/community/roster";
+
+const slugSchema = z.string().trim().min(1).max(80);
+const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Bad date.");
+const idSchema = z.string().trim().min(1).max(64);
+
+const fail = (error: string): RosterResult => ({ ok: false, error });
+
+/* ── Player actions: the actor is the cookie, never the form ──────────────*/
+
+type PlayerAction = "interested" | "request" | "withdraw" | "takeFreedSpot";
+
+const PLAYER_ACTIONS = {
+  interested: roster.toggleInterested,
+  request: roster.requestSpot,
+  withdraw: roster.withdraw,
+  takeFreedSpot: roster.takeFreedSpot,
+} as const;
+
+export async function actOnMyPlace(
+  slug: string,
+  date: string,
+  action: PlayerAction,
+): Promise<RosterResult> {
+  const s = slugSchema.safeParse(slug);
+  const d = dateSchema.safeParse(date);
+  if (!s.success || !d.success) return fail("Bad request.");
+  if (!(action in PLAYER_ACTIONS)) return fail("Unknown action.");
+
+  /* Server-side, always. This is the line that stops one player withdrawing
+     another by changing a hidden field. */
+  const personId = await myPersonId();
+  if (!personId) return fail("Say who you are first.");
+
+  const game = await gameBySlug(s.data);
+  if (!game) return fail("No such game.");
+
+  /* Restricted games: membership is checked here, not in the component that
+     decided whether to draw the button. */
+  const { canJoinSessions } = await import("@/lib/community/store");
+  if (!(await canJoinSessions(game, personId))) return fail("This game is invite only.");
+
+  /* Eligibility too — the limits the host set are a rule, not a hint. A player
+     who fails one must not get in by calling the action directly. */
+  const { eligibilityFailures } = await import("@/lib/community");
+  const { db } = await import("@/lib/db");
+  const { people } = await import("@/lib/db/schema");
+  const { eq } = await import("drizzle-orm");
+  const [person] = await db.select().from(people).where(eq(people.id, personId)).limit(1);
+  if (!person) return fail("Say who you are first.");
+
+  const blockers = eligibilityFailures(person, game.restrictions);
+  /* Withdrawing is always allowed. Someone whose rating moved out of range
+     after they were confirmed must still be able to drop out. */
+  if (blockers.length > 0 && action !== "withdraw") return fail(blockers.join(" · "));
+
+  const result = await PLAYER_ACTIONS[action](game, d.data, personId);
+  revalidatePath(`/play/${s.data}`);
+  revalidatePath("/play");
+  return result;
+}
+
+/* ── Host actions: the actor is checked, the target comes from the form ───*/
+
+type HostAction =
+  | "confirm" | "waitlist" | "promote" | "remove" | "nudge" | "togglePaid" | "markLinkSent";
+
+const HOST_ACTIONS = {
+  confirm: roster.confirmPlayer,
+  waitlist: roster.waitlistPlayer,
+  promote: roster.promoteFromWaitlist,
+  remove: roster.removePlayer,
+  nudge: roster.nudgeToRequest,
+  togglePaid: roster.togglePaid,
+  markLinkSent: roster.markLinkSent,
+} as const;
+
+export async function actOnPlayer(
+  slug: string,
+  date: string,
+  personId: string,
+  action: HostAction,
+): Promise<RosterResult> {
+  const s = slugSchema.safeParse(slug);
+  const d = dateSchema.safeParse(date);
+  const p = idSchema.safeParse(personId);
+  if (!s.success || !d.success || !p.success) return fail("Bad request.");
+  if (!(action in HOST_ACTIONS)) return fail("Unknown action.");
+
+  let game;
+  try {
+    game = await hostGuard(s.data);
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "Not allowed.");
+  }
+
+  const result = await HOST_ACTIONS[action](game, d.data, p.data);
+  revalidatePath(`/play/${s.data}`);
+  revalidatePath("/play");
+  return result;
+}
+
+/** The host adding someone straight to the list by name. */
+export async function addToSession(
+  slug: string, date: string, personId: string,
+): Promise<RosterResult> {
+  return actOnPlayer(slug, date, personId, "confirm");
+}
+
+/* ── Calling a date off ───────────────────────────────────────────────────*/
+
+export async function setSessionCancelled(
+  slug: string, date: string, cancelled: boolean,
+): Promise<RosterResult> {
+  const s = slugSchema.safeParse(slug);
+  const d = dateSchema.safeParse(date);
+  if (!s.success || !d.success) return fail("Bad request.");
+
+  let game;
+  try {
+    game = await hostGuard(s.data);
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "Not allowed.");
+  }
+
+  const result = cancelled
+    ? await roster.cancelSession(game, d.data)
+    : await roster.uncancelSession(game, d.data);
+  revalidatePath(`/play/${s.data}`);
+  revalidatePath("/play");
+  return result;
+}

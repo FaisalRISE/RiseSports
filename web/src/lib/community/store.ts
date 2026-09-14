@@ -131,8 +131,8 @@ export type SessionView = {
   waitlist: RosterEntry[];
   requested: RosterEntry[];
   interested: RosterEntry[];
-  /** Someone confirmed has pulled out and the spot is not filled yet. */
-  freedSpots: number;
+  /** Confirmed players who pulled out. Their spots are what `openSlotsIn` counts. */
+  withdrawn: RosterEntry[];
 };
 
 const byPosition = (a: RosterEntry, b: RosterEntry) => a.position - b.position;
@@ -151,7 +151,7 @@ export async function sessionView(game: CommunityGame, date: string): Promise<Se
   if (!session) {
     return {
       session: null, date, capacity, roster: [],
-      confirmed: [], waitlist: [], requested: [], interested: [], freedSpots: 0,
+      confirmed: [], waitlist: [], requested: [], interested: [], withdrawn: [],
     };
   }
 
@@ -173,14 +173,14 @@ export async function sessionView(game: CommunityGame, date: string): Promise<Se
   }));
 
   const of = (s: AttendanceState) => roster.filter((r) => r.state === s).sort(byPosition);
-  const confirmed = of("confirmed");
-  const waitlist = of("waitlist");
 
   return {
     session, date, capacity, roster,
-    confirmed, waitlist, requested: of("requested"), interested: of("interested"),
-    /* A freed spot only matters while somebody is waiting for it. */
-    freedSpots: waitlist.length ? Math.max(0, capacity - confirmed.length) : 0,
+    confirmed: of("confirmed"),
+    waitlist: of("waitlist"),
+    requested: of("requested"),
+    interested: of("interested"),
+    withdrawn: of("withdrawn"),
   };
 }
 

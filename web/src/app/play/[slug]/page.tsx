@@ -6,9 +6,12 @@ import { sportOf } from "@/lib/sports/registry";
 import { me } from "@/lib/community/me";
 import { viewingAsHost } from "@/lib/community/guard";
 import { gameBySlug, sessionView, myEntry, canJoinSessions } from "@/lib/community/store";
+import { openSlotsIn } from "@/lib/community/roster";
 import {
   capacityOf, eligibilityFailures, prettyDate, prettyDays, priceLabel, restrictionChips, sessionDates,
 } from "@/lib/community";
+import { PlayerCard } from "./PlayerCard";
+import { HostRoster, type RosterRow } from "./HostRoster";
 
 export const dynamic = "force-dynamic";
 
@@ -58,6 +61,35 @@ export default async function GamePage({
   const mine = "roster" in view ? myEntry(view as never, viewer?.id ?? null) : null;
   const blockers = viewer ? eligibilityFailures(viewer, game.restrictions) : [];
   const chips = restrictionChips(game.restrictions);
+  const capacity = capacityOf(game);
+
+  /* Spots freed by a backout and still empty — the only thing that unlocks
+     "take the free spot" for someone on the waitlist. Derived from the rows,
+     never tallied; see lib/community/roster.openSlotsIn. */
+  const openSlots = openSlotsIn(
+    {
+      confirmed: view.confirmed.length,
+      withdrawn: view.roster.filter((r) => r.state === "withdrawn").length,
+      maxWaitlistPosition: 0,
+    },
+    capacity,
+  );
+
+  /* Where I sit in the waitlist queue, so the card can say "3rd" rather than
+     just "waiting". */
+  const queuePosition =
+    mine?.state === "waitlist"
+      ? view.waitlist.findIndex((r) => r.personId === mine.personId) + 1
+      : null;
+
+  const hostRows: RosterRow[] = view.roster.map((r) => ({
+    personId: r.personId,
+    name: r.person.name,
+    rating: r.person.riseBest,
+    state: r.state,
+    paid: r.paid,
+    linkSent: r.paymentLinkSentAt !== null,
+  }));
 
   /* The counts for the date strip, in one pass rather than a query per date. */
   const countsByDate = new Map<string, number>();
@@ -137,9 +169,9 @@ export default async function GamePage({
           <section className="mt-5 space-y-3">
             <CapacityBar
               confirmed={view.confirmed.length}
-              capacity={view.capacity}
+              capacity={capacity}
               waiting={view.waitlist.length}
-              freed={view.freedSpots}
+              freed={openSlots}
             />
 
             {!viewer && (
@@ -163,12 +195,26 @@ export default async function GamePage({
             )}
 
             {viewer && blockers.length === 0 && mayJoin && (
-              <Note>
-                {mine
-                  ? `You are ${mine.state} for ${prettyDate(date)}.`
-                  : `You have not put your name down for ${prettyDate(date)} yet.`}{" "}
-                The buttons for this land next — the roster is the next piece of the port.
-              </Note>
+              <PlayerCard
+                slug={game.slug}
+                date={date}
+                prettyDate={prettyDate(date)}
+                state={mine?.state ?? "none"}
+                paid={mine?.paid ?? false}
+                pricePaise={game.pricePaise}
+                queuePosition={queuePosition}
+                openSlots={openSlots}
+              />
+            )}
+
+            {host && (
+              <HostRoster
+                slug={game.slug}
+                date={date}
+                rows={hostRows}
+                capacity={capacity}
+                pricePaise={game.pricePaise}
+              />
             )}
 
             {/* ── Who is playing ───────────────────────────────────────── */}
@@ -265,11 +311,15 @@ function CapacityBar({
       </div>
       {freed > 0 && (
         /* The legacy app's orange warning: somebody dropped out and the spot is
-           sitting empty while people wait for it. It is the one thing a host
-           must act on quickly, so it is stated, not left to be inferred from
-           two numbers. */
+           sitting empty. It is the one thing a host must act on quickly, so it
+           is stated rather than left to be inferred from two numbers.
+
+           The instruction only appears when there IS a waitlist — telling a host
+           to "promote someone from the waitlist" that nobody is on reads as a
+           bug in the app rather than a nudge. */
         <p className="mt-2 rounded-lg bg-amber-400/10 px-3 py-2 text-xs font-bold text-amber-400">
-          {freed} spot{freed === 1 ? "" : "s"} came free — promote someone from the waitlist.
+          {freed} spot{freed === 1 ? "" : "s"} came free
+          {waiting > 0 ? " — promote someone from the waitlist." : " after a drop-out."}
         </p>
       )}
     </div>

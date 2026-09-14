@@ -595,8 +595,17 @@ export const communitySessions = pgTable(
 
 /* The states a person can be in for one session. "none" is the ABSENCE of a
  * row, so it is not in the union — that keeps "has this person done anything
- * about this date?" a single row lookup rather than a state comparison. */
-export type AttendanceState = "confirmed" | "waitlist" | "requested" | "interested";
+ * about this date?" a single row lookup rather than a state comparison.
+ *
+ * "withdrawn" is the one state the legacy app does not have. There, backing out
+ * deletes you from every list and bumps a mutable `openSlots` counter on the
+ * session (app.source.js:10019) — so the host loses the fact that you ever
+ * signed up, and the counter can drift away from reality with no way back.
+ * Keeping the row instead means the host can see who dropped out, and the
+ * number of spots freed by a backout becomes DERIVABLE rather than tallied.
+ * See `openSlotsIn` in lib/community/roster.ts. */
+export type AttendanceState =
+  | "confirmed" | "waitlist" | "requested" | "interested" | "withdrawn";
 
 export const communityAttendance = pgTable(
   "community_attendance",
