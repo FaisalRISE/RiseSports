@@ -187,11 +187,23 @@ Consequences for anyone working in this repo:
     RLS off.** Supabase grants `anon` full SELECT/INSERT/UPDATE/DELETE on everything in
     `public`, so a table drizzle creates is readable *and writable* by the published anon key
     until RLS is turned on by hand. This is not hypothetical: applying `0006` created the six
-    community tables wide open, and `0008` is the hand-written migration that closed them.
-    **Every new table needs its own `ENABLE ROW LEVEL SECURITY` line in a migration**, on the
-    day it is created. Nothing breaks when it is missing — there is no error and no failing
-    screen, only the absence of a linter notice — so it is guarded by a test in
-    `schema.test.ts` that fails if any `community%` table has RLS off.
+    community tables wide open, and `0008` closed them.
+    **Every new table needs its own `ENABLE ROW LEVEL SECURITY` line in the SAME migration
+    that creates it** — a gap between CREATE and ENABLE is a window where the table is
+    world-writable. Nothing breaks when it is missing: no error, no failing screen, only the
+    absence of a linter notice.
+  - **The migrations did not reproduce production's RLS at all until `0010`.** Every table
+    from `0000`-`0005` had it in production, applied by hand in the console and never written
+    down, so `pnpm db:setup` against a fresh database produced fourteen wide-open tables.
+    Nothing was exposed in production; the hole was in what the repo could rebuild, which
+    surfaces the day somebody stands up a second environment and assumes it matches.
+  - The guard is a test in `schema.test.ts` over **every** table, not over the prefix that
+    broke last time — the narrow `community%` version would never have found the fourteen.
+    `osl_live` / `app_backups` / `live_scores` are excluded **by name** because they reach
+    PostgREST on purpose and carry their own policies.
+  - **A hand-written migration makes drizzle renumber on top of itself.** `0008_community_rls`
+    was not in `meta/_journal.json`, so the next `generate` also produced an `0008`. Add every
+    hand-written file to the journal.
   - **After applying a migration to production, verify by querying**, not by assuming the
     apply succeeded: `list_tables`, then `relrowsecurity` and the `anon` grants. To prove a
     table is really shut, insert a row as the owner and re-read it under `set local role anon`
@@ -495,8 +507,22 @@ exclusive by unique index, mirroring the session roster. **An open game has no r
 the legacy Play tab, by decision: `Simulate interest` (demo seeding, obsolete) and the
 player/organiser view toggle (real host detection replaces it). There is also **no edit-game
 screen** — `accessType`, courts, days and price are set at creation only, which matches the
-legacy app. Next areas by size: engines & draws (45), foundations (29), the Court Ledger (23),
-the UI kit (22), the referee console (20), live scoring (15), venues (12).
+legacy app.
+
+### Venues
+
+`lib/venues/`, rendered on `/play` under the games — which is where `VenuesSection` sits in the
+original (`app.source.js:11698`). Shipped 2026-09-14.
+
+- **Payments are settled off-app by design.** The price is shown; nothing takes money.
+- **Requests are unlimited; confirmations are capped at the court count**, counted inside a
+  transaction. The legacy version checks neither and will confirm fifty bookings onto two
+  courts (`:9155`).
+- Only a booking with a linked person can be cancelled by the person who made it — a guest
+  booking has nobody to prove ownership, so the venue host handles those.
+
+Next areas by size: engines & draws (45), foundations (29), the Court Ledger (23), the UI kit
+(22), the referee console (20), live scoring (15).
 
 ## Roadmap
 
