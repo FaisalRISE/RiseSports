@@ -626,3 +626,88 @@ export async function searchRoster(query: string): Promise<PickerResult[]> {
     };
   });
 }
+
+/* ---------- how the game is scored ----------
+ *
+ * `buildScoring` and `goldenInfo` have existed in lib/scoring since the engine
+ * was ported, and `tournaments.scoring` has existed since 0000. Nothing wrote
+ * it: the organiser had no way to say "to 15, win by 2, capped at 18", so every
+ * event ran on its sport's defaults. This is the control that was missing.
+ *
+ * Note `rulesFor` prefers a FORMAT PRESET over these overrides — an OSL or
+ * Pickleboss event has fixed rules by definition — so the screen only offers
+ * this for the standard format.
+ */
+
+const scoreTypeSchema = z.enum(["service", "rally", ""]).catch("");
+
+/** The organiser's controls, parsed. Shared by the save and the preview. */
+const scoringSchema = z.object({
+  target: z.coerce.number().int().min(1).max(99).catch(11),
+  winBy2: z.boolean(),
+  /* "auto" puts the ceiling two above the target; "none" lets the two-point
+     rule run on, which is traditional and can strand a schedule. */
+  goldenAt: z.union([z.coerce.number().int().min(1).max(99), z.literal("auto"), z.literal("none")]).catch("auto"),
+  switchAt: z.union([z.coerce.number().int().min(1).max(99), z.null()]).catch(null),
+  scoreType: scoreTypeSchema,
+});
+
+export async function setScoring(tournamentId: string, formData: FormData) {
+  const t = await requireManager(tournamentId);
+
+  const raw = {
+    target: formData.get("target"),
+    winBy2: formData.get("winBy2") === "on",
+    goldenAt: formData.get("goldenAt"),
+    switchAt: formData.get("switchAt") || null,
+    scoreType: formData.get("scoreType") ?? "",
+  };
+  const v = scoringSchema.parse(raw);
+
+  const { buildScoring } = await import("@/lib/scoring/rules");
+
+  /* `buildScoring` uses the target to work out the golden point and cap, but
+     deliberately does NOT return it — in the legacy app the target travelled
+     separately as the tournament's `pointsToWin`. So it has to be supplied
+     here, or `resolveRules` falls back to the sport default and an event set
+     "to 15" silently plays to 11. `picklebossRuleOverrides` carries the same
+     note and the same explicit target.
+     Caught by playing a match rather than by a test: the manage screen said
+     "To 15" and the referee console ended it 11-2. */
+  const overrides = {
+    target: v.target,
+    ...buildScoring(v.target, v.winBy2, v.goldenAt, v.switchAt, v.scoreType),
+  };
+
+  await db
+    .update(tournaments)
+    .set({ scoring: overrides as Record<string, unknown> })
+    .where(eq(tournaments.id, t.id));
+
+  revalidatePath(`/t/${t.slug}/manage`);
+  revalidatePath(`/t/${t.slug}`);
+}
+
+/** Back to the sport's own defaults. */
+export async function clearScoring(tournamentId: string) {
+  const t = await requireManager(tournamentId);
+  await db.update(tournaments).set({ scoring: null }).where(eq(tournaments.id, t.id));
+  revalidatePath(`/t/${t.slug}/manage`);
+  revalidatePath(`/t/${t.slug}`);
+}
+
+/**
+ * The plain-English restatement, live as the controls move.
+ *
+ * Computed HERE rather than in the browser: `goldenInfo` lives behind
+ * `import "server-only"` with the rest of the scoring engine, and the whole
+ * point of that is the rules never ship. Restating them is one round trip.
+ */
+export async function describeScoring(input: {
+  target: number | string; winBy2: boolean;
+  goldenAt: number | string; scoreType: string;
+}): Promise<string> {
+  const v = scoringSchema.parse({ ...input, switchAt: null });
+  const { goldenInfo } = await import("@/lib/scoring/rules");
+  return goldenInfo(v.target, v.winBy2, v.goldenAt, v.scoreType);
+}

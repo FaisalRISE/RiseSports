@@ -14,6 +14,8 @@ import { SEED_BANDS } from "@/lib/rating";
 import { PersonPicker } from "@/components/PersonPicker";
 import { loadTournament, groupTables, resolverFactory, resolveSlots } from "@/lib/tournamentState";
 import { StandingsTable } from "@/components/StandingsTable";
+import { ScoringControls, type ScoringState } from "./ScoringControls";
+import { resolveRules } from "@/lib/scoring/rules";
 import { allowsDraws } from "@/lib/matchState";
 
 export const dynamic = "force-dynamic";
@@ -39,6 +41,35 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
      at a different tournament by editing the form. */
   const addTeamHere = addTeam.bind(null, t.id);
   const addMatchHere = addMatch.bind(null, t.id);
+
+  /* ── Scoring, for the controls below ──────────────────────────────────
+   * The current rules come from the engine rather than being re-derived here,
+   * so what the form starts on is exactly what a match will be played under.
+   * A FORMAT preset fixes the rules, in which case the controls cannot apply. */
+  const presetName =
+    t.format === "osl" ? "OSL Rules v4.8"
+    : t.format === "pickleboss" ? "Pickleboss"
+    : null;
+
+  const liveRules = resolveRules(t.sport, (t.scoring ?? null) as never);
+  const sportRules = resolveRules(t.sport, null);
+  const sportDefaultLabel = sportRules
+    ? `to ${sportRules.target}${sportRules.winBy > 1 ? `, win by ${sportRules.winBy}` : ""}`
+    : "this sport's own rules";
+
+  const scoringState: ScoringState = {
+    target: liveRules?.target ?? 11,
+    winBy2: (liveRules?.winBy ?? 2) > 1,
+    /* `cap` is one above the golden point; "none" means the two-point rule has
+       no ceiling at all. */
+    goldenAt: liveRules?.golden ?? "none",
+    switchAt: liveRules?.switchAt ?? null,
+    /* Only show an explicit choice when the organiser has actually made one.
+       Deriving it from the resolved rules would pre-select "Service" on every
+       pickleball event and then WRITE that as an override on the first save —
+       pinning a value that was only ever the sport's default. */
+    scoreType: t.scoring == null ? "" : liveRules?.sideOut ? "service" : "rally",
+  };
 
   const loaded = await loadTournament(slug);
   const tables = loaded ? groupTables(loaded) : [];
@@ -198,6 +229,22 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
               At least one woman must be in the six, and no two women may be paired (Rules 3.1, 3.2).
             </p>
           )}
+        </section>
+
+        {/* ---------- how games are scored ---------- */}
+        <section>
+          <h2 className="mb-1 text-lg font-black">Scoring</h2>
+          <p className="mb-3 text-[11px] text-neutral-500">
+            How a game is won. It applies to every match in the event, and the
+            referee console reads it.
+          </p>
+          <ScoringControls
+            tournamentId={t.id}
+            initial={scoringState}
+            isCustom={t.scoring != null}
+            presetName={presetName}
+            sportDefault={sportDefaultLabel}
+          />
         </section>
 
         {/* ---------- draw, one block per category ---------- */}
