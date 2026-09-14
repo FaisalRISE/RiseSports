@@ -775,6 +775,115 @@ export const venueBookings = pgTable(
   ],
 );
 
+/* ── Court Ledger ─────────────────────────────────────────────────────────
+ *
+ * Shared spending for one group: who paid for what, who it splits between, and
+ * the smallest set of transfers that squares everyone up.
+ *
+ * The maths is ALREADY PORTED and tested — `lib/finance` carries
+ * ledgerShares / OwedMap / Balances / Pairs / SettleUp across from the
+ * standalone ledger app, with the invariants pinned (balances sum to zero;
+ * applying the settle-up plan zeroes everyone; circular debt needs no
+ * transfers). These tables exist to load a book into the exact `LedgerBook`
+ * shape that engine already takes, so not a line of the arithmetic changes.
+ *
+ * **Amounts are integer paise, never floats.** ₹1000 split three ways is
+ * 33333 + 33333 + 33334, the odd paise to the payer, so a book sums to exactly
+ * what was spent.
+ *
+ * Legacy source: LedgerTab, app.source.js:12544-11997, stored under `rs_ledger`.
+ */
+
+export const ledgerBooks = pgTable(
+  "ledger_books",
+  {
+    id: id(),
+    slug: text("slug").notNull(),
+    name: text("name").notNull(),
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [uniqueIndex("ledger_books_slug_idx").on(t.slug)],
+);
+
+/* A member of a book.
+ *
+ * Deliberately NOT a foreign key to `people`. A book is often shared with
+ * someone's flatmate or a friend who drove — people who settle up but never
+ * play, and who have no business in a table that carries ratings. `personId`
+ * links the ones who ARE players, and is null for everyone else. */
+export const ledgerMembers = pgTable(
+  "ledger_members",
+  {
+    id: id(),
+    bookId: text("book_id").notNull().references(() => ledgerBooks.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    personId: text("person_id").references(() => people.id, { onDelete: "set null" }),
+    /** Position in the book, which also picks their avatar colour. */
+    position: integer("position").notNull().default(0),
+    createdAt: created(),
+  },
+  (t) => [index("ledger_members_book_idx").on(t.bookId)],
+);
+
+export type LedgerEntryType = "COURT_BOOKING" | "EQUIPMENT" | "FOOD_DRINKS" | "OTHER";
+
+/** One expense: somebody paid, and it splits between these people. */
+export const ledgerEntries = pgTable(
+  "ledger_entries",
+  {
+    id: id(),
+    bookId: text("book_id").notNull().references(() => ledgerBooks.id, { onDelete: "cascade" }),
+    /** Integer paise. */
+    amount: integer("amount_paise").notNull(),
+    payerId: text("payer_id").notNull().references(() => ledgerMembers.id, { onDelete: "cascade" }),
+    /** Member ids the cost splits between. At least one, always. */
+    participantIds: jsonb("participant_ids").$type<string[]>().notNull().default([]),
+    type: text("type").$type<LedgerEntryType>().notNull().default("OTHER"),
+    note: text("note").notNull().default(""),
+    /** Where it happened, free text. */
+    venue: text("venue").notNull().default(""),
+    /** ISO date, local — never via toISOString. */
+    date: text("date").notNull(),
+    createdAt: created(),
+  },
+  (t) => [
+    index("ledger_entries_book_idx").on(t.bookId),
+    index("ledger_entries_date_idx").on(t.bookId, t.date),
+  ],
+);
+
+export type LedgerPaymentStatus = "PENDING" | "CONFIRMED" | "REJECTED";
+export type LedgerPaymentMethod = "UPI" | "CASH" | "BANK";
+
+/* Money actually handed over.
+ *
+ * Lands as PENDING and needs the RECIPIENT to confirm it, so one side cannot
+ * clear a debt on their own. Only a CONFIRMED payment moves a balance — see
+ * `ledgerOwedMap` in lib/finance. */
+export const ledgerPayments = pgTable(
+  "ledger_payments",
+  {
+    id: id(),
+    bookId: text("book_id").notNull().references(() => ledgerBooks.id, { onDelete: "cascade" }),
+    fromId: text("from_id").notNull().references(() => ledgerMembers.id, { onDelete: "cascade" }),
+    toId: text("to_id").notNull().references(() => ledgerMembers.id, { onDelete: "cascade" }),
+    /** Integer paise. */
+    amount: integer("amount_paise").notNull(),
+    method: text("method").$type<LedgerPaymentMethod>().notNull().default("UPI"),
+    status: text("status").$type<LedgerPaymentStatus>().notNull().default("PENDING"),
+    note: text("note").notNull().default(""),
+    date: text("date").notNull(),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [
+    index("ledger_payments_book_idx").on(t.bookId),
+    index("ledger_payments_status_idx").on(t.bookId, t.status),
+  ],
+);
+
 export type Tournament = typeof tournaments.$inferSelect;
 export type Team = typeof teams.$inferSelect;
 export type Group = typeof groups.$inferSelect;
@@ -795,3 +904,7 @@ export type CommunityMember = typeof communityMembers.$inferSelect;
 export type CommunityMatch = typeof communityMatches.$inferSelect;
 export type Venue = typeof venues.$inferSelect;
 export type VenueBooking = typeof venueBookings.$inferSelect;
+export type LedgerBookRow = typeof ledgerBooks.$inferSelect;
+export type LedgerMemberRow = typeof ledgerMembers.$inferSelect;
+export type LedgerEntryRow = typeof ledgerEntries.$inferSelect;
+export type LedgerPaymentRow = typeof ledgerPayments.$inferSelect;

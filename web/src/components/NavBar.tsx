@@ -9,9 +9,11 @@
  * Shape is taken from the original (`D` in app.source.js:13062): a fixed bar,
  * icon above a small label, the current tab in the brand lime. Only the
  * destinations that EXIST are listed — a tab that goes nowhere is worse than a
- * missing one, so Ledger and Venues arrive when they are ported, not before.
+ * missing one.
  *
- * Play joined on 2026-09-14 with the community port.
+ * Play joined on 2026-09-14 with the community port, Ledger the same day.
+ * Venues deliberately has no tab of its own — it lives inside Play, as it does
+ * in the original.
  */
 
 import Link from "next/link";
@@ -53,6 +55,19 @@ const TABS: Tab[] = [
         <path d="M4 19v-3a2 2 0 0 1 4 0v3" />
         <circle cx="18" cy="7" r="2" />
         <path d="M16 19v-3a2 2 0 0 1 4 0v3" />
+      </svg>
+    ),
+  },
+  {
+    href: "/ledger",
+    label: "Ledger",
+    match: (p) => p.startsWith("/ledger"),
+    icon: (
+      /* A receipt, not a wallet — this is a record of who paid, and the app
+         deliberately moves no money. */
+      <svg viewBox="0 0 24 24" aria-hidden className="h-5 w-5" {...stroke}>
+        <path d="M6 3v18l2-1.5L10 21l2-1.5L14 21l2-1.5L18 21V3l-2 1.5L14 3l-2 1.5L10 3 8 4.5Z" />
+        <path d="M9.5 8.5h5M9.5 12h5" />
       </svg>
     ),
   },

@@ -46,7 +46,9 @@ describe("the generated migration applies to a real Postgres", () => {
     expect(names).toEqual([
       "community_attendance", "community_byes", "community_games", "community_matches",
       "community_members", "community_sessions",
-      "divisions", "event_roles", "groups", "matches", "people", "players",
+      "divisions", "event_roles", "groups",
+      "ledger_books", "ledger_entries", "ledger_members", "ledger_payments",
+      "matches", "people", "players",
       "rating_history", "rating_ledger", "registration_players", "registrations",
       "scorer_grants", "teams", "tournaments", "users",
       "venue_bookings", "venues",
