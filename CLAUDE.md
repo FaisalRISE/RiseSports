@@ -573,8 +573,32 @@ the `tournaments.scoring` column had existed since the port, and nothing wrote t
 - `rulesFor` prefers a FORMAT PRESET over these overrides, so OSL and Pickleboss events say so
   rather than offering controls that cannot apply.
 
+### The match clock (2026-09-14)
+
+`lib/scoring/timing.ts`, stored in `matches.timing`. Spec: `match-timing-spec.md` v2.0.
+
+- **Only accumulated milliseconds are stored**, plus a wall-clock `startedAt` used for ordering
+  and never subtracted. The legacy record keeps `mono` — a raw `performance.now()` reading —
+  and that cannot be ported: it is measured from one page load, so it means nothing once it has
+  reached Postgres or been read on a second device. **Never persist a clock reading.**
+- Every function takes its elapsed delta as an argument instead of reading a clock, so the
+  arithmetic is pure and the only thing that becomes a duration is a difference between two
+  `performance.now()` readings in one page session — which is what the spec demands.
+- Server timestamps are the wrong answer here: a match scored offline would have its start
+  stamped at reconnect.
+- **The measurement belongs in `useOfflineScoring`, not in `scorePoint`.** For any sport the
+  browser can score offline — pickleball, badminton, table tennis — the console NEVER calls
+  `scorePoint`; every tap goes through the offline queue and `pushLog`. Wiring the timer to
+  `scorePoint` alone records nothing, and nothing fails: the record exists with `playingMs: 0`.
+  Found by reading the database after playing, not by a test.
+- Deltas accumulate across taps and travel with the push that lands; a failed push puts its
+  share back, so time is neither lost nor double-counted by a retry.
+- The clock read sits at **module level** in both files — inside a component body React's purity
+  rule cannot tell it is only called from an event handler.
+
 Next areas by size: engines & draws (45), foundations (29), the UI kit (22), the referee
-console (20), live scoring (14 — the match timer is the bulk of what is left there).
+console (~14 — the pause/resume UI, the live clock tick and the pre-match panel are what is
+left, and the timer they need now exists).
 
 ## Access: the site is deliberately open, and the switch is a trap
 
