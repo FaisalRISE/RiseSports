@@ -381,6 +381,10 @@ export const people = pgTable(
     phoneVerified: boolean("phone_verified").notNull().default(false),
     name: text("name").notNull(),
     gender: text("gender").$type<"M" | "F">().notNull().default("M"),
+    /* ISO date, "1994-03-21". Needed by community games that restrict entry by
+       age (app.source.js:8800). Nullable, and an age restriction on a player
+       with no date of birth fails closed — the organiser cannot verify it. */
+    dob: text("dob"),
 
     /* Spec §2: independent ratings per format — singles and doubles are
        different skills and must not share a number. Keyed "pb:md". */
@@ -425,7 +429,14 @@ export const ratingHistory = pgTable(
     id: id(),
     personId: text("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
     format: text("format").notNull(),
-    matchId: text("match_id").notNull().references(() => matches.id, { onDelete: "cascade" }),
+    /* Exactly one of these is set. Community play moves more ratings than
+       tournaments do (the legacy app applies a rating change on every community
+       score, app.source.js:9254), so its results have to land in the same
+       history — otherwise a disputed rating can be explained only half the
+       time. A CHECK constraint in the migration enforces the "exactly one"; it
+       cannot be expressed in Drizzle's column types. */
+    matchId: text("match_id").references(() => matches.id, { onDelete: "cascade" }),
+    communityMatchId: text("community_match_id").references(() => communityMatches.id, { onDelete: "cascade" }),
     ratingBefore: integer("rating_before").notNull(),
     ratingAfter: integer("rating_after").notNull(),
     deltaApplied: integer("delta_applied").notNull(),
@@ -440,7 +451,11 @@ export const ratingHistory = pgTable(
     createdAt: created(),
   },
   (t) => [
+    /* Two partial indexes rather than one over both columns: a unique index
+       treats NULLs as distinct, so a single index on (matchId, communityMatchId,
+       personId, format) would let the same community result apply twice. */
     uniqueIndex("rating_history_match_person_format_idx").on(t.matchId, t.personId, t.format),
+    uniqueIndex("rating_history_cmatch_person_format_idx").on(t.communityMatchId, t.personId, t.format),
     index("rating_history_person_idx").on(t.personId),
   ],
 );
@@ -452,13 +467,222 @@ export const ratingLedger = pgTable(
   "rating_ledger",
   {
     id: id(),
-    matchId: text("match_id").notNull().references(() => matches.id, { onDelete: "cascade" }),
+    /** Exactly one is set, as on ratingHistory. */
+    matchId: text("match_id").references(() => matches.id, { onDelete: "cascade" }),
+    communityMatchId: text("community_match_id").references(() => communityMatches.id, { onDelete: "cascade" }),
     /** Points created (+) or destroyed (−) by this match. */
     imbalance: integer("imbalance").notNull(),
     reason: text("reason").notNull(),
     createdAt: created(),
   },
   (t) => [index("rating_ledger_match_idx").on(t.matchId)],
+);
+
+/* ── Community play ───────────────────────────────────────────────────────
+ *
+ * The other half of the app, and the half that moves most ratings: a weekly
+ * game at a court, people putting their hands up for a date, the host building
+ * the guest list, then pairings and scores.
+ *
+ * It is NOT a tournament wearing a different hat, which is why these are their
+ * own tables. A tournament has teams, groups, a draw and one date; a community
+ * game has none of those, and has instead a repeating schedule, a roster where
+ * a person sits in one of five states, per-person payment, and four separate
+ * ways of deciding who plays whom. Bending `tournaments` to cover both would
+ * mean making `divisionId` and `teamId` nullable everywhere and putting a kind
+ * check in front of every query — undoing the guard migration 0005 added.
+ *
+ * Legacy source: CommunityTab, app.source.js:9221-11651, stored under `rs_cg`.
+ */
+
+export type Rotation = "fixed" | "rotate" | "slots" | "kotc" | "ladder";
+export type ScheduleMode = "random" | "balanced" | "americano" | "mexicano";
+export type AccessType = "open" | "restricted";
+
+/** Who may join. Any field left null is simply not checked. */
+export type Restrictions = {
+  gsrMin: number | null; gsrMax: number | null;
+  duprMin: number | null; duprMax: number | null;
+  ageMin: number | null; ageMax: number | null;
+  gender: "M" | "F" | null;
+};
+
+export const NO_RESTRICTIONS: Restrictions = {
+  gsrMin: null, gsrMax: null, duprMin: null, duprMax: null,
+  ageMin: null, ageMax: null, gender: null,
+};
+
+export const communityGames = pgTable(
+  "community_games",
+  {
+    id: id(),
+    /** Short URL key, as tournaments have. */
+    slug: text("slug").notNull(),
+    name: text("name").notNull(),
+    sport: text("sport").$type<SportId>().notNull().default("pb"),
+
+    /** The host, as a person — not a user. Most organisers never sign in. */
+    hostPersonId: text("host_person_id").references(() => people.id, { onDelete: "set null" }),
+    /** Who may administer it when signed in. Null while open access is on. */
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+
+    /* Venue is free text, as in the legacy app. The venues directory is its own
+       port; when it lands this gains a nullable venueId beside this, which is
+       additive and needs no backfill. */
+    venue: text("venue").notNull().default("TBD Venue"),
+    area: text("area").notNull().default(""),
+
+    /** "daily", or "weekly" on the chosen `days`. */
+    freq: text("freq").$type<"daily" | "weekly">().notNull().default("weekly"),
+    /** 0 = Sunday, matching Date#getDay. Empty when freq is daily. */
+    days: jsonb("days").$type<number[]>().notNull().default([]),
+    startTime: text("start_time").notNull().default("20:00"),
+    endTime: text("end_time").notNull().default("22:00"),
+
+    /** courts × perCourt is the number of spots in one session. */
+    courts: integer("courts").notNull().default(2),
+    perCourt: integer("per_court").notNull().default(4),
+
+    rotation: text("rotation").$type<Rotation>().notNull().default("fixed"),
+    scheduleMode: text("schedule_mode").$type<ScheduleMode>().notNull().default("random"),
+    accessType: text("access_type").$type<AccessType>().notNull().default("open"),
+
+    /** Integer paise, never a float — the same rule the ledger runs on. */
+    pricePaise: integer("price_paise").notNull().default(0),
+
+    restrictions: jsonb("restrictions").$type<Restrictions>().notNull().default(NO_RESTRICTIONS),
+
+    /* The ladder belongs to the GAME, not to a session — it persists across
+       dates, which is the whole point of a ladder. */
+    ladderOrder: jsonb("ladder_order").$type<string[]>().notNull().default([]),
+    ladderLog: jsonb("ladder_log").$type<unknown[]>().notNull().default([]),
+
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [
+    uniqueIndex("community_games_slug_idx").on(t.slug),
+    index("community_games_host_idx").on(t.hostPersonId),
+  ],
+);
+
+/* One date of a repeating game. Created lazily — a session row exists only once
+ * somebody interacts with that date, so a weekly game does not manufacture rows
+ * into the far future. */
+export const communitySessions = pgTable(
+  "community_sessions",
+  {
+    id: id(),
+    gameId: text("game_id").notNull().references(() => communityGames.id, { onDelete: "cascade" }),
+    /** ISO date, "2026-09-18". Date only — the time of day lives on the game. */
+    date: text("date").notNull(),
+
+    /** King of the Court live state: courts, bench, crowns, round. */
+    kotc: jsonb("kotc").$type<Record<string, unknown> | null>(),
+    /** Half-hour reservations: slot index → person ids. */
+    slotData: jsonb("slot_data").$type<Record<string, string[]>>().notNull().default({}),
+
+    /** Set when the host generates pairings, so the page knows to show them. */
+    scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [
+    uniqueIndex("community_sessions_game_date_idx").on(t.gameId, t.date),
+    index("community_sessions_game_idx").on(t.gameId),
+  ],
+);
+
+/* The states a person can be in for one session. "none" is the ABSENCE of a
+ * row, so it is not in the union — that keeps "has this person done anything
+ * about this date?" a single row lookup rather than a state comparison. */
+export type AttendanceState = "confirmed" | "waitlist" | "requested" | "interested";
+
+export const communityAttendance = pgTable(
+  "community_attendance",
+  {
+    id: id(),
+    sessionId: text("session_id").notNull().references(() => communitySessions.id, { onDelete: "cascade" }),
+    personId: text("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+    state: text("state").$type<AttendanceState>().notNull(),
+    /** Queue order within a state. Waitlist promotion takes the lowest. */
+    position: integer("position").notNull().default(0),
+
+    paid: boolean("paid").notNull().default(false),
+    paymentLinkSentAt: timestamp("payment_link_sent_at", { withTimezone: true }),
+    /** Set when a confirmed player backs out, so the host sees a freed spot. */
+    withdrewAt: timestamp("withdrew_at", { withTimezone: true }),
+
+    createdAt: created(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /* One row per person per session — the whole state machine rests on it. */
+    uniqueIndex("community_attendance_session_person_idx").on(t.sessionId, t.personId),
+    index("community_attendance_session_idx").on(t.sessionId),
+    index("community_attendance_person_idx").on(t.personId),
+  ],
+);
+
+/** Membership of a restricted game. Open games have no rows here at all. */
+export type MembershipState = "member" | "requested" | "invited";
+
+export const communityMembers = pgTable(
+  "community_members",
+  {
+    id: id(),
+    gameId: text("game_id").notNull().references(() => communityGames.id, { onDelete: "cascade" }),
+    personId: text("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+    state: text("state").$type<MembershipState>().notNull(),
+    createdAt: created(),
+  },
+  (t) => [
+    uniqueIndex("community_members_game_person_idx").on(t.gameId, t.personId),
+    index("community_members_game_idx").on(t.gameId),
+  ],
+);
+
+/* One played game inside a session.
+ *
+ * Deliberately NOT a row in `matches`: that table's entire shape is tournament
+ * scoping — `tournamentId` and `divisionId` are both NOT NULL, and seed
+ * references resolve within a division. A community game has neither, and
+ * loosening those two columns to fit would remove the guard that migration 0005
+ * exists to add.
+ *
+ * The score is stored directly rather than as a rally log because community
+ * scores are typed in at the end of a game; the rally-by-rally console belongs
+ * to refereed tournament matches. */
+export const communityMatches = pgTable(
+  "community_matches",
+  {
+    id: id(),
+    sessionId: text("session_id").notNull().references(() => communitySessions.id, { onDelete: "cascade" }),
+    /** 0, or 0 and 1 when the game reshuffles at half time. */
+    block: integer("block").notNull().default(0),
+    court: integer("court").notNull().default(1),
+    /** Person ids per side, in court order. */
+    lineupA: jsonb("lineup_a").$type<string[]>().notNull().default([]),
+    lineupB: jsonb("lineup_b").$type<string[]>().notNull().default([]),
+    scoreA: integer("score_a"),
+    scoreB: integer("score_b"),
+    createdAt: created(),
+  },
+  (t) => [
+    index("community_matches_session_idx").on(t.sessionId),
+    uniqueIndex("community_matches_slot_idx").on(t.sessionId, t.block, t.court),
+  ],
+);
+
+/** Who sat out each block, so the schedule can say so rather than leave a gap. */
+export const communityByes = pgTable(
+  "community_byes",
+  {
+    sessionId: text("session_id").notNull().references(() => communitySessions.id, { onDelete: "cascade" }),
+    block: integer("block").notNull(),
+    personIds: jsonb("person_ids").$type<string[]>().notNull().default([]),
+  },
+  (t) => [primaryKey({ columns: [t.sessionId, t.block] })],
 );
 
 export type Tournament = typeof tournaments.$inferSelect;
@@ -474,3 +698,8 @@ export type RegistrationPlayer = typeof registrationPlayers.$inferSelect;
 export type Person = typeof people.$inferSelect;
 export type RatingHistory = typeof ratingHistory.$inferSelect;
 export type RatingLedger = typeof ratingLedger.$inferSelect;
+export type CommunityGame = typeof communityGames.$inferSelect;
+export type CommunitySession = typeof communitySessions.$inferSelect;
+export type CommunityAttendance = typeof communityAttendance.$inferSelect;
+export type CommunityMember = typeof communityMembers.$inferSelect;
+export type CommunityMatch = typeof communityMatches.$inferSelect;

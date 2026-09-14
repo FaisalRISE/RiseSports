@@ -9,8 +9,9 @@
  * Shape is taken from the original (`D` in app.source.js:13062): a fixed bar,
  * icon above a small label, the current tab in the brand lime. Only the
  * destinations that EXIST are listed — a tab that goes nowhere is worse than a
- * missing one, so Play, Ledger and Venues arrive when they are ported, not
- * before.
+ * missing one, so Ledger and Venues arrive when they are ported, not before.
+ *
+ * Play joined on 2026-09-14 with the community port.
  */
 
 import Link from "next/link";
@@ -37,6 +38,21 @@ const TABS: Tab[] = [
         <rect x="14" y="3" width="7" height="7" rx="1.5" />
         <rect x="3" y="14" width="7" height="7" rx="1.5" />
         <rect x="14" y="14" width="7" height="7" rx="1.5" />
+      </svg>
+    ),
+  },
+  {
+    href: "/play",
+    label: "Play",
+    match: (p) => p.startsWith("/play"),
+    icon: (
+      /* Two figures either side of a net — community play, not a trophy. */
+      <svg viewBox="0 0 24 24" aria-hidden className="h-5 w-5" {...stroke}>
+        <path d="M12 3v18" />
+        <circle cx="6" cy="7" r="2" />
+        <path d="M4 19v-3a2 2 0 0 1 4 0v3" />
+        <circle cx="18" cy="7" r="2" />
+        <path d="M16 19v-3a2 2 0 0 1 4 0v3" />
       </svg>
     ),
   },

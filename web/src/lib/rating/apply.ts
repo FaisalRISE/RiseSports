@@ -409,7 +409,12 @@ async function recentMeetings(
 ): Promise<number> {
   const since = new Date(now.getTime() - REPEAT_WINDOW_DAYS * DAY);
   const rows = await db
-    .select({ personId: ratingHistory.personId, matchId: ratingHistory.matchId, notes: ratingHistory.notes })
+    .select({
+      personId: ratingHistory.personId,
+      matchId: ratingHistory.matchId,
+      communityMatchId: ratingHistory.communityMatchId,
+      notes: ratingHistory.notes,
+    })
     .from(ratingHistory)
     .where(and(inArray(ratingHistory.personId, allIds), gte(ratingHistory.createdAt, since)));
 
@@ -418,7 +423,14 @@ async function recentMeetings(
   for (const r of rows) {
     if (!winnerIds.includes(r.personId)) continue;
     const opps = (r.notes as { opponentIds?: string[] })?.opponentIds ?? [];
-    if (opps.some((o) => opposing.has(o))) seen.add(r.matchId);
+    if (!opps.some((o) => opposing.has(o))) continue;
+
+    /* Community results count here too, and count for MORE than tournament ones
+       in practice: the same four friends meet at the same court every Thursday,
+       which is precisely the farming §8 exists to damp. Prefixed so a tournament
+       id and a community id can never collide in this set. */
+    const ref = r.matchId ? `t:${r.matchId}` : r.communityMatchId ? `c:${r.communityMatchId}` : null;
+    if (ref) seen.add(ref);
   }
   return seen.size;
 }

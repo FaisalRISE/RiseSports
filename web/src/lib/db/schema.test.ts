@@ -44,6 +44,8 @@ describe("the generated migration applies to a real Postgres", () => {
     );
     const names = (rows.rows as { table_name: string }[]).map((r) => r.table_name);
     expect(names).toEqual([
+      "community_attendance", "community_byes", "community_games", "community_matches",
+      "community_members", "community_sessions",
       "divisions", "event_roles", "groups", "matches", "people", "players",
       "rating_history", "rating_ledger", "registration_players", "registrations",
       "scorer_grants", "teams", "tournaments", "users",
@@ -171,6 +173,144 @@ describe("the seed produces states worth testing", () => {
         expect(oslLineupIssues(six), `${m.round}`).toEqual([]);
       }
     }
+  });
+});
+
+/* The community tables, against a real Postgres.
+ *
+ * These check the guarantees the SCHEMA makes, not the ones application code
+ * makes — the difference matters, because application code is what gets a bug.
+ * A unique index and a CHECK hold even when a Server Action forgets to. */
+describe("community play", () => {
+  const game = async (over: Partial<typeof schema.communityGames.$inferInsert> = {}) => {
+    const id = `g${Math.random().toString(36).slice(2, 9)}`;
+    const [row] = await db.insert(schema.communityGames).values({
+      id, slug: id, name: "Thursday Night", ...over,
+    }).returning();
+    return row;
+  };
+
+  it("allows only one session row per game per date", async () => {
+    const g = await game();
+    await db.insert(schema.communitySessions).values({ id: "s1", gameId: g.id, date: "2026-09-17" });
+    await expect(
+      db.insert(schema.communitySessions).values({ id: "s2", gameId: g.id, date: "2026-09-17" }),
+    ).rejects.toThrow();
+  });
+
+  it("lets the same date exist for two different games", async () => {
+    const a = await game();
+    const b = await game();
+    await db.insert(schema.communitySessions).values({ id: "sa", gameId: a.id, date: "2026-09-18" });
+    await expect(
+      db.insert(schema.communitySessions).values({ id: "sb", gameId: b.id, date: "2026-09-18" }),
+    ).resolves.toBeDefined();
+  });
+
+  it("allows only one attendance row per person per session", async () => {
+    /* This index is what makes the whole five-state roster coherent: without it
+       a double-tap makes someone confirmed AND waitlisted at once. */
+    const g = await game();
+    const [s] = await db.insert(schema.communitySessions)
+      .values({ id: "sdup", gameId: g.id, date: "2026-09-24" }).returning();
+    const [p] = await db.insert(schema.people)
+      .values({ id: "pdup", name: "Asha" }).returning();
+
+    await db.insert(schema.communityAttendance)
+      .values({ id: "a1", sessionId: s.id, personId: p.id, state: "confirmed" });
+    await expect(
+      db.insert(schema.communityAttendance)
+        .values({ id: "a2", sessionId: s.id, personId: p.id, state: "waitlist" }),
+    ).rejects.toThrow();
+  });
+
+  it("takes a session's attendance down with the session", async () => {
+    const g = await game();
+    const [s] = await db.insert(schema.communitySessions)
+      .values({ id: "scas", gameId: g.id, date: "2026-10-01" }).returning();
+    const [p] = await db.insert(schema.people).values({ id: "pcas", name: "Ravi" }).returning();
+    await db.insert(schema.communityAttendance)
+      .values({ id: "acas", sessionId: s.id, personId: p.id, state: "interested" });
+
+    await db.delete(schema.communityGames).where(eq(schema.communityGames.id, g.id));
+
+    const left = await db.select().from(schema.communityAttendance)
+      .where(eq(schema.communityAttendance.id, "acas"));
+    expect(left).toHaveLength(0);
+  });
+
+  it("refuses two results for the same court in the same block", async () => {
+    const g = await game();
+    const [s] = await db.insert(schema.communitySessions)
+      .values({ id: "sslot", gameId: g.id, date: "2026-10-08" }).returning();
+    await db.insert(schema.communityMatches)
+      .values({ id: "m1", sessionId: s.id, block: 0, court: 1 });
+    await expect(
+      db.insert(schema.communityMatches).values({ id: "m2", sessionId: s.id, block: 0, court: 1 }),
+    ).rejects.toThrow();
+    /* …but the second block on the same court is a different game. */
+    await expect(
+      db.insert(schema.communityMatches).values({ id: "m3", sessionId: s.id, block: 1, court: 1 }),
+    ).resolves.toBeDefined();
+  });
+});
+
+/* Migration 0006 drops NOT NULL from rating_history.match_id so a community
+ * result can be recorded. The CHECK is what stops that from also admitting a
+ * row referencing NOTHING — a rating that moved with no record of what moved
+ * it, which is exactly what this table exists to prevent. */
+describe("a rating record always names the match that caused it", () => {
+  const historyRow = (over: Record<string, unknown>) => ({
+    id: `rh${Math.random().toString(36).slice(2, 9)}`,
+    personId: "rhp", format: "pb:md",
+    ratingBefore: 800, ratingAfter: 812, deltaApplied: 12,
+    expected: 500, marginMultiplier: 1000, stageMultiplier: 1000,
+    verificationWeight: 1000, provisionalMultiplier: 1000,
+    ...over,
+  });
+
+  beforeAll(async () => {
+    await db.insert(schema.people).values({ id: "rhp", name: "Meera" }).onConflictDoNothing();
+  });
+
+  it("rejects a row that names neither a tournament nor a community match", async () => {
+    await expect(
+      db.insert(schema.ratingHistory).values(historyRow({ matchId: null, communityMatchId: null }) as never),
+    ).rejects.toThrow();
+  });
+
+  it("rejects a row that names both", async () => {
+    const [g] = await db.insert(schema.communityGames)
+      .values({ id: "gboth", slug: "gboth", name: "Both" }).returning();
+    const [s] = await db.insert(schema.communitySessions)
+      .values({ id: "sboth", gameId: g.id, date: "2026-10-15" }).returning();
+    const [cm] = await db.insert(schema.communityMatches)
+      .values({ id: "cmboth", sessionId: s.id, block: 0, court: 1 }).returning();
+    const anyMatch = (await db.select().from(schema.matches).limit(1))[0];
+
+    await expect(
+      db.insert(schema.ratingHistory)
+        .values(historyRow({ matchId: anyMatch.id, communityMatchId: cm.id }) as never),
+    ).rejects.toThrow();
+  });
+
+  it("accepts a community result, and applies it only once", async () => {
+    const [g] = await db.insert(schema.communityGames)
+      .values({ id: "gonce", slug: "gonce", name: "Once" }).returning();
+    const [s] = await db.insert(schema.communitySessions)
+      .values({ id: "sonce", gameId: g.id, date: "2026-10-22" }).returning();
+    const [cm] = await db.insert(schema.communityMatches)
+      .values({ id: "cmonce", sessionId: s.id, block: 0, court: 1 }).returning();
+
+    await expect(
+      db.insert(schema.ratingHistory).values(historyRow({ communityMatchId: cm.id }) as never),
+    ).resolves.toBeDefined();
+
+    /* The re-save guard. Without the second partial unique index this would
+       succeed, and one community game would move a rating twice. */
+    await expect(
+      db.insert(schema.ratingHistory).values(historyRow({ communityMatchId: cm.id }) as never),
+    ).rejects.toThrow();
   });
 });
 
