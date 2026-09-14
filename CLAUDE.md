@@ -477,9 +477,26 @@ on the session (`slotData`, `kotc`); the **ladder lives on the GAME** (`ladderOr
   legacy version swaps whatever two positions it is handed (`:10211`) and relies on the UI to
   prevent it, so any other path inverts the ladder silently.
 
-Order of work: a game exists and can be found (**done**) → the roster and its five states
-(**done**) → pairings, scores and ratings (**done**) → the rotation modes (**done**) →
-restricted games (members, invitations, join requests).
+### Invite-only games
+
+`lib/community/membership.ts`. One row per person per game (`member` / `requested` / `invited`),
+exclusive by unique index, mirroring the session roster. **An open game has no rows at all.**
+
+- **The host is a member without a row** (`standingOf` short-circuits on `hostPersonId`), so
+  removing the last member cannot lock the organiser out of their own game.
+- **Membership is what gates signing up**, via `canJoinSessions` — and *asking* is not
+  belonging: a pending request and an un-accepted invitation both stay out. Tested directly.
+- **Removing a member does not delete their attendance.** A session they played is a record,
+  and the ratings it moved point at it. Removal is about future dates.
+- Two deliberate shortcuts: someone holding an invitation is told to accept rather than file a
+  request, and inviting someone who already asked lets them straight in.
+
+**Community play is complete** — all five stages shipped 2026-09-14. What is NOT ported from
+the legacy Play tab, by decision: `Simulate interest` (demo seeding, obsolete) and the
+player/organiser view toggle (real host detection replaces it). There is also **no edit-game
+screen** — `accessType`, courts, days and price are set at creation only, which matches the
+legacy app. Next areas by size: engines & draws (45), foundations (29), the Court Ledger (23),
+the UI kit (22), the referee console (20), live scoring (15), venues (12).
 
 ## Roadmap
 
