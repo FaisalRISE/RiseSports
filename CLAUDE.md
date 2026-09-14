@@ -30,9 +30,26 @@ live credentials:
 
 | File | Secret |
 |---|---|
-| `Format/OSL-2026-tournament-app_24.html` | Supabase anon JWT (`:3734`), `ADMIN_DEFAULT` (`:4213`) |
-| `Format/pickleboss-35split 12.html` | Supabase anon JWT (`:1596`), `ADMIN_DEFAULT` (`:472`) |
+| `Format/OSL-2026-tournament-app_24.html` | Supabase anon JWT — public by design, see below |
+| `Format/pickleboss 9.html` | Supabase anon JWT — public by design, see below |
 | `Files for claude code/claude-code-brief.md` | Supabase key in plaintext (`:63`) |
+
+**`ADMIN_DEFAULT` is gone from both apps as of 2026-09-14.** They used to ship an organiser
+password baked into the HTML — readable by anyone who opened the file, and the starting point
+for every new event, so rotating it inside a running event protected that event and nothing
+else. Neither app ships one now: an event with no password asks the organiser to choose one the
+first time somebody signs in, and only that one works from then on. Nothing secret is left in
+either file, so there is nothing to leak the next time one is shared.
+
+- Events already running are untouched — they have a stored hash and every path prefers it.
+- **The load-bearing guard is the sync pull before the door opens.** Without it, a phone that
+  has never synced would see no password on an existing event and be offered the chance to set
+  one. `openAccess` (pickleboss) and `askScorer` (OSL) now pull the event's real settings
+  first; verified against the live backend by clearing local storage and watching the hash
+  arrive from Supabase instead of the "choose a password" form appearing.
+- Verified in a browser for both apps: a new event refuses a password under 6 characters and a
+  mismatched confirmation, accepts a good one, then asks for *that* one afterwards — and the
+  old shipped password no longer works.
 
 They are reference material, not build inputs, so excluding them costs the build nothing, and
 they still exist on local disk. **A committed secret is not removed by deleting it later** — it
@@ -488,9 +505,15 @@ UPI registration, venue booking.
   loser's loss from two independent multipliers, so every match mints rating. Every rating in
   the app today is inflated. Fixed in Wave 3 per `Files for claude code/rise-rating-spec 4.md`;
   the conservation test in its §11 must pass before that ships.
-- **`Format/` files contain live credentials.** `OSL-2026-tournament-app_24.html:3733` and
-  `pickleboss-35split 12.html:1595` embed a Supabase URL + anon JWT; `pickleboss:472` ships a
-  cleartext organiser password. Rotate before Wave 0.3 and confirm RLS is on `osl_live`.
+- **`Format/` files embed a Supabase URL + anon JWT.** That key is public by design — it
+  identifies the project and authenticates nobody; all of its power comes from the policies on
+  `osl_live` (writes funnelled through `osl_put`, reads open). Rotating it breaks every
+  deployed copy and buys nothing; tighten policies instead.
+  - The **cleartext organiser password those files used to ship was removed on 2026-09-14** —
+    see "The repo is PUBLIC" above. Do not reintroduce a hard-coded one.
+  - **It must still be treated as compromised and rotated wherever it is in force**, because it
+    sat in the public repo's `CLAUDE.md` from `fde7431` until `6b3d124` and remains reachable
+    in history. Removing it from the file does not unpublish it.
 - The UI still says **"GSR"**; it becomes RISE Rating in Wave 3. `gsrMin`/`gsrMax` are
   persisted inside `rs_cg`, so that rename touches stored data, not just labels.
 - **Demo player names do not match their gender.** `genPlayers` picks the first name from one
