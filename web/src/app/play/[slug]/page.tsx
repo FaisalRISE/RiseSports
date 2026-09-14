@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
+import { describeDbError, describeDbTarget } from "@/lib/db/error";
 import { sportOf } from "@/lib/sports/registry";
 import { me } from "@/lib/community/me";
 import { viewingAsHost } from "@/lib/community/guard";
@@ -45,7 +46,29 @@ export default async function GamePage({
   const { slug } = await params;
   const { date: wanted } = await searchParams;
 
-  const game = await gameBySlug(slug);
+  /* A database that cannot be reached is not the same thing as a game that does
+     not exist, and this page used to answer both with a 500. It stayed hidden
+     until the community tables existed locally but not in production: /play
+     caught the error and said so, this page crashed. Say which it is. */
+  let game;
+  try {
+    game = await gameBySlug(slug);
+  } catch (e) {
+    const reason = describeDbError(e);
+    console.error("[db]", reason, "||", describeDbTarget());
+    return (
+      <>
+        <OpenAccessBanner />
+        <main className="mx-auto max-w-3xl p-4 sm:p-6">
+          <Link href="/play" className="text-xs font-bold text-neutral-400 hover:underline">← All games</Link>
+          <div className="mt-4 rounded-xl border border-rose-500 bg-rose-500/10 p-4 text-sm text-rose-200">
+            <p className="font-bold">The database is not reachable.</p>
+            <p className="mt-2 font-mono text-[11px] text-rose-400/70">{reason}</p>
+          </div>
+        </main>
+      </>
+    );
+  }
   if (!game) notFound();
 
   const sport = sportOf(game.sport);

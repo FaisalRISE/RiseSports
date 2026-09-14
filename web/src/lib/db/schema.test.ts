@@ -190,6 +190,44 @@ describe("community play", () => {
     return row;
   };
 
+  /* The guard for a bug that shipped silently.
+   *
+   * drizzle-kit does not generate row-level security, and Supabase grants the
+   * `anon` role full SELECT/INSERT/UPDATE/DELETE on every table in `public`.
+   * So a table drizzle creates is, by default, readable and WRITABLE by the
+   * anon key — which is published in the legacy app's shipped HTML. That is
+   * exactly what happened to all six community tables when 0006 was applied to
+   * production; 0008 closed it.
+   *
+   * Nothing about the application's behaviour changes when RLS is missing, so
+   * there is no failing screen to notice. This test is the only thing that
+   * would catch the seventh community table being added without it. */
+  it("has row-level security on every community table", async () => {
+    const rows = await db.execute(
+      `select c.relname, c.relrowsecurity
+         from pg_class c join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and c.relkind = 'r' and c.relname like 'community%'
+        order by c.relname`,
+    );
+    const tables = rows.rows as { relname: string; relrowsecurity: boolean }[];
+    expect(tables.length, "no community tables found — did the migration run?").toBeGreaterThan(0);
+
+    const open = tables.filter((t) => !t.relrowsecurity).map((t) => t.relname);
+    expect(open, `RLS is off, so the published anon key can read and write: ${open.join(", ")}`)
+      .toEqual([]);
+  });
+
+  it("has no policy on them, which is what keeps them shut", async () => {
+    /* RLS with no policy denies everything. A policy would OPEN these tables —
+       the linter's "RLS enabled, no policy" notices are the intended state. */
+    const rows = await db.execute(
+      `select tablename, count(*)::int as n from pg_policies
+        where schemaname = 'public' and tablename like 'community%'
+        group by tablename`,
+    );
+    expect(rows.rows).toEqual([]);
+  });
+
   it("allows only one session row per game per date", async () => {
     const g = await game();
     await db.insert(schema.communitySessions).values({ id: "s1", gameId: g.id, date: "2026-09-17" });
