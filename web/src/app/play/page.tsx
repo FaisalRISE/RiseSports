@@ -5,10 +5,12 @@ import { describeDbError, describeDbTarget } from "@/lib/db/error";
 import { gameCards, type GameCard } from "@/lib/community/store";
 import { me } from "@/lib/community/me";
 import {
-  prettyDate, prettyDays, priceLabel, restrictionChips,
+  localISO, prettyDate, prettyDays, priceLabel, restrictionChips,
 } from "@/lib/community";
+import { listVenues, slotsFor, bookingsFor, isVenueOwner } from "@/lib/venues";
 import { sportOf } from "@/lib/sports/registry";
 import { IdentityBar } from "./IdentityBar";
+import { Venues, type VenueView } from "./Venues";
 
 export const dynamic = "force-dynamic";
 
@@ -31,6 +33,46 @@ export default async function PlayPage() {
   }
 
   const viewer = dbError ? null : await me();
+
+  /* Venues live on this screen, under the games — that is where they are in the
+     original, and a venue is where community play happens. */
+  let venueViews: VenueView[] = [];
+  if (!dbError) {
+    const all = await listVenues();
+    const owners = new Map<string, string>();
+    for (const v of all) {
+      if (v.ownerPersonId && !owners.has(v.ownerPersonId)) owners.set(v.ownerPersonId, "");
+    }
+    if (owners.size > 0) {
+      const { db: d } = await import("@/lib/db");
+      const { people } = await import("@/lib/db/schema");
+      const { inArray } = await import("drizzle-orm");
+      for (const p of await d
+        .select({ id: people.id, name: people.name })
+        .from(people)
+        .where(inArray(people.id, [...owners.keys()]))) {
+        owners.set(p.id, p.name);
+      }
+    }
+
+    venueViews = await Promise.all(
+      all.map(async (v) => ({
+        slug: v.slug,
+        name: v.name,
+        area: v.area,
+        courts: v.courts,
+        openTime: v.openTime,
+        closeTime: v.closeTime,
+        priceLabel: priceLabel(v.pricePaise),
+        ownerName: (v.ownerPersonId && owners.get(v.ownerPersonId)) || null,
+        /* Open access lets anyone run an unclaimed venue, same posture as the
+           rest of the app while there is no sign-in. */
+        isOwner: isVenueOwner(v, viewer?.id ?? null) || v.ownerPersonId === null,
+        slots: slotsFor(v),
+        bookings: await bookingsFor(v),
+      })),
+    );
+  }
 
   return (
     <>
@@ -114,6 +156,15 @@ export default async function PlayPage() {
             </li>
           )}
         </ul>
+
+        {!dbError && (
+          <Venues
+            venues={venueViews}
+            today={localISO(new Date())}
+            meId={viewer?.id ?? null}
+            meName={viewer?.name ?? null}
+          />
+        )}
       </main>
     </>
   );

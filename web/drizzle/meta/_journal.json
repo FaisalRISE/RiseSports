@@ -57,6 +57,27 @@
       "when": 1789365803963,
       "tag": "0007_slim_polaris",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789365803964,
+      "tag": "0008_community_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789365803965,
+      "tag": "0009_venues",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789365803966,
+      "tag": "0010_rls_everywhere",
+      "breakpoints": true
     }
   ]
 }

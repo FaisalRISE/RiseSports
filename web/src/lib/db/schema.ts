@@ -694,6 +694,87 @@ export const communityByes = pgTable(
   (t) => [primaryKey({ columns: [t.sessionId, t.block] })],
 );
 
+/* ── Venues ───────────────────────────────────────────────────────────────
+ *
+ * A court somebody hosts, and the requests to use it. Ported from
+ * `VenuesSection` (app.source.js:8963-9220), which renders INSIDE the Play tab
+ * — venues are not a separate part of the app, they are where community play
+ * happens, so they live on the same screen here too.
+ *
+ * Money is settled off-app by design: the price is shown so people know what
+ * they are agreeing to, and nothing here takes a payment.
+ */
+
+export const venues = pgTable(
+  "venues",
+  {
+    id: id(),
+    slug: text("slug").notNull(),
+    name: text("name").notNull(),
+    area: text("area").notNull().default(""),
+    courts: integer("courts").notNull().default(2),
+
+    /** "06:00" / "22:00" — the hours the venue can be booked within. */
+    openTime: text("open_time").notNull().default("06:00"),
+    closeTime: text("close_time").notNull().default("22:00"),
+
+    /** Integer paise PER HOUR, never a float. Same rule as the ledger. */
+    pricePaise: integer("price_paise").notNull().default(0),
+
+    /** Whoever runs it, as a person — most venue hosts never sign in. */
+    ownerPersonId: text("owner_person_id").references(() => people.id, { onDelete: "set null" }),
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [
+    uniqueIndex("venues_slug_idx").on(t.slug),
+    index("venues_owner_idx").on(t.ownerPersonId),
+  ],
+);
+
+export type BookingStatus = "requested" | "confirmed" | "declined";
+
+/* One request for one half-hour on one date.
+ *
+ * A venue with four courts can hold four confirmed bookings in the same slot,
+ * so there is deliberately NO unique index on (venue, date, slot) — the cap is
+ * the court count and it is enforced when a booking is CONFIRMED, not when it
+ * is asked for. The legacy version enforces nothing at all and will happily
+ * confirm fifty bookings onto two courts.
+ *
+ * `personId` is null for a guest who typed their name in without being on the
+ * roster, which is the common case for a venue: the people booking a court are
+ * not necessarily players anyone has registered. */
+export const venueBookings = pgTable(
+  "venue_bookings",
+  {
+    id: id(),
+    venueId: text("venue_id").notNull().references(() => venues.id, { onDelete: "cascade" }),
+    /** ISO date, "2026-09-18". Local, never via toISOString — see lib/community. */
+    date: text("date").notNull(),
+    /** "06:00–06:30", as produced by halfHourSlots. */
+    slot: text("slot").notNull(),
+
+    personId: text("person_id").references(() => people.id, { onDelete: "set null" }),
+    /** Shown when there is no linked person. */
+    guestName: text("guest_name").notNull().default("Guest"),
+
+    status: text("status").$type<BookingStatus>().notNull().default("requested"),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [
+    index("venue_bookings_venue_idx").on(t.venueId),
+    index("venue_bookings_when_idx").on(t.venueId, t.date),
+    /* Stops one PERSON asking for the same half hour twice. NULLs count as
+       distinct in a unique index, which is exactly right here: several guests
+       may each want the same slot on different courts. */
+    uniqueIndex("venue_bookings_person_slot_idx").on(t.venueId, t.date, t.slot, t.personId),
+  ],
+);
+
 export type Tournament = typeof tournaments.$inferSelect;
 export type Team = typeof teams.$inferSelect;
 export type Group = typeof groups.$inferSelect;
@@ -712,3 +793,5 @@ export type CommunitySession = typeof communitySessions.$inferSelect;
 export type CommunityAttendance = typeof communityAttendance.$inferSelect;
 export type CommunityMember = typeof communityMembers.$inferSelect;
 export type CommunityMatch = typeof communityMatches.$inferSelect;
+export type Venue = typeof venues.$inferSelect;
+export type VenueBooking = typeof venueBookings.$inferSelect;

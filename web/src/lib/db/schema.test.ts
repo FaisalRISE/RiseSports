@@ -49,6 +49,7 @@ describe("the generated migration applies to a real Postgres", () => {
       "divisions", "event_roles", "groups", "matches", "people", "players",
       "rating_history", "rating_ledger", "registration_players", "registrations",
       "scorer_grants", "teams", "tournaments", "users",
+      "venue_bookings", "venues",
     ]);
   });
 
@@ -202,15 +203,22 @@ describe("community play", () => {
    * Nothing about the application's behaviour changes when RLS is missing, so
    * there is no failing screen to notice. This test is the only thing that
    * would catch the seventh community table being added without it. */
-  it("has row-level security on every community table", async () => {
+  it("has row-level security on EVERY app table", async () => {
+    /* Deliberately not scoped to `community%`: the point is that a table added
+       next year is covered by default. The three legacy tables belong to the
+       old per-event apps and reach PostgREST on purpose, so they are named
+       here rather than the check being narrowed to today's tables. */
+    const LEGACY_POSTREST = ["osl_live", "app_backups", "live_scores"];
+
     const rows = await db.execute(
       `select c.relname, c.relrowsecurity
          from pg_class c join pg_namespace n on n.oid = c.relnamespace
-        where n.nspname = 'public' and c.relkind = 'r' and c.relname like 'community%'
+        where n.nspname = 'public' and c.relkind = 'r'
         order by c.relname`,
     );
-    const tables = rows.rows as { relname: string; relrowsecurity: boolean }[];
-    expect(tables.length, "no community tables found — did the migration run?").toBeGreaterThan(0);
+    const tables = (rows.rows as { relname: string; relrowsecurity: boolean }[])
+      .filter((t) => !LEGACY_POSTREST.includes(t.relname));
+    expect(tables.length, "no tables found — did the migrations run?").toBeGreaterThan(10);
 
     const open = tables.filter((t) => !t.relrowsecurity).map((t) => t.relname);
     expect(open, `RLS is off, so the published anon key can read and write: ${open.join(", ")}`)
@@ -219,10 +227,13 @@ describe("community play", () => {
 
   it("has no policy on them, which is what keeps them shut", async () => {
     /* RLS with no policy denies everything. A policy would OPEN these tables —
-       the linter's "RLS enabled, no policy" notices are the intended state. */
+       the linter's "RLS enabled, no policy" notices are the intended state.
+       The legacy PostgREST tables are excluded here for the same reason as
+       above: they carry policies on purpose. */
     const rows = await db.execute(
       `select tablename, count(*)::int as n from pg_policies
-        where schemaname = 'public' and tablename like 'community%'
+        where schemaname = 'public'
+          and tablename not in ('osl_live','app_backups','live_scores')
         group by tablename`,
     );
     expect(rows.rows).toEqual([]);
