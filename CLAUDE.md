@@ -76,6 +76,12 @@ the staged tree, not just the working tree:
 > listing them wrote two passwords to disk in the clear to prevent something that could no
 > longer occur — the exact failure the file exists to stop. The Supabase DB password stays; it
 > goes into `DATABASE_URL` and genuinely can be committed by accident.
+>
+> **There is exactly ONE patterns file and `scan-staged.js` creates it on first run.** There
+> used to be a committed `secret-patterns.example.json` to copy from, and a live database
+> password was typed into *that* one instead of the gitignored copy — two files one word apart,
+> one tracked and one not, is a trap. Caught before any commit, but only by luck. Do not
+> reintroduce a template file beside the real one.
 
 An older copy may still sit at `G:\My Drive\Faisal\AI\Sport\Tournament App`. It is stale — do
 not edit it, and do not copy it back over this one.

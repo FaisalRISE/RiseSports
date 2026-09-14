@@ -46,18 +46,35 @@ const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "..");
 const PATTERNS = path.join(ROOT, "tools", "secret-patterns.local.json");
-const EXAMPLE = path.join(ROOT, "tools", "secret-patterns.example.json");
 
 function die(message) {
   console.error(`\n  ${message}\n`);
   process.exit(1);
 }
 
+/* The starting point, written HERE rather than kept in a committed template
+ * file beside the real one.
+ *
+ * There used to be a `secret-patterns.example.json` to copy from. Two files
+ * one word apart, one tracked by git and one not, is a trap: the tracked one
+ * got a live database password typed into it, which is precisely the outcome
+ * this tool exists to prevent. Caught before any commit, but only by luck.
+ *
+ * Now there is ONE file, it is gitignored, and it is created on first run —
+ * so there is no second place to put a secret by mistake. */
+const STARTER = {
+  patterns: [
+    { name: "Supabase DB password", pattern: "REPLACE-THIS-WORD" },
+    { name: "Supabase anon JWT", pattern: "eyJhbGciOiJIUzI1NiIs" },
+  ],
+};
+
 if (!fs.existsSync(PATTERNS)) {
+  fs.writeFileSync(PATTERNS, JSON.stringify(STARTER, null, 2) + "\n", "utf8");
   die(
-    `No secret patterns found.\n\n` +
-      `  Expected: tools/secret-patterns.local.json (gitignored, never committed)\n` +
-      `  Start from: tools/secret-patterns.example.json\n\n` +
+    `Created tools/secret-patterns.local.json.\n\n` +
+      `  Open it and replace REPLACE-THIS-WORD with the real value.\n` +
+      `  That file is gitignored and is the ONLY place a real secret goes.\n\n` +
       `  Refusing to report "clean" without actually checking anything.`,
   );
 }
@@ -86,12 +103,14 @@ if (unfilled.length > 0) {
   );
 }
 
-/* The template deliberately CONTAINS a pattern — the Supabase anon JWT prefix,
- * which is public by design and useful as a canary for a full key being
- * committed. Scanning the pattern files against their own contents therefore
- * reports a hit on every run, which is the fastest way to teach someone to
- * ignore this scanner's output. Skip them. */
-const SELF = /^tools\/secret-patterns\./;
+/* This tool's own files deliberately CONTAIN a pattern — the Supabase anon JWT
+ * prefix, which is public by design and useful as a canary for a full key being
+ * committed. It appears in the STARTER above and in the patterns file itself.
+ * Scanning them against their own contents reports a hit on every run, which is
+ * the fastest way to teach someone that this scanner's output can be ignored.
+ * A check that cries wolf is worse than no check. Skip its own files, and
+ * nothing else. */
+const SELF = /^tools\/(secret-patterns\.|scan-staged\.js$)/;
 
 let bad = 0;
 for (const { name, pattern } of patterns) {
