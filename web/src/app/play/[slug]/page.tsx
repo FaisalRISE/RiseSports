@@ -11,9 +11,12 @@ import {
   capacityOf, eligibilityFailures, prettyDate, prettyDays, priceLabel, restrictionChips, sessionDates,
 } from "@/lib/community";
 import { scheduleFor } from "@/lib/community/schedule";
+import { halfHourSlots } from "@/lib/community/rotations";
+import { slotsFor, kotcFor, ladderFor, slotCapacity } from "@/lib/community/rotationsStore";
 import { PlayerCard } from "./PlayerCard";
 import { HostRoster, type RosterRow } from "./HostRoster";
 import { Schedule } from "./Schedule";
+import { SlotsPanel, KotcPanel, LadderPanel } from "./Rotations";
 
 export const dynamic = "force-dynamic";
 
@@ -64,6 +67,7 @@ export default async function GamePage({
   const blockers = viewer ? eligibilityFailures(viewer, game.restrictions) : [];
   const chips = restrictionChips(game.restrictions);
   const capacity = capacityOf(game);
+  const courtWord = sport.court.charAt(0).toUpperCase() + sport.court.slice(1);
 
   /* Spots freed by a backout and still empty — the only thing that unlocks
      "take the free spot" for someone on the waitlist. Derived from the rows,
@@ -84,8 +88,43 @@ export default async function GamePage({
       ? view.waitlist.findIndex((r) => r.personId === mine.personId) + 1
       : null;
 
-  /* The evening's games, once the host has drawn them up. */
-  const schedule = date ? await scheduleFor(game, date) : { blocks: [], names: new Map() };
+  /* Which of the four session shapes this game runs. `fixed` and `rotate` use
+     the pairings engine; the other three each have their own screen. */
+  const mode = game.rotation;
+  const usesPairings = mode === "fixed" || mode === "rotate";
+
+  const schedule =
+    date && usesPairings ? await scheduleFor(game, date) : { blocks: [], names: new Map() };
+
+  const slots = date && mode === "slots" ? await slotsFor(game, date) : {};
+  const kotc = date && mode === "kotc" ? await kotcFor(game, date) : null;
+  const ladder = mode === "ladder" ? await ladderFor(game) : { order: [], log: [] };
+
+  /* One name lookup covering everyone any of those screens might show — the
+     roster, the pairings, the slot bookings, the courts and the ladder. */
+  const nameIds = new Set<string>([
+    ...view.roster.map((r) => r.personId),
+    ...schedule.names.keys(),
+    ...Object.values(slots).flat(),
+    ...(kotc ? [...kotc.courts.flatMap((c) => [...c.a, ...c.b]), ...kotc.bench] : []),
+    ...ladder.order,
+    ...ladder.log.flatMap((e) => [e.challenger, e.defender]),
+  ]);
+  const names: Record<string, string> = {};
+  for (const r of view.roster) names[r.personId] = r.person.name;
+  for (const [id, n] of schedule.names) names[id] = n;
+  const missing = [...nameIds].filter((id) => !names[id]);
+  if (missing.length > 0) {
+    const { db } = await import("@/lib/db");
+    const { people } = await import("@/lib/db/schema");
+    const { inArray } = await import("drizzle-orm");
+    for (const p of await db
+      .select({ id: people.id, name: people.name })
+      .from(people)
+      .where(inArray(people.id, missing))) {
+      names[p.id] = p.name;
+    }
+  }
 
   const hostRows: RosterRow[] = view.roster.map((r) => ({
     personId: r.personId,
@@ -222,17 +261,56 @@ export default async function GamePage({
               />
             )}
 
-            <Schedule
-              slug={game.slug}
-              date={date}
-              blocks={schedule.blocks}
-              names={Object.fromEntries(schedule.names)}
-              isHost={host}
-              confirmedCount={view.confirmed.length}
-              /* "court", "table" or "board", from the sport registry — a chess
-                 evening should not be told which court to sit at. */
-              courtWord={sport.court.charAt(0).toUpperCase() + sport.court.slice(1)}
-            />
+            {/* Each rotation gets its own screen. "court", "table" or "board"
+                comes from the sport registry — a chess evening should not be
+                told which court to sit at. */}
+            {usesPairings && (
+              <Schedule
+                slug={game.slug}
+                date={date}
+                blocks={schedule.blocks}
+                names={names}
+                isHost={host}
+                confirmedCount={view.confirmed.length}
+                courtWord={courtWord}
+              />
+            )}
+
+            {mode === "slots" && (
+              <SlotsPanel
+                slug={game.slug}
+                date={date}
+                slots={slots}
+                labels={halfHourSlots(game.startTime, game.endTime)}
+                capacity={slotCapacity(game)}
+                names={names}
+                meId={viewer?.id ?? null}
+                isHost={host}
+              />
+            )}
+
+            {mode === "kotc" && (
+              <KotcPanel
+                slug={game.slug}
+                date={date}
+                state={kotc}
+                names={names}
+                isHost={host}
+                confirmedCount={view.confirmed.length}
+                courtWord={courtWord}
+              />
+            )}
+
+            {mode === "ladder" && (
+              <LadderPanel
+                slug={game.slug}
+                order={ladder.order}
+                log={ladder.log}
+                names={names}
+                isHost={host}
+                meId={viewer?.id ?? null}
+              />
+            )}
 
             {/* ── Who is playing ───────────────────────────────────────── */}
             <div className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">

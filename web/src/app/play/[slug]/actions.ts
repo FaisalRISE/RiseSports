@@ -222,6 +222,131 @@ export async function clearScoreAction(slug: string, matchId: string): Promise<R
   return res.ok ? { ok: true, state: "none" } : fail(res.error);
 }
 
+/* ── Slots, King of the Court, the ladder ─────────────────────────────────*/
+
+const okResult: RosterResult = { ok: true, state: "none" };
+
+/** A player taking or giving up a half-hour slot — always for themselves. */
+export async function slotAction(
+  slug: string, date: string, slot: string, take: boolean,
+): Promise<RosterResult> {
+  const s = slugSchema.safeParse(slug);
+  const d = dateSchema.safeParse(date);
+  const sl = z.string().trim().min(1).max(20).safeParse(slot);
+  if (!s.success || !d.success || !sl.success) return fail("Bad request.");
+
+  const personId = await myPersonId();
+  if (!personId) return fail("Say who you are first.");
+
+  const game = await gameBySlug(s.data);
+  if (!game) return fail("No such game.");
+
+  const { canJoinSessions } = await import("@/lib/community/store");
+  if (!(await canJoinSessions(game, personId))) return fail("This game is invite only.");
+
+  const { takeSlot, giveUpSlot } = await import("@/lib/community/rotationsStore");
+  const res = take
+    ? await takeSlot(game, d.data, personId, sl.data)
+    : await giveUpSlot(game, d.data, personId, sl.data);
+
+  revalidatePath(`/play/${s.data}`);
+  return res.ok ? okResult : fail(res.error);
+}
+
+/** The host putting somebody into a slot, or taking them out of one. */
+export async function slotActionFor(
+  slug: string, date: string, slot: string, personId: string, take: boolean,
+): Promise<RosterResult> {
+  const s = slugSchema.safeParse(slug);
+  const d = dateSchema.safeParse(date);
+  const sl = z.string().trim().min(1).max(20).safeParse(slot);
+  const p = idSchema.safeParse(personId);
+  if (!s.success || !d.success || !sl.success || !p.success) return fail("Bad request.");
+
+  let game;
+  try {
+    game = await hostGuard(s.data);
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "Not allowed.");
+  }
+
+  const { takeSlot, giveUpSlot } = await import("@/lib/community/rotationsStore");
+  const res = take
+    ? await takeSlot(game, d.data, p.data, sl.data)
+    : await giveUpSlot(game, d.data, p.data, sl.data);
+
+  revalidatePath(`/play/${s.data}`);
+  return res.ok ? okResult : fail(res.error);
+}
+
+type KotcOp = { op: "start" } | { op: "reset" } | { op: "next" } | { op: "pick"; court: number; side: "a" | "b" };
+
+export async function kotcAction(slug: string, date: string, action: KotcOp): Promise<RosterResult> {
+  const s = slugSchema.safeParse(slug);
+  const d = dateSchema.safeParse(date);
+  if (!s.success || !d.success) return fail("Bad request.");
+
+  let game;
+  try {
+    game = await hostGuard(s.data);
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "Not allowed.");
+  }
+
+  const r = await import("@/lib/community/rotationsStore");
+  let res;
+  switch (action.op) {
+    case "start": res = await r.startKotc(game, d.data); break;
+    case "reset": res = await r.resetKotc(game, d.data); break;
+    case "next": res = await r.advanceKotc(game, d.data); break;
+    case "pick": {
+      const court = z.number().int().min(0).max(20).safeParse(action.court);
+      if (!court.success || (action.side !== "a" && action.side !== "b")) return fail("Bad request.");
+      res = await r.pickKotcWinner(game, d.data, court.data, action.side);
+      break;
+    }
+    default: return fail("Unknown action.");
+  }
+
+  revalidatePath(`/play/${s.data}`);
+  return res.ok ? okResult : fail(res.error);
+}
+
+type LadderOp =
+  | { op: "add"; personId: string }
+  | { op: "remove"; personId: string }
+  | { op: "settle"; challenger: string; defender: string; challengerWon: boolean };
+
+export async function ladderAction(slug: string, action: LadderOp): Promise<RosterResult> {
+  const s = slugSchema.safeParse(slug);
+  if (!s.success) return fail("Bad request.");
+
+  let game;
+  try {
+    game = await hostGuard(s.data);
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "Not allowed.");
+  }
+
+  const r = await import("@/lib/community/rotationsStore");
+  let res;
+  if (action.op === "add" || action.op === "remove") {
+    const p = idSchema.safeParse(action.personId);
+    if (!p.success) return fail("Bad request.");
+    res = action.op === "add"
+      ? await r.addToLadder(game, p.data)
+      : await r.removeFromLadder(game, p.data);
+  } else if (action.op === "settle") {
+    const c = idSchema.safeParse(action.challenger);
+    const d2 = idSchema.safeParse(action.defender);
+    if (!c.success || !d2.success) return fail("Bad request.");
+    res = await r.settleChallenge(game, c.data, d2.data, !!action.challengerWon);
+  } else return fail("Unknown action.");
+
+  revalidatePath(`/play/${s.data}`);
+  return res.ok ? okResult : fail(res.error);
+}
+
 /* ── Calling a date off ───────────────────────────────────────────────────*/
 
 export async function setSessionCancelled(
