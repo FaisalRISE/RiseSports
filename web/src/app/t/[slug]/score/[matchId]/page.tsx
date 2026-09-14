@@ -2,12 +2,12 @@ import { notFound } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { matches, players, teams, tournaments } from "@/lib/db/schema";
-import { viewMatch, rulesFor } from "@/lib/matchState";
+import { viewMatch, rulesFor, describeCourt } from "@/lib/matchState";
 import { principalFor } from "@/lib/auth/guard";
 import { canScore, canView } from "@/lib/auth/policy";
 import { RefConsole, type ConsoleTeam } from "@/components/RefConsole";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
-import { scorePoint, undoPoint, confirmRotation, pushLog } from "../../actions";
+import { scorePoint, undoPoint, minusPoint, confirmRotation, setMatchSetup, pushLog } from "../../actions";
 import type { LiteRules } from "@/lib/scoring/replayLite";
 import type { Side } from "@/lib/scoring/replay";
 
@@ -84,7 +84,15 @@ export default async function ScorePage({
         teamA={consoleTeam(row.match.teamAId, row.match.lineupA)}
         teamB={consoleTeam(row.match.teamBId, row.match.lineupB)}
         canScore={canScore(principal)}
-        actions={{ score: scorePoint, undo: undoPoint, confirm: confirmRotation, push: pushLog }}
+        notes={describeCourt(row.tournament)}
+        actions={{
+          score: scorePoint,
+          undo: undoPoint,
+          minus: minusPoint,
+          confirm: confirmRotation,
+          setup: setMatchSetup,
+          push: pushLog,
+        }}
         offline={{
           rules: liteRules,
           format: row.tournament.format,

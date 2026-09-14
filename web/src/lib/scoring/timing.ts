@@ -22,8 +22,7 @@ import "server-only";
  *
  * ── What is stored instead ───────────────────────────────────────────────
  * Only ACCUMULATED milliseconds, plus a wall-clock `startedAt` that is used for
- * ordering and never subtracted. Every function here takes the elapsed delta as
- * an argument rather than reading a clock, so:
+ * ordering and never subtracted. Nothing here reads a clock, so:
  *
  *   - the only thing that ever becomes a duration is a delta measured by
  *     `performance.now()` on one device within one page session, which is
@@ -31,7 +30,16 @@ import "server-only";
  *   - these functions are pure, so the arithmetic is testable without a clock;
  *   - nothing that crosses the wire can be misinterpreted later.
  *
- * The delta rides along with the rally write that was happening anyway (see
+ * ── Where the buckets are decided ────────────────────────────────────────
+ * The DEVICE splits its measurement into play and pause before sending it, and
+ * `addMeasured` is the only function here that folds time in at all. That is
+ * deliberate: a referee who pauses for an injury with no signal has a phone
+ * that knows the clock is stopped and a server record that still says
+ * `running: true`. Routing by the record would bill that injury break as play.
+ * So the record accumulates what it is told and mirrors the device's flag; it
+ * never infers.
+ *
+ * The tick rides along with the rally write that was happening anyway (see
  * `commitLog`), so a reload loses at most the time since the last point — and
  * costs no extra round trips.
  *
@@ -39,21 +47,12 @@ import "server-only";
  * scored offline would have its start stamped at reconnect.
  */
 
-export type PauseReason = "timeout" | "injury" | "weather" | "other";
+import { type PauseReason, type Tick, type TimingView } from "./clock";
 
-export type Timing = {
-  /** ISO wall clock. For ORDERING only — never subtract it from anything. */
-  startedAt: string | null;
-  endedAt: string | null;
-  /** Accumulated play, from monotonic deltas. */
-  playingMs: number;
-  /** Accumulated pause, likewise. */
-  pausedMs: number;
-  pauseCount: number;
-  pauseReason: PauseReason | null;
-  /** True while the clock is counting play rather than pause. */
-  running: boolean;
-};
+export type { PauseReason, Tick };
+export { PAUSE_REASONS, fmtClock, fmtMinutes, EMPTY_TICK, tickIsEmpty } from "./clock";
+
+export type Timing = TimingView;
 
 export const emptyTiming = (): Timing => ({
   startedAt: null,
@@ -95,31 +94,55 @@ export function startTiming(t: Timing, atISO: string): Timing {
 }
 
 /**
- * Fold in time measured since the last write.
+ * Fold in time a device measured, already split into its two buckets.
  *
- * Which bucket it lands in follows `running`, so a paused match accrues paused
- * time and a running one accrues play — the caller does not choose.
+ * The ONE place a duration enters the record. Nothing else adds milliseconds,
+ * which is what makes "playingTime excludes pauses" a property of one function
+ * rather than a convention spread across the call sites.
  */
-export function addElapsed(t: Timing, elapsedMs: number): Timing {
-  const d = delta(elapsedMs);
-  if (!t.startedAt || t.endedAt || d === 0) return t;
-  return t.running
-    ? { ...t, playingMs: t.playingMs + d }
-    : { ...t, pausedMs: t.pausedMs + d };
+export function addMeasured(t: Timing, playMs: number, pausedMs: number): Timing {
+  if (!t.startedAt || t.endedAt) return t;
+  const p = delta(playMs);
+  const q = delta(pausedMs);
+  if (p === 0 && q === 0) return t;
+  return { ...t, playingMs: t.playingMs + p, pausedMs: t.pausedMs + q };
 }
 
-/** Pause, folding in the play measured up to this moment. */
-export function pauseTiming(t: Timing, elapsedMs: number, reason: PauseReason = "other"): Timing {
-  if (!t.startedAt || t.endedAt || !t.running) return t;
-  const folded = addElapsed(t, elapsedMs);
-  return { ...folded, running: false, pauseReason: reason, pauseCount: folded.pauseCount + 1 };
+/**
+ * Mirror the device's pause onto the record.
+ *
+ * The count moves on the TRANSITION, never on the reason. A referee who pauses
+ * for a timeout and then reaches for "Injury" is relabelling the break they are
+ * already standing in, not starting a second one — so the reason changes and
+ * `pauseCount` does not. Without the distinction the console would show a
+ * reason the record disagreed with, which is a small lie in the one place the
+ * record exists to be believed.
+ */
+export function pauseTiming(t: Timing, reason: PauseReason = "other"): Timing {
+  if (!t.startedAt || t.endedAt) return t;
+  if (!t.running) return t.pauseReason === reason ? t : { ...t, pauseReason: reason };
+  return { ...t, running: false, pauseReason: reason, pauseCount: t.pauseCount + 1 };
 }
 
-/** Resume, folding in the pause measured up to this moment. */
-export function resumeTiming(t: Timing, elapsedMs: number): Timing {
+/** Mirror the device's resume. */
+export function resumeTiming(t: Timing): Timing {
   if (!t.startedAt || t.endedAt || t.running) return t;
-  const folded = addElapsed(t, elapsedMs);
-  return { ...folded, running: true, pauseReason: null };
+  return { ...t, running: true, pauseReason: null };
+}
+
+/**
+ * Apply one device tick: fold the measured time, then move the pause flag.
+ *
+ * Both halves in one function, in this order, on purpose. Flipping the flag
+ * first and folding afterwards would file the minutes BEFORE an injury break
+ * as paused time — the same wrong answer, arrived at by writing two correct
+ * calls in the wrong order. There is no way to write them in the wrong order
+ * from here.
+ */
+export function applyTick(t: Timing, tick: Tick): Timing {
+  const folded = addMeasured(t, tick.playMs, tick.pausedMs);
+  if (tick.pause === undefined) return folded;
+  return tick.pause === null ? resumeTiming(folded) : pauseTiming(folded, tick.pause);
 }
 
 /**
@@ -128,10 +151,9 @@ export function resumeTiming(t: Timing, elapsedMs: number): Timing {
  * A match stopped while paused keeps its pause in `pausedMs` — the pause was
  * real time in the hall, and only `playingMs` claims to be play.
  */
-export function stopTiming(t: Timing, elapsedMs: number, atISO: string): Timing {
+export function stopTiming(t: Timing, atISO: string): Timing {
   if (!t.startedAt || t.endedAt) return t;
-  const folded = addElapsed(t, elapsedMs);
-  return { ...folded, endedAt: atISO, running: false, pauseReason: null };
+  return { ...t, endedAt: atISO, running: false, pauseReason: null };
 }
 
 /**
@@ -148,20 +170,3 @@ export function reopenTiming(t: Timing): Timing {
 
 /** What the clock on screen should read, before this session's own delta. */
 export const playedMs = (t: Timing): number => t.playingMs;
-
-/** "12:05". Minutes and seconds, which is how a match is talked about. */
-export function fmtClock(ms: number): string {
-  const total = Math.floor(Math.max(0, ms) / 1000);
-  const m = Math.floor(total / 60);
-  return `${m}:${String(total % 60).padStart(2, "0")}`;
-}
-
-/** "24 min", for the post-event summary the spec describes. */
-export const fmtMinutes = (ms: number): string => `${Math.round(Math.max(0, ms) / 60000)} min`;
-
-export const PAUSE_REASONS: { id: PauseReason; label: string }[] = [
-  { id: "timeout", label: "Timeout" },
-  { id: "injury", label: "Injury" },
-  { id: "weather", label: "Weather" },
-  { id: "other", label: "Other" },
-];

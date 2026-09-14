@@ -19,6 +19,7 @@ import {
   oslRuleOverrides, oslPairIndex, oslPendingRotation, oslPairSlots,
   PAIR_LABELS, PAIR_RANGES, OSL_SWITCH_SECONDS, type PairIndex,
 } from "@/lib/formats/osl";
+import { readTiming, type Timing } from "@/lib/scoring/timing";
 import type { Match, Tournament } from "@/lib/db/schema";
 
 export type OslView = {
@@ -40,6 +41,10 @@ export type MatchView = ReplayState & {
   locked: boolean;
   rev: number;
   typed: boolean;
+  /** How long the match has taken so far. Plain accumulated milliseconds, safe
+   *  to hand the browser — see lib/scoring/timing.ts for why it is never a
+   *  clock reading. */
+  timing: Timing | null;
   osl: OslView | null;
 };
 
@@ -65,7 +70,8 @@ export const allowsDraws = (sport: string): boolean => sport === "ch" || sport =
 
 export function viewMatch(
   t: Pick<Tournament, "sport" | "format" | "scoring">,
-  m: Pick<Match, "id" | "log" | "server" | "posA" | "posB" | "ackedGates" | "rev" | "typedScoreA" | "typedScoreB">,
+  m: Pick<Match, "id" | "log" | "server" | "posA" | "posB" | "ackedGates" | "rev" | "typedScoreA" | "typedScoreB"> &
+     Partial<Pick<Match, "timing">>,
 ): MatchView {
   const rules = rulesFor(t);
   const state = replayRallies(
@@ -96,6 +102,48 @@ export function viewMatch(
     locked: state.over || (osl?.pendingGate ?? 0) > 0,
     rev: m.rev,
     typed: m.typedScoreA != null && m.typedScoreB != null,
+    timing: m.timing ? readTiming(m.timing) : null,
     osl,
   };
+}
+
+export type CourtNotes = {
+  /** How the serve behaves, in the words a referee would use. */
+  serve: string;
+  /** How the game is won. */
+  scoring: string;
+};
+
+/**
+ * The court, explained in plain English.
+ *
+ * Computed HERE and handed down as two finished sentences, for the same reason
+ * `goldenInfo` is: the resolved rules and the format presets do not ship. The
+ * browser gets `LiteRules` for the three sports it can score offline, and for
+ * OSL it gets nothing at all — so the console cannot write this itself without
+ * either duplicating the rules or going blank on the format that needs the
+ * explanation most.
+ *
+ * It is worth the round trip because misreading the service box is the mistake
+ * a new referee actually makes: under side-out only the serving side can score,
+ * so a rally won by the receivers moves the serve and leaves the score alone —
+ * which looks like the app ignoring a tap.
+ */
+export function describeCourt(t: Pick<Tournament, "sport" | "format" | "scoring">): CourtNotes | null {
+  const r = rulesFor(t);
+  if (!r) return null;
+
+  const serve = r.sideOut
+    ? "Side-out scoring — only the serving side can score. Tap the half belonging to the side that won the rally. If the receiving side wins it, no point is scored and the serve moves on. The ball marks the server, who serves from the right whenever their own score is even, so partners swap sides each time they score."
+    : "Rally scoring — every rally is a point, whoever served. Tap the half belonging to the side that won it. If the receiving side wins, the serve crosses with the point. The ball marks the server, who serves from the right whenever their own score is even.";
+
+  const scoring =
+    `Game to ${r.target}` +
+    (r.winBy > 1 ? `, won by ${r.winBy} clear points` : ", sudden death") +
+    (r.cap != null && r.golden != null
+      ? `. The two-point rule stops at ${r.golden}: if both sides reach ${r.golden} the very next rally takes it, so no score can go past ${r.cap}.`
+      : ".") +
+    (r.switchAt ? ` Ends change at ${r.switchAt}.` : "");
+
+  return { serve, scoring };
 }

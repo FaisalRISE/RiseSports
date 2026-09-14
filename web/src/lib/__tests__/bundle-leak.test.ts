@@ -45,6 +45,15 @@ const STATIC_DIR = path.resolve(process.cwd(), ".next/static");
 const CLIENT_SAFE = [
   "scoring/replayLite.ts", // published rules of pb/bd/tt — see above
   "offline/queue.ts", // IndexedDB queue; imports one type and nothing else
+  /* A binary search over a score function the CALLER supplies. It holds no
+     rules of its own — that is the point of its shape — and both the server's
+     engine and the browser's offline one drive it, which is why it exists once
+     rather than twice. */
+  "scoring/rewind.ts",
+  /* The match clock's vocabulary and "12:05". The record arithmetic stays in
+     scoring/timing.ts behind the marker; a clock that cannot tick in the
+     browser is not a clock. */
+  "scoring/clock.ts",
 ];
 
 /* A separate category, kept separate on purpose: these are NOT client-safe.

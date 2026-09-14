@@ -596,9 +596,56 @@ the `tournaments.scoring` column had existed since the port, and nothing wrote t
 - The clock read sits at **module level** in both files — inside a component body React's purity
   rule cannot tell it is only called from an event handler.
 
-Next areas by size: engines & draws (45), foundations (29), the UI kit (22), the referee
-console (~14 — the pause/resume UI, the live clock tick and the pre-match panel are what is
-left, and the timer they need now exists).
+### The referee console the clock unlocked (2026-09-14)
+
+The live clock, pause/resume with reasons, the game-point warning, the +/− correction rows, the
+pre-match setup panel, keep-screen-awake and the "reading the court" explainer. Closes the
+console; the remaining port is engines, foundations and the UI kit.
+
+- **The DEVICE splits the milliseconds, the record just adds them.** `Tick` carries `playMs`
+  and `pausedMs` separately, and `addMeasured` is the only function in `timing.ts` that folds
+  time in at all. The reason is the hall: a referee who pauses for an injury with no signal has
+  a phone that knows the clock is stopped and a stored record that still says `running: true`,
+  so routing by the record would bill the break as play. Pinned by a test named after exactly
+  that.
+  - `applyTick` is one call — fold, then flip — because the two correct calls written in the
+    wrong order file the play BEFORE an injury as part of the injury. That mistake is tested
+    too, so the reason stays visible.
+  - So pause never fails: it takes effect on the device the instant it is tapped and the record
+    catches up with the next write. A pause button that has to reach a server before the clock
+    stops is a button that fails during an injury.
+  - `pauseCount` moves on the TRANSITION, never on the reason — a referee reaching for
+    "Injury" after "Timeout" is relabelling one break, not starting a second.
+- **A once-a-second render killed the fifteen-second retry timer.** `useEffect(..., [flush])`
+  tore the interval down and rebuilt it on every render, and the clock now renders every
+  second, so it never reached fifteen. The queue then sat unsent until the referee happened to
+  tap again. `e2e:offline` caught it — "the queue flushes with no user action" failed while the
+  rallies were provably on the server. **Anything periodic in a client component must be pinned
+  behind a ref**, as `flushRef` now is; and `useOfflineScoring` takes `claim`/`restore` out of
+  the clock object rather than depending on the object, which is rebuilt every second.
+- `lib/scoring/clock.ts` is the client-safe half — the record's shape, the pause reasons and
+  `fmtClock`. The arithmetic stays in `timing.ts` behind `import "server-only"`. A clock that
+  cannot tick in the browser is not a clock, and nothing in "12:05" is worth protecting.
+- **`lib/scoring/rewind.ts` exists once and takes the score function as an argument.** "Take a
+  point off them" is not "undo": under side-out several rallies pass without anybody scoring,
+  so it rewinds to just before the rally that scored, discarding the side-outs after it. The
+  server drives it with `replayRallies` and the browser with `replayLite`; written twice, the
+  two would disagree within a release.
+- **The pre-match panel is keyed on the LOG, not on whether the clock has started**, so the
+  screen and `setMatchSetup` agree. The service sequence is DERIVED by replaying the log
+  against "who served first", so changing that at 8–6 rewrites who was serving all game — but
+  at 0–0 there is nothing to rewrite, including after a correction walks a match back, which is
+  exactly when a referee notices the wrong side was marked.
+- **Two taps in the same JavaScript tick collapse into one** — both handlers read the same
+  `localLog`. Measured: 30ms apart both register, 0ms apart one does. Touch input cannot
+  produce two events in one tick, so this is a property of scripted clicks, not a lost rally.
+  Checked rather than assumed, because "a rally that looks saved and is not" is the one thing
+  this console must never do.
+- Verified end to end against the database: 11 rallies with one injury pause recorded
+  `playingMs` 136,570 and `pausedMs` 26,782 — summing to the wall-clock span between
+  `startedAt` and `endedAt` to the millisecond, with `pauseCount: 1` despite the relabel.
+
+Next areas by size: engines & draws (45), foundations (29), the UI kit (22).
 
 ## Access: the site is deliberately open, and the switch is a trap
 

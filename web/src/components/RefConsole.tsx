@@ -1,12 +1,15 @@
 "use client";
 
-import { useState, useTransition, useRef } from "react";
+import { useCallback, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import type { MatchView } from "@/lib/matchState";
+import type { MatchView, CourtNotes } from "@/lib/matchState";
 import type { Side } from "@/lib/scoring/replay";
 import type { LiteRules } from "@/lib/scoring/replayLite";
 import type { PushResult } from "@/lib/offline/queue";
+import { fmtClock, PAUSE_REASONS, type PauseReason, type Tick } from "@/lib/scoring/clock";
 import { useOfflineScoring } from "./useOfflineScoring";
+import { useMatchClock } from "./useMatchClock";
+import { useKeepAwake } from "./useKeepAwake";
 
 /* The referee console.
  *
@@ -27,12 +30,19 @@ export type RefConsoleProps = {
   teamA: ConsoleTeam;
   teamB: ConsoleTeam;
   canScore: boolean;
+  /** The rules in words, written on the server — see matchState.describeCourt. */
+  notes: CourtNotes | null;
   actions: {
-    score: (matchId: string, side: Side, rev: number, elapsedMs?: number) =>
+    score: (matchId: string, side: Side, rev: number, tick?: Tick) =>
       Promise<{ ok: true } | { ok: false; error: string }>;
-    undo: (matchId: string, rev: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+    undo: (matchId: string, rev: number, tick?: Tick) =>
+      Promise<{ ok: true } | { ok: false; error: string }>;
+    minus: (matchId: string, side: Side, rev: number, tick?: Tick) =>
+      Promise<{ ok: true } | { ok: false; error: string }>;
     confirm: (matchId: string, gate: number, rev: number) => Promise<{ ok: true } | { ok: false; error: string }>;
-    push: (matchId: string, log: Side[], baseRev: number) => Promise<PushResult>;
+    setup: (matchId: string, setup: { server?: Side; posA?: 0 | 1; posB?: 0 | 1 }) =>
+      Promise<{ ok: true } | { ok: false; error: string }>;
+    push: (matchId: string, log: Side[], baseRev: number, tick?: Tick) => Promise<PushResult>;
   };
   /** Rules and raw log as DATA, so the browser can keep scoring with no signal. */
   offline: {
@@ -45,39 +55,22 @@ export type RefConsoleProps = {
   };
 };
 
-/* ── The match clock's measuring end ──────────────────────────────────────
- * The spec is explicit: use device-monotonic elapsed time, never the difference
- * between two wall-clock stamps, because an offline device whose clock corrects
- * on reconnect produces silently wrong durations.
- *
- * So the only clock read is `performance.now()`, and only ever as a DIFFERENCE
- * between two readings in the same page load. What crosses the wire is that
- * difference in milliseconds — never the reading itself, which would mean
- * nothing on the server or after a reload.
- *
- * The delta rides on the rally write that was happening anyway, so a reload
- * loses at most the time since the last point, at no extra round trip.
- *
- * Module-level, and taking the ref, because it reads a clock: inside the
- * component body React's purity rule cannot tell that it is only ever called
- * from an event handler.
- */
-function takeElapsedFrom(mark: { current: number | null }): number {
-  const now = performance.now();
-  const since = mark.current == null ? 0 : now - mark.current;
-  mark.current = now;
-  /* Nothing is counted before the first point of this session: there is no
-     earlier point to measure from, and counting the time the page merely sat
-     open would inflate the match. The hour ceiling catches a device suspended
-     mid-match that woke with a huge gap. */
-  return Number.isFinite(since) && since > 0 && since < 60 * 60 * 1000 ? Math.round(since) : 0;
-}
-
-export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: RefConsoleProps) {
+export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offline }: RefConsoleProps) {
   const [flipped, setFlipped] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
+
+  /* The clock is created before the queue because the queue writes through it:
+     every push claims the milliseconds measured since the last one. */
+  const clock = useMatchClock({
+    timing: view.timing,
+    live: (view.rallies > 0 || !!view.timing?.startedAt) && !view.over,
+  });
+
+  /* Stable, so the queue's callbacks are stable. An inline arrow here is a new
+     function on every render, and this console re-renders every second. */
+  const onSynced = useCallback(() => router.refresh(), [router]);
 
   const off = useOfflineScoring({
     matchId: view.matchId,
@@ -89,15 +82,21 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
     posA: offline.posA,
     posB: offline.posB,
     push: actions.push,
-    onSynced: () => router.refresh(),
+    onSynced,
+    clock,
   });
 
   /* While rallies are queued the browser's own replay is what is true on court;
      the server's view is behind until they land. */
   const live = off.local
     ? { ...view, a: off.local.a, b: off.local.b, serving: off.local.serving, servePos: off.local.servePos,
-        over: off.local.over, winner: off.local.winner, golden: off.local.golden, rallies: off.local.rallies }
+        over: off.local.over, winner: off.local.winner, golden: off.local.golden,
+        gamePoint: off.local.gamePoint, rallies: off.local.rallies }
     : view;
+
+  /* Hold the screen on while there is a match to score. A phone that dims
+     between rallies costs the referee a tap just to wake it. */
+  useKeepAwake(canScore && !live.over);
 
   /* Ends change at 14 in the OSL format, so the console mirrors itself to match
      where the teams are actually standing. */
@@ -122,7 +121,43 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
     (!off.online && !off.canScoreOffline) || !!off.conflict;
   const gate = live.osl?.pendingGate ?? 0;
 
-  const lastMark = useRef<number | null>(null);
+  /* ONE path, always, whenever the browser can score this format. Branching on
+     `off.online` looked right and was wrong: a hall with WiFi but no route to
+     the server leaves navigator.onLine true, so the first tap took the direct
+     Server Action, the fetch rejected inside the transition, and the rally was
+     silently lost — the one outcome this whole feature exists to prevent.
+     Queue first, send second: the rally is durable before anything can fail. */
+  const point = (side: Side) => {
+    if (off.canScoreOffline) off.scoreOffline(side);
+    else run(() => actions.score(view.matchId, side, view.rev, clock.claim()));
+  };
+  const undo = () => {
+    if (off.canScoreOffline) off.undoOffline();
+    else run(() => actions.undo(view.matchId, view.rev, clock.claim()));
+  };
+  const minus = (side: Side) => {
+    if (off.canScoreOffline) off.minusOffline(side);
+    else run(() => actions.minus(view.matchId, side, view.rev, clock.claim()));
+  };
+
+  /* Pause takes effect on this device the instant it is tapped and is written
+     through afterwards. The referee is standing over an injured player; a
+     button that has to reach a server before the clock stops is a button that
+     fails at exactly the wrong moment. */
+  const setPaused = (reason: PauseReason | null) => {
+    clock.setPaused(reason);
+    off.syncClock();
+  };
+
+  const started = live.rallies > 0 || !!view.timing?.startedAt;
+  const doubles = teamA.players.length > 1 || teamB.players.length > 1;
+  /* Keyed on the LOG, not on whether the clock has started, so the screen and
+     `setMatchSetup` agree about when this is allowed. The log is the real
+     constraint: the service sequence is derived from it, so with nothing in it
+     there is nothing to rewrite — including after a correction takes a match
+     back to 0–0, which is exactly when a referee notices the wrong side was
+     marked as serving. */
+  const canSetUp = canScore && live.rallies === 0 && !off.conflict;
 
   const half = (t: ConsoleTeam, side: "left" | "right") => {
     const serving = live.serving === sideOf(t);
@@ -130,17 +165,7 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
       <button
         type="button"
         disabled={locked}
-        onClick={() => {
-          /* ONE path, always, whenever the browser can score this format.
-             Branching on `off.online` looked right and was wrong: a hall with
-             WiFi but no route to the server leaves navigator.onLine true, so
-             the first tap took the direct Server Action, the fetch rejected
-             inside the transition, and the rally was silently lost — the one
-             outcome this whole feature exists to prevent. Queue first, send
-             second: the rally is durable before anything can fail. */
-          if (off.canScoreOffline) off.scoreOffline(sideOf(t));
-          else run(() => actions.score(view.matchId, sideOf(t), view.rev, takeElapsedFrom(lastMark)));
-        }}
+        onClick={() => point(sideOf(t))}
         aria-label={`Point to ${t.name}`}
         className={[
           "relative flex min-h-40 flex-1 flex-col justify-center gap-1 p-4 text-left transition",
@@ -169,8 +194,73 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
     );
   };
 
+  const chip = (label: string, active: boolean, onClick: () => void, key?: string) => (
+    <button
+      key={key ?? label}
+      type="button"
+      onClick={onClick}
+      className={[
+        "rounded-lg border px-3 py-1.5 text-xs font-bold transition",
+        active
+          ? "border-amber-400 bg-amber-400 text-amber-950"
+          : "border-neutral-600 bg-neutral-900 text-neutral-300 hover:border-neutral-400",
+      ].join(" ")}
+    >
+      {label}
+    </button>
+  );
+
   return (
     <div className="space-y-3">
+      {/* The clock. Play time only: a match paused for eight minutes did not
+          take eight more minutes of play, and that is the one number the spec
+          asks the record to keep. */}
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-neutral-700 bg-neutral-900 p-3">
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+            {clock.paused ? "Paused" : started ? "Playing time" : "Not started"}
+          </div>
+          <div
+            data-testid="match-clock"
+            className={[
+              "font-mono text-2xl font-black tabular-nums",
+              clock.paused ? "text-orange-600" : started ? "text-neutral-100" : "text-neutral-600",
+            ].join(" ")}
+          >
+            {fmtClock(clock.displayMs)}
+          </div>
+        </div>
+        {canScore && started && !live.over && (
+          <button
+            type="button"
+            onClick={() => setPaused(clock.paused ? null : "timeout")}
+            className={[
+              "ml-auto rounded-lg px-4 py-2 text-sm font-black transition",
+              clock.paused
+                ? "bg-orange-600 text-white hover:brightness-110"
+                : "border border-neutral-600 text-neutral-200 hover:border-neutral-400",
+            ].join(" ")}
+          >
+            {clock.paused ? "▶ Resume" : "⏸ Pause"}
+          </button>
+        )}
+      </div>
+
+      {clock.paused && (
+        <div role="status" className="rounded-xl border border-orange-500 bg-orange-500/10 p-3">
+          <p className="text-sm font-bold text-orange-600">
+            Paused — the clock is stopped. Play is not being timed.
+          </p>
+          {canScore && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {PAUSE_REASONS.map((r) =>
+                chip(r.label, clock.reason === r.id, () => setPaused(r.id), r.id),
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {live.osl && (
         <div className="flex flex-wrap items-baseline gap-2 rounded-xl border border-neutral-700 bg-neutral-900 p-3">
           <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-400">On court</span>
@@ -187,6 +277,16 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
       {live.golden && !live.over && (
         <p className="rounded-xl border border-rose-500 bg-rose-500/10 p-3 text-sm font-bold text-rose-300">
           ⚡ Golden point — the next rally wins the match.
+        </p>
+      )}
+
+      {/* Game point. Under side-out only the serving side can convert, which is
+          why this comes from the engine rather than from comparing the two
+          scores here — the receiving side being one point from the target does
+          not put them on game point. */}
+      {!live.golden && !live.over && live.gamePoint.length > 0 && (
+        <p className="rounded-xl border border-orange-500 bg-orange-500/10 p-3 text-sm font-bold text-orange-600">
+          Game point · {live.gamePoint.map((s) => (s === "a" ? teamA.name : teamB.name)).join(" & ")}
         </p>
       )}
 
@@ -247,11 +347,92 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
         </div>
       )}
 
+      {/* Pre-match setup, and it disappears the moment the first rally lands.
+          Not a courtesy: the whole service sequence is DERIVED by replaying the
+          log against these two answers, so changing them at 8–6 would not
+          correct a mistake, it would rewrite who had been serving all game. */}
+      {canSetUp && (
+        <div className="rounded-xl border border-neutral-700 bg-neutral-900 p-3">
+          <h2 className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+            Before the first serve
+          </h2>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="min-w-24 text-[11px] font-bold uppercase tracking-wide text-neutral-400">
+              Serves first
+            </span>
+            {[teamA, teamB].map((t) =>
+              chip(
+                t.name,
+                (offline.server ?? "a") === sideOf(t),
+                () => run(() => actions.setup(view.matchId, { server: sideOf(t) })),
+                t.id,
+              ),
+            )}
+            <span className="text-[11px] text-neutral-500">the first server starts on the right</span>
+          </div>
+          {doubles && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-neutral-800 pt-2">
+              <span className="min-w-24 text-[11px] font-bold uppercase tracking-wide text-neutral-400">
+                On the right
+              </span>
+              {[teamA, teamB].map((t) => {
+                const a = t.id === teamA.id;
+                const pos = (a ? offline.posA : offline.posB) === 1 ? 1 : 0;
+                return (
+                  <span key={t.id} className="inline-flex items-center gap-1 text-[11px] font-semibold text-neutral-300">
+                    {t.name}:
+                    <span className="text-neutral-400">{t.players[pos] ?? "—"}</span>
+                    {chip("⇄", false, () =>
+                      run(() =>
+                        actions.setup(view.matchId, a ? { posA: pos ? 0 : 1 } : { posB: pos ? 0 : 1 }),
+                      ), `${t.id}-swap`)}
+                  </span>
+                );
+              })}
+              <span className="text-[11px] text-neutral-500">each pair chooses its starting server</span>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex overflow-hidden rounded-xl shadow-lg">
         {half(left, "left")}
         <div className="w-1.5 bg-[repeating-linear-gradient(0deg,rgba(255,255,255,.95)_0_5px,rgba(255,255,255,.35)_5px_10px)]" />
         {half(right, "right")}
       </div>
+
+      {/* The +/− fallback. The court is the input, but a referee who has just
+          given a point to the wrong side needs a way to say so that is not
+          "undo four times". */}
+      {canScore && (
+        <div className="space-y-1.5">
+          {[left, right].map((t) => (
+            <div key={t.id} className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={locked || scoreOf(t) === 0}
+                onClick={() => minus(sideOf(t))}
+                aria-label={`Take a point off ${t.name}`}
+                className="h-11 w-14 rounded-lg border border-neutral-600 text-xl font-black text-neutral-200 disabled:opacity-30"
+              >
+                −
+              </button>
+              <span className="min-w-0 flex-1 truncate text-[13px] font-bold text-neutral-300">{t.name}</span>
+              <span className="font-mono text-sm font-bold tabular-nums text-neutral-500">{scoreOf(t)}</span>
+              <button
+                type="button"
+                disabled={locked}
+                onClick={() => point(sideOf(t))}
+                aria-label={`Add a point for ${t.name}`}
+                className="h-11 w-14 rounded-lg text-xl font-black text-white disabled:opacity-30"
+                style={{ background: t.colour ?? "#17608a" }}
+              >
+                +
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <button
@@ -265,12 +446,7 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
           <button
             type="button"
             disabled={pending || live.rallies === 0 || !!off.conflict}
-            onClick={() => {
-              /* Same single path as scoring above — an undo that vanishes into
-                 a rejected fetch is as bad as a lost point. */
-              if (off.canScoreOffline) off.undoOffline();
-              else run(() => actions.undo(view.matchId, view.rev));
-            }}
+            onClick={undo}
             className="rounded-lg border border-neutral-600 px-3 py-1.5 text-xs font-bold text-neutral-300 hover:border-neutral-400 disabled:opacity-40"
           >
             Undo last point
@@ -291,8 +467,25 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
 
       {live.over && (
         <p className="rounded-xl border border-emerald-500 bg-emerald-500/10 p-3 text-sm font-bold text-emerald-300">
-          🏆 {live.winner === "a" ? teamA.name : teamB.name} win {Math.max(live.a, live.b)}–{Math.min(live.a, live.b)}.
+          🏆 {live.winner === "a" ? teamA.name : teamB.name} win {Math.max(live.a, live.b)}–{Math.min(live.a, live.b)}
+          {view.timing?.playingMs ? ` in ${fmtClock(view.timing.playingMs)}` : ""}.
         </p>
+      )}
+
+      {/* Reading the court. Misreading the service box is the mistake a new
+          referee actually makes, and under side-out a rally won by the
+          receivers looks like a tap the app ignored. */}
+      {notes && (
+        <details className="rounded-xl border border-neutral-700 bg-neutral-900 p-3">
+          <summary className="cursor-pointer text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+            Reading the court
+          </summary>
+          <p className="mt-2 text-[12px] leading-relaxed text-neutral-400">{notes.serve}</p>
+          <p className="mt-2 text-[12px] leading-relaxed text-neutral-400">
+            {notes.scoring} {live.rallies} {live.rallies === 1 ? "rally" : "rallies"} recorded —{" "}
+            {live.a}+{live.b}={live.a + live.b}.
+          </p>
+        </details>
       )}
 
       {/* Blocking rotation confirmation — Rules 3.4, and at 14 also 5.6.

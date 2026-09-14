@@ -13,9 +13,11 @@ import { verifyPin, generateGrantToken } from "@/lib/auth/pin";
 import { viewMatch } from "@/lib/matchState";
 import { applyMatchRatings, revertMatchRatings } from "@/lib/rating/apply";
 import { oslPruneAcks } from "@/lib/formats/osl";
+import { rewindIndex } from "@/lib/scoring/rewind";
 import type { Side } from "@/lib/scoring/replay";
 import {
-  readTiming, startTiming, addElapsed, stopTiming, reopenTiming, type Timing,
+  readTiming, startTiming, applyTick, stopTiming, reopenTiming,
+  type Timing, type Tick,
 } from "@/lib/scoring/timing";
 
 /* Every mutation in this file:
@@ -28,6 +30,19 @@ import {
 
 const sideSchema = z.enum(["a", "b"]);
 const idSchema = z.string().min(1).max(64);
+
+/* A device's report of time that passed, already split into play and pause.
+ * Bounded so a broken clock on one phone cannot write a nonsense duration: an
+ * hour is the per-reading ceiling on the device, and a day is more than any
+ * queue could legitimately hold. */
+const msSchema = z.number().int().min(0).max(24 * 3_600_000);
+const tickSchema = z
+  .object({
+    playMs: msSchema,
+    pausedMs: msSchema,
+    pause: z.enum(["timeout", "injury", "weather", "other"]).nullable().optional(),
+  })
+  .default({ playMs: 0, pausedMs: 0 });
 
 type Ctx = Awaited<ReturnType<typeof loadMatch>>;
 
@@ -49,45 +64,46 @@ async function requireScorer(matchId: string): Promise<Ctx> {
   return ctx;
 }
 
-/** Write the log with an optimistic-concurrency guard on `rev`. */
 /**
  * The match clock, driven off the log rather than off anything the console has
  * to remember — the spec is explicit that it "runs automatically off point
  * entry". Start on the first point, stop on the point that wins it, and reopen
  * if an undo takes the match back over that line.
  *
- * `elapsedMs` is time this device measured with `performance.now()` since its
- * last write. It rides along with the rally write that was happening anyway, so
- * a reload loses at most the time since the last point and costs no extra round
- * trip. See lib/scoring/timing.ts for why a raw clock reading is never stored.
+ * `tick` is time this device measured with `performance.now()` since its last
+ * write, already split into play and pause because only the device knows which
+ * it was (see lib/scoring/timing.ts). It rides along with the rally write that
+ * was happening anyway, so a reload loses at most the time since the last point
+ * and costs no extra round trip.
  */
 function nextTiming(
-  current: unknown, wasOver: boolean, isOver: boolean, hasPoints: boolean, elapsedMs: number,
+  current: unknown, wasOver: boolean, isOver: boolean, hasPoints: boolean, tick: Tick,
 ): Timing | null {
   let t = readTiming(current);
   if (!t.startedAt && !hasPoints) return null;   // nothing has happened yet
 
   const now = new Date().toISOString();
   t = startTiming(t, now);
-  t = addElapsed(t, elapsedMs);
-  if (isOver && !wasOver) t = stopTiming(t, 0, now);
+  t = applyTick(t, tick);
+  if (isOver && !wasOver) t = stopTiming(t, now);
   if (wasOver && !isOver) t = reopenTiming(t);
   return t;
 }
 
+/** Write the log with an optimistic-concurrency guard on `rev`. */
 async function commitLog(
   ctx: Ctx,
   log: Side[],
   ackedGates: number[],
   expectedRev: number,
-  elapsedMs = 0,
+  tick: Tick,
 ): Promise<{ ok: true } | { ok: false; reason: "stale" }> {
   const wasOver = viewMatch(ctx.tournament, ctx.match).over;
   const isOver = viewMatch(
     ctx.tournament,
     { ...ctx.match, log, ackedGates, typedScoreA: null, typedScoreB: null },
   ).over;
-  const timing = nextTiming(ctx.match.timing, wasOver, isOver, log.length > 0, elapsedMs);
+  const timing = nextTiming(ctx.match.timing, wasOver, isOver, log.length > 0, tick);
 
   const updated = await db
     .update(matches)
@@ -137,12 +153,15 @@ async function syncRatings(ctx: Ctx, wasOver: boolean, isOver: boolean) {
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
+const EMPTY: Tick = { playMs: 0, pausedMs: 0 };
+
 /** Record one rally to the side that won it. */
 export async function scorePoint(
-  matchId: string, side: Side, expectedRev: number, elapsedMs = 0,
+  matchId: string, side: Side, expectedRev: number, tick: Tick = EMPTY,
 ): Promise<ActionResult> {
   const id = idSchema.parse(matchId);
   const w = sideSchema.parse(side);
+  const clock = tickSchema.parse(tick);
   const ctx = await requireScorer(id);
 
   const view = viewMatch(ctx.tournament, ctx.match);
@@ -150,29 +169,107 @@ export async function scorePoint(
   if (view.locked) return { ok: false, error: "Confirm the rotation before scoring." };
 
   const log = [...(ctx.match.log as Side[]), w];
-  const res = await commitLog(ctx, log, ctx.match.ackedGates ?? [], expectedRev, elapsedMs);
+  const res = await commitLog(ctx, log, ctx.match.ackedGates ?? [], expectedRev, clock);
   return res.ok ? { ok: true } : { ok: false, error: "Another device scored first — reloading." };
 }
 
+/** Rotation gates are re-derived from a log rather than trusted: dropping below
+ *  a gate re-arms its confirmation, so the console cannot silently drift out of
+ *  step with the players on court. */
+function acksFor(ctx: Ctx, log: Side[]): number[] {
+  const current = ctx.match.ackedGates ?? [];
+  if (ctx.tournament.format !== "osl") return current;
+  const a = log.filter((x) => x === "a").length;
+  return oslPruneAcks(Math.max(a, log.length - a), current);
+}
+
 /** Undo is just dropping the last entry; that is the whole point of the log. */
-export async function undoPoint(matchId: string, expectedRev: number): Promise<ActionResult> {
+export async function undoPoint(
+  matchId: string, expectedRev: number, tick: Tick = EMPTY,
+): Promise<ActionResult> {
   const id = idSchema.parse(matchId);
+  const clock = tickSchema.parse(tick);
   const ctx = await requireScorer(id);
 
   const log = [...(ctx.match.log as Side[])];
   if (log.length === 0) return { ok: false, error: "Nothing to undo." };
   log.pop();
 
-  /* Dropping below a rotation gate re-arms that confirmation, so the console
-     cannot silently drift out of step with the players on court. */
-  const a = log.filter((x) => x === "a").length;
-  const lead = Math.max(a, log.length - a);
-  const acked = ctx.tournament.format === "osl"
-    ? oslPruneAcks(lead, ctx.match.ackedGates ?? [])
-    : (ctx.match.ackedGates ?? []);
-
-  const res = await commitLog(ctx, log, acked, expectedRev);
+  const res = await commitLog(ctx, log, acksFor(ctx, log), expectedRev, clock);
   return res.ok ? { ok: true } : { ok: false, error: "Another device scored first — reloading." };
+}
+
+/**
+ * Take a point off one side.
+ *
+ * A referee correcting a mistake thinks "take one off them", not "undo the
+ * fourth rally back" — and under side-out scoring those are different things,
+ * because several rallies can pass without anybody scoring. So this rewinds to
+ * just before the rally that last gave this side a point, discarding the
+ * side-outs that followed it. The log is the only stored state, so there is no
+ * other consistent way to remove a point from the middle of it.
+ *
+ * The search itself is `lib/scoring/rewind`, shared with the browser's offline
+ * path so the two cannot answer differently.
+ */
+export async function minusPoint(
+  matchId: string, side: Side, expectedRev: number, tick: Tick = EMPTY,
+): Promise<ActionResult> {
+  const id = idSchema.parse(matchId);
+  const w = sideSchema.parse(side);
+  const clock = tickSchema.parse(tick);
+  const ctx = await requireScorer(id);
+
+  const log = ctx.match.log as Side[];
+  const cut = rewindIndex(log.length, (n) =>
+    viewMatch(ctx.tournament, { ...ctx.match, log: log.slice(0, n), typedScoreA: null, typedScoreB: null })[w]);
+  if (cut === null) return { ok: false, error: "That side has no points to take off." };
+
+  const next = log.slice(0, cut);
+  const res = await commitLog(ctx, next, acksFor(ctx, next), expectedRev, clock);
+  return res.ok ? { ok: true } : { ok: false, error: "Another device scored first — reloading." };
+}
+
+/**
+ * Who serves first, and which player of each pair starts on the right.
+ *
+ * Only before the first rally. The whole service sequence is DERIVED from these
+ * two answers by replaying the log, so changing them at 8–6 does not correct a
+ * mistake — it silently rewrites who was serving for every rally already
+ * played, and the console would then disagree with the court about which side
+ * of their own half each player should be standing on.
+ */
+export async function setMatchSetup(
+  matchId: string,
+  setup: { server?: Side; posA?: 0 | 1; posB?: 0 | 1 },
+): Promise<ActionResult> {
+  const id = idSchema.parse(matchId);
+  const v = z
+    .object({
+      server: sideSchema.optional(),
+      posA: z.union([z.literal(0), z.literal(1)]).optional(),
+      posB: z.union([z.literal(0), z.literal(1)]).optional(),
+    })
+    .parse(setup);
+  const ctx = await requireScorer(id);
+
+  if ((ctx.match.log as Side[]).length > 0) {
+    return { ok: false, error: "The match has started — undo back to 0–0 to change this." };
+  }
+
+  await db
+    .update(matches)
+    .set({
+      ...(v.server !== undefined ? { server: v.server } : {}),
+      ...(v.posA !== undefined ? { posA: v.posA } : {}),
+      ...(v.posB !== undefined ? { posB: v.posB } : {}),
+      rev: ctx.match.rev + 1,
+      updatedAt: new Date(),
+    })
+    .where(eq(matches.id, id));
+
+  revalidatePath(`/t/${ctx.tournament.slug}/score/${id}`);
+  return { ok: true };
 }
 
 /** What a device gets back when its queued log could not be applied as-is. */
@@ -196,10 +293,11 @@ export type PushResult =
  * other has to interrupt a referee. `lib/offline/queue.ts:classify` decides.
  */
 export async function pushLog(
-  matchId: string, log: Side[], expectedRev: number, elapsedMs = 0,
+  matchId: string, log: Side[], expectedRev: number, tick: Tick = EMPTY,
 ): Promise<PushResult> {
   const id = idSchema.parse(matchId);
   const incoming = z.array(sideSchema).max(500).parse(log);
+  const clock = tickSchema.parse(tick);
 
   let ctx: Ctx;
   try {
@@ -210,17 +308,11 @@ export async function pushLog(
 
   const current = (ctx.match.log as Side[]) ?? [];
 
-  /* Rotation gates are re-derived from the incoming log rather than trusted
-     from the device: an offline console cannot evaluate OSL rotation (it is not
-     shipped to the browser), so it may have queued rallies straight past a gate
-     it never knew was due. */
-  const a = incoming.filter((x) => x === "a").length;
-  const lead = Math.max(a, incoming.length - a);
-  const acked = ctx.tournament.format === "osl"
-    ? oslPruneAcks(lead, ctx.match.ackedGates ?? [])
-    : (ctx.match.ackedGates ?? []);
-
-  const res = await commitLog(ctx, incoming, acked, expectedRev, elapsedMs);
+  /* Gates are re-derived from the incoming log rather than trusted from the
+     device: an offline console cannot evaluate OSL rotation (it is not shipped
+     to the browser), so it may have queued rallies straight past a gate it
+     never knew was due. */
+  const res = await commitLog(ctx, incoming, acksFor(ctx, incoming), expectedRev, clock);
   if (res.ok) return { ok: true, rev: expectedRev + 1 };
   return { ok: false, reason: "stale", serverLog: current, rev: ctx.match.rev };
 }
@@ -235,7 +327,7 @@ export async function confirmRotation(matchId: string, gate: number, expectedRev
   if (view.osl?.pendingGate !== g) return { ok: false, error: "That rotation is not due." };
 
   const acked = [...(ctx.match.ackedGates ?? []), g];
-  const res = await commitLog(ctx, ctx.match.log as Side[], acked, expectedRev);
+  const res = await commitLog(ctx, ctx.match.log as Side[], acked, expectedRev, EMPTY);
   return res.ok ? { ok: true } : { ok: false, error: "Another device updated the match — reloading." };
 }
 

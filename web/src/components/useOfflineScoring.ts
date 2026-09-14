@@ -17,6 +17,9 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { replayLite, supportsLite, type LiteRules, type LiteState, type Side } from "@/lib/scoring/replayLite";
+import { rewindIndex } from "@/lib/scoring/rewind";
+import type { MatchClock } from "./useMatchClock";
+import type { Tick } from "@/lib/scoring/clock";
 import {
   classify, flushMatch, loadQueued, saveQueued, clearQueued,
   type PushResult, type QueuedMatch,
@@ -51,6 +54,10 @@ export type OfflineScoring = {
   stalled: boolean;
   scoreOffline: (side: Side) => void;
   undoOffline: () => void;
+  /** Take a point off one side — see lib/scoring/rewind for what that means. */
+  minusOffline: (side: Side) => void;
+  /** Write the clock with the score unchanged, for a pause or a resume. */
+  syncClock: () => void;
   /** Resolve a conflict by discarding one side's rallies. */
   resolveConflict: (keep: "mine" | "theirs") => Promise<void>;
 };
@@ -65,34 +72,20 @@ export type UseOfflineArgs = {
   server: Side | null;
   posA: 0 | 1 | null;
   posB: 0 | 1 | null;
-  push: (matchId: string, log: Side[], baseRev: number, elapsedMs?: number) => Promise<PushResult>;
+  push: (matchId: string, log: Side[], baseRev: number, tick?: Tick) => Promise<PushResult>;
   onSynced: () => void;
+  /** Where the milliseconds are measured and split. See useMatchClock. */
+  clock: MatchClock;
 };
-
-/* ── Measuring how long the match is taking ───────────────────────────────
- * Per match-timing-spec.md: device-monotonic elapsed time, never the difference
- * between two wall-clock stamps — an offline device whose clock corrects on
- * reconnect would otherwise report silently wrong durations. Only a DIFFERENCE
- * between two `performance.now()` readings in this page load ever leaves here.
- *
- * It accumulates across taps because a rally scored offline still takes time:
- * the deltas pile up in `pendingMs` and travel with the push that eventually
- * lands, rather than being lost with the failed request.
- *
- * Module level, taking the ref, because React's purity rule cannot tell that a
- * function in the component body is only called from an event handler.
- */
-function markElapsed(mark: { current: number | null }): number {
-  const now = performance.now();
-  const since = mark.current == null ? 0 : now - mark.current;
-  mark.current = now;
-  /* Nothing before the first tap of this session, and an hour's ceiling for a
-     device that was suspended mid-match and woke with a huge gap. */
-  return Number.isFinite(since) && since > 0 && since < 3_600_000 ? Math.round(since) : 0;
-}
 
 export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
   const { matchId, rules, format, serverLog, serverRev, push, onSynced } = args;
+  /* Pulled out of the clock object rather than used through it. The object is
+     rebuilt every render — it carries a clock that changes every second — so
+     depending on it would rebuild `flush` a second at a time. These two are
+     `useCallback`s with stable dependencies, which is what the retry timer
+     below needs. */
+  const { claim, restore } = args.clock;
 
   const canScoreOffline = supportsLite(rules, format);
 
@@ -117,12 +110,12 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
   }, [serverRev, localLog]);
 
   /* Takes the log explicitly rather than reading state: it is called straight
-     after a tap, when `localLog` has not re-rendered yet. */
-  /* The monotonic mark, and time measured but not yet accepted by the server.
-     Kept apart so a failed push can put its share back rather than lose it. */
-  const mark = useRef<number | null>(null);
-  const pendingMs = useRef(0);
-
+     after a tap, when `localLog` has not re-rendered yet.
+     With no argument it sends only what is QUEUED. That is what keeps the
+     fifteen-second retry timer honest: handing it the server's own log as a
+     fallback would have it rewriting the match every fifteen seconds for the
+     length of the game, purely to carry a clock that is meant to ride along
+     with the rallies. A pause passes its log in explicitly instead. */
   const flush = useCallback(async (logArg?: Side[]) => {
     const log = logArg ?? localLog;
     if (!log || log.length === 0) return;
@@ -134,16 +127,14 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
     inFlight.current = true;
     setSyncing(true);
     const rec: QueuedMatch = { matchId, log, baseRev: baseRev.current, queuedAt: Date.now() };
-    /* Claim the accumulated time for THIS attempt. If the push does not land it
-       goes back, so time is never lost to a failed request and never counted
-       twice by a retry. */
-    const claimed = pendingMs.current;
-    pendingMs.current = 0;
+    /* Claim the measured time and any pause change for THIS attempt. A stale
+       rev writes nothing at all server-side, so a retry cannot double-count it. */
+    const claimed = claim();
     let out;
     try {
       out = await flushMatch(rec, (id, l, rev) => push(id, l, rev, claimed));
     } catch (e) {
-      pendingMs.current += claimed;
+      restore(claimed);
       throw e;
     } finally {
       /* Released in `finally` so a thrown push cannot wedge the queue shut for
@@ -151,6 +142,13 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
       inFlight.current = false;
       setSyncing(false);
     }
+
+    /* Anything short of landing puts the measurement back. `flushMatch` turns a
+       rejected request into `status: "failed"` rather than throwing — that is
+       the ordinary offline case, not an exception — so restoring only in the
+       `catch` above would silently drop the time for every failure that
+       actually happens in a hall. */
+    if (out.status !== "flushed") restore(claimed);
 
     if (out.status === "flushed") {
       setLocalLog(null);
@@ -166,7 +164,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
     /* "failed" keeps the queue and raises the banner; the retry timer and the
        online event both try again. */
     if (out.status === "failed") setStalled(true);
-  }, [localLog, matchId, push, onSynced]);
+  }, [localLog, matchId, push, onSynced, claim, restore]);
 
   /* Restore anything left queued by a previous session — a phone that died
      mid-match must not lose the rallies it already took. */
@@ -210,15 +208,26 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
      server. `navigator.onLine` stays true throughout, so no `online` event ever
      fires, and without this the queue would sit until the referee happened to
      tap again — stranding the last rally of a match indefinitely. */
+  /* Set up ONCE, and reached through a ref, because a timer whose effect
+     depends on `flush` is a timer that never fires: `flush` is rebuilt whenever
+     anything it closes over changes, and the console now re-renders every
+     second to move the match clock, so the interval was being cleared and
+     restarted fourteen seconds before it was due. The queue then sat unsent
+     until the referee happened to tap again — which the offline suite caught as
+     "the queue flushes with no user action" failing while the rallies were
+     provably on the server. Anything periodic here must be pinned like this. */
+  const flushRef = useRef(flush);
+  useEffect(() => { flushRef.current = flush; }, [flush]);
+
   useEffect(() => {
-    const retry = () => { void flush(); };
+    const retry = () => { void flushRef.current(); };
     window.addEventListener("online", retry);
     const timer = window.setInterval(retry, 15_000);
     return () => {
       window.removeEventListener("online", retry);
       window.clearInterval(timer);
     };
-  }, [flush]);
+  }, []);
 
   /* Queue first, then try to send. Flushing is triggered by the tap and by the
      `online` event rather than by an effect watching the queue — an effect that
@@ -241,7 +250,6 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
   const scoreOffline = useCallback(
     (side: Side) => {
       if (!canScoreOffline) return;
-      pendingMs.current += markElapsed(mark);
       append([...(localLog ?? serverLog), side]);
     },
     [append, canScoreOffline, localLog, serverLog],
@@ -250,10 +258,36 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
   const undoOffline = useCallback(() => {
     const base = localLog ?? serverLog;
     if (base.length === 0) return;
-    /* An undo is still time that passed on court. */
-    pendingMs.current += markElapsed(mark);
     append(base.slice(0, -1));
   }, [append, localLog, serverLog]);
+
+  /* The same rewind the server does, driven by the browser's own replay so a
+     correction made with no signal lands on the same rally as one made with.
+     One search, two engines — see lib/scoring/rewind. */
+  const minusOffline = useCallback(
+    (side: Side) => {
+      if (!canScoreOffline) return;
+      const base = localLog ?? serverLog;
+      const cut = rewindIndex(base.length, (n) =>
+        replayLite(
+          { log: base.slice(0, n), server: args.server, posA: args.posA, posB: args.posB },
+          rules,
+        )[side]);
+      if (cut === null) return;
+      append(base.slice(0, cut));
+    },
+    [append, canScoreOffline, localLog, serverLog, rules, args.server, args.posA, args.posB],
+  );
+
+  /* A pause adds no rally, so there is nothing to queue — but the record still
+     has to learn about it, and a timeout is called at exactly the moment when
+     nobody is scoring. The log goes back unchanged and the tick carries the
+     change. With no signal this does nothing and the pause travels with the
+     next point, which is why the console never reports a failure here. */
+  const syncClock = useCallback(() => {
+    if (!navigator.onLine || conflict) return;
+    void flush(localLog ?? serverLog);
+  }, [flush, conflict, localLog, serverLog]);
 
   const resolveConflict = useCallback(
     async (keep: "mine" | "theirs") => {
@@ -269,7 +303,8 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
       /* Keeping ours overwrites the other device's rallies. Push at the
          server's current rev so the guard accepts it. */
       setSyncing(true);
-      const res = await push(matchId, conflict.localLog, conflict.rev);
+      const claimed = claim();
+      const res = await push(matchId, conflict.localLog, conflict.rev, claimed);
       setSyncing(false);
       if (res.ok) {
         await clearQueued(matchId);
@@ -277,9 +312,11 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
         setConflict(null);
         baseRev.current = res.rev;
         onSynced();
+      } else {
+        restore(claimed);
       }
     },
-    [conflict, matchId, push, onSynced],
+    [conflict, matchId, push, onSynced, claim, restore],
   );
 
   const local =
@@ -297,6 +334,8 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
     stalled,
     scoreOffline,
     undoOffline,
+    minusOffline,
+    syncClock,
     resolveConflict,
   };
 }
