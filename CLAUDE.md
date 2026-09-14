@@ -64,11 +64,18 @@ the staged tree, not just the working tree:
 > of the repo was itself publishing one, in the file everyone opens first. It had been there
 > since `fde7431`.
 >
-> Rewriting it here does not unpublish it: by this file's own rule that password must be
-> treated as compromised and **rotated**, and every deployed copy of the `Format/` apps
-> updated. The scanner now reads its patterns from `tools/secret-patterns.local.json`, which is
-> gitignored — a check for secrets cannot itself be allowed to contain them. A never-committed
-> file is the only safe place for the needles.
+> Rewriting it here did not unpublish it, so it was **rotated on 2026-09-14** (see the
+> `Format/` note below). The scanner now reads its patterns from
+> `tools/secret-patterns.local.json`, which is gitignored — a check for secrets cannot itself
+> be allowed to contain them. A never-committed file is the only safe place for the needles.
+>
+> **Only list a secret that could plausibly end up in a file in this repo.** Every entry is a
+> plaintext copy of a secret written to disk, so it has to be guarding against something that
+> can actually happen. The organiser passwords were listed and then removed the same day: once
+> they no longer shipped inside the `Format/` apps there was nothing in the project to find, so
+> listing them wrote two passwords to disk in the clear to prevent something that could no
+> longer occur — the exact failure the file exists to stop. The Supabase DB password stays; it
+> goes into `DATABASE_URL` and genuinely can be committed by accident.
 
 An older copy may still sit at `G:\My Drive\Faisal\AI\Sport\Tournament App`. It is stale — do
 not edit it, and do not copy it back over this one.

@@ -17,6 +17,19 @@
  * security check that silently does nothing is worse than no check, because it
  * is trusted.
  *
+ * ── What belongs in that file, and what does not ──────────────────────────
+ * Only a secret that could plausibly END UP IN A FILE in this repo. Every
+ * entry is a plaintext copy of a secret written to disk, so an entry earns its
+ * place by guarding against something that can actually happen.
+ *
+ * The organiser passwords were listed here and then removed on 2026-09-14.
+ * Once they no longer shipped inside the `Format/` apps there was nothing in
+ * the project for the scanner to find, so listing them wrote two passwords to
+ * disk in the clear to prevent something that could no longer occur — which is
+ * precisely the failure this file exists to stop. The Supabase DB password
+ * stays, because it goes into `DATABASE_URL` and genuinely can be committed by
+ * accident.
+ *
  * ── Why the staged tree, not the working tree ─────────────────────────────
  * `git grep` without --cached reads the working tree, which can differ from
  * what is about to be committed. The thing that matters is what goes in.
