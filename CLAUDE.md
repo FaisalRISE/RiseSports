@@ -537,6 +537,27 @@ original (`app.source.js:11698`). Shipped 2026-09-14.
 Next areas by size: engines & draws (45), foundations (29), the Court Ledger (23), the UI kit
 (22), the referee console (20), live scoring (15).
 
+## Access: the site is deliberately open, and the switch is a trap
+
+`rise-sports.vercel.app` lets any visitor create events, manage them and enter scores that move
+ratings. **This is a decision, not an oversight** — Faisal, 2026-09-14: he is the only one
+testing, the product is not public, and access features come later. Every page carries a banner
+saying so.
+
+**Do not set `RISE_OPEN_ACCESS=0` to "fix" it.** It would lock everyone out, the owner
+included, and would not secure the community side. `next-auth` is in `package.json` but was
+never wired up: no `api/auth/[...nextauth]` route, `NextAuth()` called nowhere, and
+`currentUserId()` in `lib/auth/guard.ts` is a placeholder returning `null`. So with the flag
+off, every visitor is `anonymous()` and `atLeast()` is false forever — `canManage()` false for
+everybody, draft tournaments invisible to everybody, and no way back except flipping the flag
+again. Meanwhile Play/venues authorise against the `rs_me` cookie, which is a name badge the
+viewer picks, not a credential.
+
+**The prerequisite is real sign-in.** Wire `currentUserId()` to something that can answer the
+question; then the flag becomes the one-move switch it claims to be. The open question for that
+work is *how* people sign in — phone + SMS code is the likely answer for Indian players, but it
+has not been decided. Full reasoning in the header of `web/src/lib/auth/access.ts`.
+
 ## Roadmap
 
 Full plan: `C:\Users\khanf\.claude\plans\i-want-to-develop-stateful-pascal.md`
