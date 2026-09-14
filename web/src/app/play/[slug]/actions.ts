@@ -347,6 +347,69 @@ export async function ladderAction(slug: string, action: LadderOp): Promise<Rost
   return res.ok ? okResult : fail(res.error);
 }
 
+/* ── Membership of an invite-only game ────────────────────────────────────
+ *
+ * Split the same way as the roster: a player acts on themselves and the person
+ * id comes from the cookie; a host acts on others and goes through hostGuard. */
+
+type MyMembershipAction = "request" | "accept" | "leave";
+
+export async function actOnMyMembership(
+  slug: string, action: MyMembershipAction,
+): Promise<RosterResult> {
+  const s = slugSchema.safeParse(slug);
+  if (!s.success) return fail("Bad request.");
+
+  const personId = await myPersonId();
+  if (!personId) return fail("Say who you are first.");
+
+  const game = await gameBySlug(s.data);
+  if (!game) return fail("No such game.");
+
+  const mem = await import("@/lib/community/membership");
+  let res;
+  switch (action) {
+    case "request": res = await mem.requestToJoin(game, personId); break;
+    case "accept": res = await mem.acceptInvitation(game, personId); break;
+    case "leave": res = await mem.leaveGame(game, personId); break;
+    default: return fail("Unknown action.");
+  }
+
+  revalidatePath(`/play/${s.data}`);
+  return res.ok ? okResult : fail(res.error);
+}
+
+type HostMembershipAction = "approve" | "deny" | "invite" | "cancelInvite" | "remove";
+
+export async function actOnMembership(
+  slug: string, personId: string, action: HostMembershipAction,
+): Promise<RosterResult> {
+  const s = slugSchema.safeParse(slug);
+  const p = idSchema.safeParse(personId);
+  if (!s.success || !p.success) return fail("Bad request.");
+
+  let game;
+  try {
+    game = await hostGuard(s.data);
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "Not allowed.");
+  }
+
+  const mem = await import("@/lib/community/membership");
+  let res;
+  switch (action) {
+    case "approve": res = await mem.approveRequest(game, p.data); break;
+    case "deny": res = await mem.denyRequest(game, p.data); break;
+    case "invite": res = await mem.invitePlayer(game, p.data); break;
+    case "cancelInvite": res = await mem.cancelInvitation(game, p.data); break;
+    case "remove": res = await mem.removeMember(game, p.data); break;
+    default: return fail("Unknown action.");
+  }
+
+  revalidatePath(`/play/${s.data}`);
+  return res.ok ? okResult : fail(res.error);
+}
+
 /* ── Calling a date off ───────────────────────────────────────────────────*/
 
 export async function setSessionCancelled(

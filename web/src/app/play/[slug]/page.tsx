@@ -14,10 +14,12 @@ import {
 import { scheduleFor } from "@/lib/community/schedule";
 import { halfHourSlots } from "@/lib/community/rotations";
 import { slotsFor, kotcFor, ladderFor, slotCapacity } from "@/lib/community/rotationsStore";
+import { standingOf, membersOf } from "@/lib/community/membership";
 import { PlayerCard } from "./PlayerCard";
 import { HostRoster, type RosterRow } from "./HostRoster";
 import { Schedule } from "./Schedule";
 import { SlotsPanel, KotcPanel, LadderPanel } from "./Rotations";
+import { MyStanding, MembershipPanel } from "./Membership";
 
 export const dynamic = "force-dynamic";
 
@@ -111,6 +113,14 @@ export default async function GamePage({
       ? view.waitlist.findIndex((r) => r.personId === mine.personId) + 1
       : null;
 
+  /* Membership only exists for invite-only games. An open game has no rows at
+     all, so nothing is read for one. */
+  const restricted = game.accessType === "restricted";
+  const standing = restricted ? await standingOf(game, viewer?.id ?? null) : "none";
+  const roll = restricted && host
+    ? await membersOf(game)
+    : { members: [], requested: [], invited: [] };
+
   /* Which of the four session shapes this game runs. `fixed` and `rotate` use
      the pairings engine; the other three each have their own screen. */
   const mode = game.rotation;
@@ -198,6 +208,21 @@ export default async function GamePage({
           </div>
         </header>
 
+        {/* ── Where you stand, on an invite-only game ─────────────────── */}
+        {restricted && (
+          <section className="mt-5 space-y-3">
+            <MyStanding slug={game.slug} standing={standing} knowsWhoIAm={!!viewer} />
+            {host && (
+              <MembershipPanel
+                slug={game.slug}
+                members={roll.members.map(toMemberView)}
+                requested={roll.requested.map(toMemberView)}
+                invited={roll.invited.map(toMemberView)}
+              />
+            )}
+          </section>
+        )}
+
         {/* ── Which date ──────────────────────────────────────────────── */}
         <section className="mt-5">
           <h2 className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Pick a date</h2>
@@ -258,7 +283,16 @@ export default async function GamePage({
             )}
 
             {viewer && blockers.length === 0 && !mayJoin && (
-              <Note>This game is invite only. Ask the host to add you.</Note>
+              /* Say what THIS person has to do, not what a stranger would.
+                 Telling somebody holding an invitation to "ask the host" reads
+                 as the invitation having gone missing. */
+              <Note>
+                {standing === "invited"
+                  ? "Accept the invitation above and you can sign up for this date."
+                  : standing === "requested"
+                    ? "Once the host lets you in, you can sign up for dates."
+                    : "This game is invite only. Ask the host to add you."}
+              </Note>
             )}
 
             {viewer && blockers.length === 0 && mayJoin && (
@@ -383,6 +417,13 @@ export default async function GamePage({
 }
 
 /* ── Pieces ───────────────────────────────────────────────────────────────*/
+
+/** Only the three fields the membership panel shows cross to the client. */
+const toMemberView = (r: { personId: string; person: { name: string; riseBest: number | null } }) => ({
+  personId: r.personId,
+  name: r.person.name,
+  rating: r.person.riseBest,
+});
 
 function Badge({ children, tone = "plain" }: { children: React.ReactNode; tone?: "plain" | "warn" }) {
   const cls =
