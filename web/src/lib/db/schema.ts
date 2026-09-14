@@ -185,6 +185,13 @@ export const matches = pgTable(
     typedScoreA: integer("typed_score_a"),
     typedScoreB: integer("typed_score_b"),
 
+    /* How long the match actually took — spec: match-timing-spec.md v2.0.
+     * Only ACCUMULATED milliseconds and a wall-clock start for ordering; never
+     * a raw performance.now() reading, which means nothing once it has crossed
+     * the wire. Written only by ref-mode scoring; a typed-in final score leaves
+     * it null. See lib/scoring/timing.ts. */
+    timing: jsonb("timing").$type<Record<string, unknown> | null>(),
+
     /** Monotonically increasing per match. A write carrying a stale revision is
      *  rejected, so a device that was offline can never roll the score back. */
     rev: integer("rev").notNull().default(0),

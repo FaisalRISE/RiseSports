@@ -14,6 +14,9 @@ import { viewMatch } from "@/lib/matchState";
 import { applyMatchRatings, revertMatchRatings } from "@/lib/rating/apply";
 import { oslPruneAcks } from "@/lib/formats/osl";
 import type { Side } from "@/lib/scoring/replay";
+import {
+  readTiming, startTiming, addElapsed, stopTiming, reopenTiming, type Timing,
+} from "@/lib/scoring/timing";
 
 /* Every mutation in this file:
  *   1. loads the match and its tournament,
@@ -47,17 +50,51 @@ async function requireScorer(matchId: string): Promise<Ctx> {
 }
 
 /** Write the log with an optimistic-concurrency guard on `rev`. */
+/**
+ * The match clock, driven off the log rather than off anything the console has
+ * to remember — the spec is explicit that it "runs automatically off point
+ * entry". Start on the first point, stop on the point that wins it, and reopen
+ * if an undo takes the match back over that line.
+ *
+ * `elapsedMs` is time this device measured with `performance.now()` since its
+ * last write. It rides along with the rally write that was happening anyway, so
+ * a reload loses at most the time since the last point and costs no extra round
+ * trip. See lib/scoring/timing.ts for why a raw clock reading is never stored.
+ */
+function nextTiming(
+  current: unknown, wasOver: boolean, isOver: boolean, hasPoints: boolean, elapsedMs: number,
+): Timing | null {
+  let t = readTiming(current);
+  if (!t.startedAt && !hasPoints) return null;   // nothing has happened yet
+
+  const now = new Date().toISOString();
+  t = startTiming(t, now);
+  t = addElapsed(t, elapsedMs);
+  if (isOver && !wasOver) t = stopTiming(t, 0, now);
+  if (wasOver && !isOver) t = reopenTiming(t);
+  return t;
+}
+
 async function commitLog(
   ctx: Ctx,
   log: Side[],
   ackedGates: number[],
   expectedRev: number,
+  elapsedMs = 0,
 ): Promise<{ ok: true } | { ok: false; reason: "stale" }> {
+  const wasOver = viewMatch(ctx.tournament, ctx.match).over;
+  const isOver = viewMatch(
+    ctx.tournament,
+    { ...ctx.match, log, ackedGates, typedScoreA: null, typedScoreB: null },
+  ).over;
+  const timing = nextTiming(ctx.match.timing, wasOver, isOver, log.length > 0, elapsedMs);
+
   const updated = await db
     .update(matches)
     .set({
       log,
       ackedGates,
+      ...(timing ? { timing: timing as unknown as Record<string, unknown> } : {}),
       rev: expectedRev + 1,
       updatedAt: new Date(),
       typedScoreA: null,
@@ -68,7 +105,7 @@ async function commitLog(
 
   if (updated.length === 0) return { ok: false, reason: "stale" };
 
-  await syncRatings(ctx, log, ackedGates);
+  await syncRatings(ctx, wasOver, isOver);
 
   revalidatePath(`/t/${ctx.tournament.slug}`);
   revalidatePath(`/t/${ctx.tournament.slug}/score/${ctx.match.id}`);
@@ -88,10 +125,8 @@ async function commitLog(
  * for later, but a rally that would not save because of it is a problem on
  * court right now. The match is already committed at this point.
  */
-async function syncRatings(ctx: Ctx, log: Side[], ackedGates: number[]) {
+async function syncRatings(ctx: Ctx, wasOver: boolean, isOver: boolean) {
   try {
-    const wasOver = viewMatch(ctx.tournament, ctx.match).over;
-    const isOver = viewMatch(ctx.tournament, { ...ctx.match, log, ackedGates, typedScoreA: null, typedScoreB: null }).over;
     if (wasOver === isOver) return;
     if (isOver) await applyMatchRatings(ctx.match.id);
     else await revertMatchRatings(ctx.match.id);
@@ -103,7 +138,9 @@ async function syncRatings(ctx: Ctx, log: Side[], ackedGates: number[]) {
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
 /** Record one rally to the side that won it. */
-export async function scorePoint(matchId: string, side: Side, expectedRev: number): Promise<ActionResult> {
+export async function scorePoint(
+  matchId: string, side: Side, expectedRev: number, elapsedMs = 0,
+): Promise<ActionResult> {
   const id = idSchema.parse(matchId);
   const w = sideSchema.parse(side);
   const ctx = await requireScorer(id);
@@ -113,7 +150,7 @@ export async function scorePoint(matchId: string, side: Side, expectedRev: numbe
   if (view.locked) return { ok: false, error: "Confirm the rotation before scoring." };
 
   const log = [...(ctx.match.log as Side[]), w];
-  const res = await commitLog(ctx, log, ctx.match.ackedGates ?? [], expectedRev);
+  const res = await commitLog(ctx, log, ctx.match.ackedGates ?? [], expectedRev, elapsedMs);
   return res.ok ? { ok: true } : { ok: false, error: "Another device scored first — reloading." };
 }
 
@@ -158,7 +195,9 @@ export type PushResult =
  * seeing it — and the difference matters, because one resolves silently and the
  * other has to interrupt a referee. `lib/offline/queue.ts:classify` decides.
  */
-export async function pushLog(matchId: string, log: Side[], expectedRev: number): Promise<PushResult> {
+export async function pushLog(
+  matchId: string, log: Side[], expectedRev: number, elapsedMs = 0,
+): Promise<PushResult> {
   const id = idSchema.parse(matchId);
   const incoming = z.array(sideSchema).max(500).parse(log);
 
@@ -181,7 +220,7 @@ export async function pushLog(matchId: string, log: Side[], expectedRev: number)
     ? oslPruneAcks(lead, ctx.match.ackedGates ?? [])
     : (ctx.match.ackedGates ?? []);
 
-  const res = await commitLog(ctx, incoming, acked, expectedRev);
+  const res = await commitLog(ctx, incoming, acked, expectedRev, elapsedMs);
   if (res.ok) return { ok: true, rev: expectedRev + 1 };
   return { ok: false, reason: "stale", serverLog: current, rev: ctx.match.rev };
 }

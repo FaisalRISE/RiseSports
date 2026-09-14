@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useRef } from "react";
 import { useRouter } from "next/navigation";
 import type { MatchView } from "@/lib/matchState";
 import type { Side } from "@/lib/scoring/replay";
@@ -28,7 +28,8 @@ export type RefConsoleProps = {
   teamB: ConsoleTeam;
   canScore: boolean;
   actions: {
-    score: (matchId: string, side: Side, rev: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+    score: (matchId: string, side: Side, rev: number, elapsedMs?: number) =>
+      Promise<{ ok: true } | { ok: false; error: string }>;
     undo: (matchId: string, rev: number) => Promise<{ ok: true } | { ok: false; error: string }>;
     confirm: (matchId: string, gate: number, rev: number) => Promise<{ ok: true } | { ok: false; error: string }>;
     push: (matchId: string, log: Side[], baseRev: number) => Promise<PushResult>;
@@ -43,6 +44,34 @@ export type RefConsoleProps = {
     posB: 0 | 1 | null;
   };
 };
+
+/* ── The match clock's measuring end ──────────────────────────────────────
+ * The spec is explicit: use device-monotonic elapsed time, never the difference
+ * between two wall-clock stamps, because an offline device whose clock corrects
+ * on reconnect produces silently wrong durations.
+ *
+ * So the only clock read is `performance.now()`, and only ever as a DIFFERENCE
+ * between two readings in the same page load. What crosses the wire is that
+ * difference in milliseconds — never the reading itself, which would mean
+ * nothing on the server or after a reload.
+ *
+ * The delta rides on the rally write that was happening anyway, so a reload
+ * loses at most the time since the last point, at no extra round trip.
+ *
+ * Module-level, and taking the ref, because it reads a clock: inside the
+ * component body React's purity rule cannot tell that it is only ever called
+ * from an event handler.
+ */
+function takeElapsedFrom(mark: { current: number | null }): number {
+  const now = performance.now();
+  const since = mark.current == null ? 0 : now - mark.current;
+  mark.current = now;
+  /* Nothing is counted before the first point of this session: there is no
+     earlier point to measure from, and counting the time the page merely sat
+     open would inflate the match. The hour ceiling catches a device suspended
+     mid-match that woke with a huge gap. */
+  return Number.isFinite(since) && since > 0 && since < 60 * 60 * 1000 ? Math.round(since) : 0;
+}
 
 export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: RefConsoleProps) {
   const [flipped, setFlipped] = useState(false);
@@ -93,6 +122,8 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
     (!off.online && !off.canScoreOffline) || !!off.conflict;
   const gate = live.osl?.pendingGate ?? 0;
 
+  const lastMark = useRef<number | null>(null);
+
   const half = (t: ConsoleTeam, side: "left" | "right") => {
     const serving = live.serving === sideOf(t);
     return (
@@ -108,7 +139,7 @@ export function RefConsole({ view, teamA, teamB, canScore, actions, offline }: R
              outcome this whole feature exists to prevent. Queue first, send
              second: the rally is durable before anything can fail. */
           if (off.canScoreOffline) off.scoreOffline(sideOf(t));
-          else run(() => actions.score(view.matchId, sideOf(t), view.rev));
+          else run(() => actions.score(view.matchId, sideOf(t), view.rev, takeElapsedFrom(lastMark)));
         }}
         aria-label={`Point to ${t.name}`}
         className={[

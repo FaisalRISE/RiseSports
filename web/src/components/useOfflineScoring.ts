@@ -65,9 +65,31 @@ export type UseOfflineArgs = {
   server: Side | null;
   posA: 0 | 1 | null;
   posB: 0 | 1 | null;
-  push: (matchId: string, log: Side[], baseRev: number) => Promise<PushResult>;
+  push: (matchId: string, log: Side[], baseRev: number, elapsedMs?: number) => Promise<PushResult>;
   onSynced: () => void;
 };
+
+/* ── Measuring how long the match is taking ───────────────────────────────
+ * Per match-timing-spec.md: device-monotonic elapsed time, never the difference
+ * between two wall-clock stamps — an offline device whose clock corrects on
+ * reconnect would otherwise report silently wrong durations. Only a DIFFERENCE
+ * between two `performance.now()` readings in this page load ever leaves here.
+ *
+ * It accumulates across taps because a rally scored offline still takes time:
+ * the deltas pile up in `pendingMs` and travel with the push that eventually
+ * lands, rather than being lost with the failed request.
+ *
+ * Module level, taking the ref, because React's purity rule cannot tell that a
+ * function in the component body is only called from an event handler.
+ */
+function markElapsed(mark: { current: number | null }): number {
+  const now = performance.now();
+  const since = mark.current == null ? 0 : now - mark.current;
+  mark.current = now;
+  /* Nothing before the first tap of this session, and an hour's ceiling for a
+     device that was suspended mid-match and woke with a huge gap. */
+  return Number.isFinite(since) && since > 0 && since < 3_600_000 ? Math.round(since) : 0;
+}
 
 export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
   const { matchId, rules, format, serverLog, serverRev, push, onSynced } = args;
@@ -96,6 +118,11 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
 
   /* Takes the log explicitly rather than reading state: it is called straight
      after a tap, when `localLog` has not re-rendered yet. */
+  /* The monotonic mark, and time measured but not yet accepted by the server.
+     Kept apart so a failed push can put its share back rather than lose it. */
+  const mark = useRef<number | null>(null);
+  const pendingMs = useRef(0);
+
   const flush = useCallback(async (logArg?: Side[]) => {
     const log = logArg ?? localLog;
     if (!log || log.length === 0) return;
@@ -107,9 +134,17 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
     inFlight.current = true;
     setSyncing(true);
     const rec: QueuedMatch = { matchId, log, baseRev: baseRev.current, queuedAt: Date.now() };
+    /* Claim the accumulated time for THIS attempt. If the push does not land it
+       goes back, so time is never lost to a failed request and never counted
+       twice by a retry. */
+    const claimed = pendingMs.current;
+    pendingMs.current = 0;
     let out;
     try {
-      out = await flushMatch(rec, push);
+      out = await flushMatch(rec, (id, l, rev) => push(id, l, rev, claimed));
+    } catch (e) {
+      pendingMs.current += claimed;
+      throw e;
     } finally {
       /* Released in `finally` so a thrown push cannot wedge the queue shut for
          the rest of the match. */
@@ -206,6 +241,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
   const scoreOffline = useCallback(
     (side: Side) => {
       if (!canScoreOffline) return;
+      pendingMs.current += markElapsed(mark);
       append([...(localLog ?? serverLog), side]);
     },
     [append, canScoreOffline, localLog, serverLog],
@@ -214,6 +250,8 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
   const undoOffline = useCallback(() => {
     const base = localLog ?? serverLog;
     if (base.length === 0) return;
+    /* An undo is still time that passed on court. */
+    pendingMs.current += markElapsed(mark);
     append(base.slice(0, -1));
   }, [append, localLog, serverLog]);
 
