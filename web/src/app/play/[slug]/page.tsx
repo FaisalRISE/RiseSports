@@ -10,8 +10,10 @@ import { openSlotsIn } from "@/lib/community/roster";
 import {
   capacityOf, eligibilityFailures, prettyDate, prettyDays, priceLabel, restrictionChips, sessionDates,
 } from "@/lib/community";
+import { scheduleFor } from "@/lib/community/schedule";
 import { PlayerCard } from "./PlayerCard";
 import { HostRoster, type RosterRow } from "./HostRoster";
+import { Schedule } from "./Schedule";
 
 export const dynamic = "force-dynamic";
 
@@ -81,6 +83,9 @@ export default async function GamePage({
     mine?.state === "waitlist"
       ? view.waitlist.findIndex((r) => r.personId === mine.personId) + 1
       : null;
+
+  /* The evening's games, once the host has drawn them up. */
+  const schedule = date ? await scheduleFor(game, date) : { blocks: [], names: new Map() };
 
   const hostRows: RosterRow[] = view.roster.map((r) => ({
     personId: r.personId,
@@ -216,6 +221,18 @@ export default async function GamePage({
                 pricePaise={game.pricePaise}
               />
             )}
+
+            <Schedule
+              slug={game.slug}
+              date={date}
+              blocks={schedule.blocks}
+              names={Object.fromEntries(schedule.names)}
+              isHost={host}
+              confirmedCount={view.confirmed.length}
+              /* "court", "table" or "board", from the sport registry — a chess
+                 evening should not be told which court to sit at. */
+              courtWord={sport.court.charAt(0).toUpperCase() + sport.court.slice(1)}
+            />
 
             {/* ── Who is playing ───────────────────────────────────────── */}
             <div className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">

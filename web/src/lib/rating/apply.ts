@@ -188,6 +188,55 @@ export async function applyMatchRatings(
     return { status: "skipped", reason: "no linked people on one side" };
   }
 
+  return applyResult({
+    ref: { kind: "tournament", matchId },
+    key, winnerIds, loserIds,
+    scoreW: settled.scoreW, scoreL: settled.scoreL,
+    phase: settled.phase, verification, now,
+  });
+}
+
+/** Which match a rating movement is attributable to. Exactly one, always. */
+export type MatchRef =
+  | { kind: "tournament"; matchId: string }
+  | { kind: "community"; communityMatchId: string };
+
+export type ApplyInput = {
+  ref: MatchRef;
+  /** Sport-namespaced, e.g. "pb:md". The caller decides the format. */
+  key: string;
+  winnerIds: string[];
+  loserIds: string[];
+  scoreW: number;
+  scoreL: number;
+  phase: Phase;
+  verification: Verification;
+  now: Date;
+};
+
+/**
+ * Apply one finished result to everyone's rating.
+ *
+ * ── Why this is separate from applyMatchRatings ───────────────────────────
+ * Community play moves more ratings than tournaments do — the legacy app
+ * applies a change on every community score (app.source.js:9254) — so both have
+ * to end up here. Everything above this line is about finding out WHO won and
+ * by how much, which is completely different for a tournament match (teams,
+ * a draw, a rally log) and a community game (four names on a court). Everything
+ * below is the rating engine, which is identical and must stay identical: the
+ * carry guard, the daily cap, repeat damping and the imbalance ledger are the
+ * product, and a second copy of them would drift within a release.
+ *
+ * Everything is computed before anything is written, so a result either lands
+ * whole or not at all.
+ */
+export async function applyResult(input: ApplyInput): Promise<ApplyResult> {
+  const { ref, key, winnerIds, loserIds, scoreW, scoreL, phase, verification, now } = input;
+
+  if (winnerIds.length === 0 || loserIds.length === 0) {
+    return { status: "skipped", reason: "no linked people on one side" };
+  }
+
   const rosterPeople = await db
     .select()
     .from(people)
@@ -204,8 +253,8 @@ export async function applyMatchRatings(
   const gamesOf = (ids: string[]) =>
     Math.max(0, ...ids.map((id) => byId.get(id)?.matchCount?.[key] ?? 0));
 
-  const change = calcRtgChange(W.mean, L.mean, settled.scoreW, settled.scoreL, {
-    phase: settled.phase,
+  const change = calcRtgChange(W.mean, L.mean, scoreW, scoreL, {
+    phase,
     verification,
     winnerGames: gamesOf(winnerIds),
     loserGames: gamesOf(loserIds),
@@ -277,13 +326,16 @@ export async function applyMatchRatings(
         id: randomUUID(),
         personId: r.personId,
         format: key,
-        matchId,
+        /* Exactly one of these is set — the CHECK in migration 0006 enforces
+           it, so a row can never claim both or neither. */
+        matchId: ref.kind === "tournament" ? ref.matchId : null,
+        communityMatchId: ref.kind === "community" ? ref.communityMatchId : null,
         ratingBefore: r.before,
         ratingAfter: after,
         deltaApplied: r.delta,
         expected: Math.round(expected * 1000),
-        marginMultiplier: Math.round(marginMultiplier(settled.scoreW, settled.scoreL) * 1000),
-        stageMultiplier: Math.round(phaseMultiplier(settled.phase) * 1000),
+        marginMultiplier: Math.round(marginMultiplier(scoreW, scoreL) * 1000),
+        stageMultiplier: Math.round(phaseMultiplier(phase) * 1000),
         verificationWeight: Math.round(verificationWeight(verification) * 1000),
         provisionalMultiplier: Math.round(
           provisionalMultiplier(r.delta > 0 ? gamesOf(winnerIds) : gamesOf(loserIds)) * 1000,
@@ -320,7 +372,8 @@ export async function applyMatchRatings(
     if (imbalance !== 0) {
       await tx.insert(ratingLedger).values({
         id: randomUUID(),
-        matchId,
+        matchId: ref.kind === "tournament" ? ref.matchId : null,
+        communityMatchId: ref.kind === "community" ? ref.communityMatchId : null,
         imbalance,
         reason: carriedAny ? "carry guard + provisional" : "provisional",
       });

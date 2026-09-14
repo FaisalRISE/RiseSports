@@ -133,6 +133,95 @@ export async function addToSession(
   return actOnPlayer(slug, date, personId, "confirm");
 }
 
+/* ── Games and scores ─────────────────────────────────────────────────────*/
+
+export async function generateScheduleAction(slug: string, date: string): Promise<RosterResult> {
+  const s = slugSchema.safeParse(slug);
+  const d = dateSchema.safeParse(date);
+  if (!s.success || !d.success) return fail("Bad request.");
+
+  let game;
+  try {
+    game = await hostGuard(s.data);
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "Not allowed.");
+  }
+
+  const { generateSchedule } = await import("@/lib/community/schedule");
+  const res = await generateSchedule(game, d.data);
+  revalidatePath(`/play/${s.data}`);
+  return res.ok ? { ok: true, state: "none" } : fail(res.error);
+}
+
+const scoreSchema = z.number().int().min(0).max(999);
+
+export async function saveScoreAction(
+  slug: string, matchId: string, scoreA: number, scoreB: number,
+): Promise<RosterResult> {
+  const s = slugSchema.safeParse(slug);
+  const m = idSchema.safeParse(matchId);
+  const a = scoreSchema.safeParse(scoreA);
+  const b = scoreSchema.safeParse(scoreB);
+  if (!s.success || !m.success) return fail("Bad request.");
+  if (!a.success || !b.success) return fail("Scores must be whole numbers between 0 and 999.");
+
+  let game;
+  try {
+    game = await hostGuard(s.data);
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "Not allowed.");
+  }
+
+  /* The match must belong to THIS game. Without it, a host of one game could
+     save a score onto another game's match by passing its id. */
+  const { db } = await import("@/lib/db");
+  const { communityMatches, communitySessions } = await import("@/lib/db/schema");
+  const { eq, and } = await import("drizzle-orm");
+  const [owned] = await db
+    .select({ id: communityMatches.id })
+    .from(communityMatches)
+    .innerJoin(communitySessions, eq(communityMatches.sessionId, communitySessions.id))
+    .where(and(eq(communityMatches.id, m.data), eq(communitySessions.gameId, game.id)))
+    .limit(1);
+  if (!owned) return fail("That game is not part of this session.");
+
+  const { saveScore } = await import("@/lib/community/schedule");
+  const res = await saveScore(game, m.data, a.data, b.data);
+  revalidatePath(`/play/${s.data}`);
+  revalidatePath("/people");
+  return res.ok ? { ok: true, state: "none" } : fail(res.error);
+}
+
+export async function clearScoreAction(slug: string, matchId: string): Promise<RosterResult> {
+  const s = slugSchema.safeParse(slug);
+  const m = idSchema.safeParse(matchId);
+  if (!s.success || !m.success) return fail("Bad request.");
+
+  let game;
+  try {
+    game = await hostGuard(s.data);
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "Not allowed.");
+  }
+
+  const { db } = await import("@/lib/db");
+  const { communityMatches, communitySessions } = await import("@/lib/db/schema");
+  const { eq, and } = await import("drizzle-orm");
+  const [owned] = await db
+    .select({ id: communityMatches.id })
+    .from(communityMatches)
+    .innerJoin(communitySessions, eq(communityMatches.sessionId, communitySessions.id))
+    .where(and(eq(communityMatches.id, m.data), eq(communitySessions.gameId, game.id)))
+    .limit(1);
+  if (!owned) return fail("That game is not part of this session.");
+
+  const { clearScore } = await import("@/lib/community/schedule");
+  const res = await clearScore(m.data);
+  revalidatePath(`/play/${s.data}`);
+  revalidatePath("/people");
+  return res.ok ? { ok: true, state: "none" } : fail(res.error);
+}
+
 /* ── Calling a date off ───────────────────────────────────────────────────*/
 
 export async function setSessionCancelled(

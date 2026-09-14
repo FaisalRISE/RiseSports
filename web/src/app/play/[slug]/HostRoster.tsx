@@ -9,7 +9,8 @@
  */
 
 import { useState, useTransition } from "react";
-import { actOnPlayer } from "./actions";
+import { actOnPlayer, addToSession } from "./actions";
+import { searchPlayers, type PlayerHit } from "../actions";
 
 export type RosterRow = {
   personId: string;
@@ -83,6 +84,12 @@ export function HostRoster({
         </p>
       )}
 
+      {/* Walk-ins. Somebody turning up at the court who never opened the app is
+          the ordinary case, and without this the host cannot put them on. */}
+      {(tab === "confirmed" || tab === "requested") && (
+        <AddPlayer slug={slug} date={date} onError={setError} alreadyOn={rows.map((r) => r.personId)} />
+      )}
+
       {shown.length === 0 ? (
         <p className="p-6 text-center text-sm text-neutral-500">{empty(tab)}</p>
       ) : (
@@ -148,6 +155,77 @@ export function HostRoster({
                   <Act onClick={() => act(r.personId, "confirm")} disabled={pending}>Put back</Act>
                 )}
               </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** Search for somebody and put them straight on the list. */
+function AddPlayer({
+  slug, date, onError, alreadyOn,
+}: {
+  slug: string; date: string; onError: (e: string | null) => void; alreadyOn: string[];
+}) {
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<PlayerHit[] | null>(null);
+  const [pending, start] = useTransition();
+
+  const run = () => {
+    if (query.trim().length < 2) return;
+    start(async () => setHits(await searchPlayers(query)));
+  };
+
+  const add = (personId: string) =>
+    start(async () => {
+      const res = await addToSession(slug, date, personId);
+      onError(res.ok ? null : res.error);
+      setHits(null);
+      setQuery("");
+    });
+
+  const on = new Set(alreadyOn);
+
+  return (
+    <div className="border-b border-neutral-800 p-3">
+      <div className="flex gap-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); run(); }
+          }}
+          placeholder="Add someone by name…"
+          aria-label="Search for a player to add"
+          className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm"
+        />
+        <button
+          type="button" onClick={run} disabled={pending || query.trim().length < 2}
+          className="rounded-lg border border-neutral-700 px-3 py-1.5 text-[11px] font-bold text-neutral-300 disabled:opacity-40"
+        >
+          {pending ? "…" : "Find"}
+        </button>
+      </div>
+
+      {hits && hits.length === 0 && (
+        <p className="mt-2 text-xs text-neutral-500">Nobody by that name.</p>
+      )}
+
+      {hits && hits.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {hits.map((h) => (
+            <li key={h.id}>
+              <button
+                type="button" onClick={() => add(h.id)} disabled={pending || on.has(h.id)}
+                className="flex w-full items-center gap-2 rounded-lg border border-neutral-800 px-3 py-1.5 text-left hover:border-neutral-600 disabled:opacity-40"
+              >
+                <span className="min-w-0 flex-1 truncate text-sm">{h.name}</span>
+                <span className="shrink-0 text-[11px] tabular-nums text-neutral-500">
+                  {on.has(h.id) ? "already on" : h.rating ?? "—"}
+                </span>
+              </button>
             </li>
           ))}
         </ul>
