@@ -400,8 +400,37 @@ migration 0005 exists to add.
   side is organiser-facing and never needed one. It is a cookie plus a picker: it **identifies,
   it never authorises**. Host-only actions check `communityGames.hostPersonId` via
   `lib/community/guard.ts`, never the cookie's claim about itself.
-- Order of work: a game exists and can be found (**done**) → the roster and its five states →
-  pairings, scores and ratings → the rotation modes (slots, KotC, ladder) → restricted games.
+  - The Server Actions are split by **who the action is about**, not by a role flag. A player
+    action reads the person id from the COOKIE and never from the form (a form field would let
+    anyone withdraw anyone else); a host action takes the id from the form and goes through
+    `hostGuard`. A flag is a thing every caller can get wrong.
+- **`applyMatchRatings` was split, and the tournament path did not change.** `applyResult`
+  (`lib/rating/apply.ts`) is the engine — carry guard, daily cap, repeat damping, imbalance
+  ledger — and both tournaments and community play call it. Everything above the split is
+  working out *who won*, which is genuinely different for a draw and for four names on a court.
+  **Do not write a second applier**; a second copy of those rules drifts within a release.
+- **One row per person per session, not four arrays.** The legacy roster keeps `interested` /
+  `requested` / `confirmed` / `waitlist` as four arrays and resolves an overlap by priority
+  (`ie` at `:10015`). A unique index makes overlap impossible here, so there is no priority
+  rule to get wrong. Likewise `openSlots` — a mutable counter there (`:10019`) — is **derived**
+  here as `min(withdrawn, capacity − confirmed)`; both terms are load-bearing, and breaking
+  either fails a test.
+
+### Two more legacy bugs found while porting, and deliberately not carried over
+
+- **`buildCourts` benches people beside an empty court** (`:8883`). It counts only courts it
+  can fill completely, so six players on two booked courts of four use ONE court and two people
+  sit out all evening; seven bench three. The replacement uses as many courts as the players can
+  cover, never leaving anyone alone on one: 6 → 3+3, 7 → 4+3, and 8 on four booked courts is
+  still 4+4 rather than four thin courts of two.
+- **Balanced and mexicano are opposites and easy to swap.** Both sort by rating; balanced
+  snake-drafts so court totals match (close games), mexicano deals consecutively so the
+  strongest four share a court (level-matched). Swapping them is invisible in the output shape.
+  Pinned by tests that assert what each mode is *for*.
+
+Order of work: a game exists and can be found (**done**) → the roster and its five states
+(**done**) → pairings, scores and ratings (**done**) → the rotation modes (slots, KotC, ladder)
+→ restricted games.
 
 ## Roadmap
 
