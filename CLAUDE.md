@@ -156,16 +156,32 @@ Consequences for anyone working in this repo:
   to the root directory" is on, and an empty commit changes no files. To force a rebuild, touch
   a real file under the build root.
 - The new app uses the **same Supabase project** (`utfvjsvvbifwcektzrwj`) as the legacy
-  per-event `Format/` apps, on its own 14 tables — no name collides with `osl_live`,
+  per-event `Format/` apps, on its own tables — no name collides with `osl_live`,
   `live_scores` or `app_backups`. Neon was briefly used during development and is gone; it was
   an unnecessary second vendor, and its HTTP driver could not open a transaction (see
   `web/README.md`). It connects through the **transaction pooler**, port 6543.
   - **Its tables have RLS on and no policies**, which shuts Supabase's public PostgREST API
     off entirely — `people` holds names and phone numbers, and the anon key is published in
     the old app's HTML. The app is unaffected because it connects as the table owner, and
-    owners bypass RLS. The linter's 14 "RLS enabled, no policy" notices are the intended
+    owners bypass RLS. The linter's "RLS enabled, no policy" notices are the intended
     state. Adding a policy would *open* those tables to the world; don't, without deciding
     what should be public.
+  - **`drizzle-kit generate` does NOT emit row-level security, and a new table defaults to
+    RLS off.** Supabase grants `anon` full SELECT/INSERT/UPDATE/DELETE on everything in
+    `public`, so a table drizzle creates is readable *and writable* by the published anon key
+    until RLS is turned on by hand. This is not hypothetical: applying `0006` created the six
+    community tables wide open, and `0008` is the hand-written migration that closed them.
+    **Every new table needs its own `ENABLE ROW LEVEL SECURITY` line in a migration**, on the
+    day it is created. Nothing breaks when it is missing — there is no error and no failing
+    screen, only the absence of a linter notice — so it is guarded by a test in
+    `schema.test.ts` that fails if any `community%` table has RLS off.
+  - **After applying a migration to production, verify by querying**, not by assuming the
+    apply succeeded: `list_tables`, then `relrowsecurity` and the `anon` grants. To prove a
+    table is really shut, insert a row as the owner and re-read it under `set local role anon`
+    — owner sees 1, anon sees 0.
+  - **`pnpm db:generate` writes the file; something still has to apply it to Supabase.** A
+    deploy can go green with the code live and the tables absent — that is what a 500 on
+    `/play/[slug]` with a working `/play` meant.
 - Domain logic was **ported, not rewritten**. `web/src/lib/` carries the scoring engine, sports
   registry, ledger money engine and rating engine across, with the legacy engine extracted by
   text from `app.source.js` and used as a differential test oracle. Two deliberate behaviour
@@ -428,9 +444,25 @@ migration 0005 exists to add.
   strongest four share a court (level-matched). Swapping them is invisible in the output shape.
   Pinned by tests that assert what each mode is *for*.
 
+### The rotation modes (`slots`, `kotc`, `ladder`)
+
+`lib/community/rotations.ts` holds all three as pure functions; `rotationsStore.ts` reads the
+state, hands it to the engine and writes the result back in a transaction. Slots and KotC live
+on the session (`slotData`, `kotc`); the **ladder lives on the GAME** (`ladderOrder`,
+`ladderLog`) because it persists across dates, which is the whole point of a ladder.
+
+- **A slot holds the whole venue**, not one court — it is a window of time across every booked
+  court (`W` at `:10114`).
+- **`kotcNextRound` returns its input unchanged** when a court has no winner yet. The store
+  turns that into a refusal with a reason, because a silent no-op looks like success to
+  whoever tapped the button.
+- **"You may only challenge someone above you" lives in the engine, not the screen.** The
+  legacy version swaps whatever two positions it is handed (`:10211`) and relies on the UI to
+  prevent it, so any other path inverts the ladder silently.
+
 Order of work: a game exists and can be found (**done**) → the roster and its five states
-(**done**) → pairings, scores and ratings (**done**) → the rotation modes (slots, KotC, ladder)
-→ restricted games.
+(**done**) → pairings, scores and ratings (**done**) → the rotation modes (**done**) →
+restricted games (members, invitations, join requests).
 
 ## Roadmap
 
