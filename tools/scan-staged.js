@@ -63,7 +63,8 @@ if (!Array.isArray(patterns) || patterns.length === 0) {
 /* A half-filled template is the dangerous state: it scans, finds nothing, and
    prints "clean" — which is exactly what a real leak also looks like from the
    outside. Refuse instead. */
-const unfilled = patterns.filter((p) => String(p.pattern ?? "").startsWith("PUT-THE-"));
+const PLACEHOLDER = /^(PUT-THE-|REPLACE-THIS)/;
+const unfilled = patterns.filter((p) => PLACEHOLDER.test(String(p.pattern ?? "")));
 if (unfilled.length > 0) {
   die(
     `tools/secret-patterns.local.json still has template placeholders:\n\n` +
@@ -71,6 +72,13 @@ if (unfilled.length > 0) {
       `\n\n  Replace each with the real value. Until then this scan cannot report "clean".`,
   );
 }
+
+/* The template deliberately CONTAINS a pattern — the Supabase anon JWT prefix,
+ * which is public by design and useful as a canary for a full key being
+ * committed. Scanning the pattern files against their own contents therefore
+ * reports a hit on every run, which is the fastest way to teach someone to
+ * ignore this scanner's output. Skip them. */
+const SELF = /^tools\/secret-patterns\./;
 
 let bad = 0;
 for (const { name, pattern } of patterns) {
@@ -89,7 +97,11 @@ for (const { name, pattern } of patterns) {
     die(`git grep failed for ${name}: ${e.message}`);
   }
 
-  const hits = out.trim().split("\n").filter(Boolean);
+  const hits = out
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .filter((line) => !SELF.test(line.split(":")[0]));
   if (hits.length === 0) continue;
 
   bad += hits.length;
