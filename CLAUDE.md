@@ -39,7 +39,19 @@ they still exist on local disk. **A committed secret is not removed by deleting 
 stays in history and must be treated as compromised. Before any commit that adds files, check
 the staged tree, not just the working tree:
 
-    git grep -c --cached "eyJhbGciOiJIUzI1NiIs" ; git grep -c --cached "Hello43556"
+    node tools/scan-staged.js
+
+> **The check used to BE the leak.** Until 2026-09-14 this line was a pair of `git grep`
+> commands with the secrets written out as the search terms — including the organiser password
+> in full. CLAUDE.md is committed to a public repo, so the instruction for keeping secrets out
+> of the repo was itself publishing one, in the file everyone opens first. It had been there
+> since `fde7431`.
+>
+> Rewriting it here does not unpublish it: by this file's own rule that password must be
+> treated as compromised and **rotated**, and every deployed copy of the `Format/` apps
+> updated. The scanner now reads its patterns from `tools/secret-patterns.local.json`, which is
+> gitignored — a check for secrets cannot itself be allowed to contain them. A never-committed
+> file is the only safe place for the needles.
 
 An older copy may still sit at `G:\My Drive\Faisal\AI\Sport\Tournament App`. It is stale — do
 not edit it, and do not copy it back over this one.

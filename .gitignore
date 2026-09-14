@@ -51,3 +51,7 @@ tmp/
 # Sports, and its seed script carries plaintext passwords -- it must never be
 # committed to this public repo.
 court-ledger/
+
+# The real secret patterns for tools/scan-staged.js. Never commit this — a
+# check for secrets must not itself contain any. See tools/secret-patterns.example.json.
+tools/secret-patterns.local.json
