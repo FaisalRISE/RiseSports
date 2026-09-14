@@ -556,8 +556,25 @@ one set of invariants.
 - The category emoji and labels come from `LEDGER_TYPES` in one place — the picker briefly had
   its own copy and disagreed with the entries list.
 
+### Scoring controls (2026-09-14)
+
+`ScoringControls.tsx` + `setScoring` on the manage screen. Closes Stage 1 item 4: the engine and
+the `tournaments.scoring` column had existed since the port, and nothing wrote the column.
+
+- **`buildScoring` does NOT return `target`.** It uses the target to derive the golden point and
+  cap, but in the legacy app the target travelled separately as `pointsToWin`. **Anything saving
+  its output must add `target` back**, or `resolveRules` falls back to the sport default —
+  an event set "to 15" silently plays to 11. `picklebossRuleOverrides` carries the same note.
+  - Both functions were well tested alone; the bug lived in the seam, which nothing exercised.
+    `organiserRules.test.ts` composes them, and pins the wrong behaviour too so the reason stays
+    visible. Found by *playing a match*, not by a test.
+- `goldenInfo` restates the rules in one sentence under the controls, computed **server-side**
+  via an action — it lives behind `import "server-only"` and the rules must not ship.
+- `rulesFor` prefers a FORMAT PRESET over these overrides, so OSL and Pickleboss events say so
+  rather than offering controls that cannot apply.
+
 Next areas by size: engines & draws (45), foundations (29), the UI kit (22), the referee
-console (20), live scoring (15).
+console (20), live scoring (14 — the match timer is the bulk of what is left there).
 
 ## Access: the site is deliberately open, and the switch is a trap
 
