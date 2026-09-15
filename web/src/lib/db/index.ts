@@ -87,10 +87,57 @@ function getDb(): Db {
 
   const client = postgres(url, {
     prepare: false,
-    /* A serverless invocation handles one request and freezes. A large pool per
-       instance would multiply across concurrent invocations and exhaust the
-       pooler; one connection each is what the pooler is designed for. */
-    max: 1,
+
+    /* ── Why this is not 1, which cost a day ─────────────────────────────
+     * It was `max: 1`, with the reasoning that a serverless invocation
+     * handles one request and freezes, so one connection each is what the
+     * pooler is designed for. That is true of CONNECTIONS and false of
+     * QUERIES, and the gap between those two took the whole site down on
+     * 2026-09-15.
+     *
+     * With one connection, `Promise.all` over three queries does not run
+     * three queries — postgres-js pipelines all three down the same socket
+     * back to back. Supavisor in TRANSACTION mode binds a client to a server
+     * backend for the length of a transaction, and three independent implicit
+     * transactions arriving interleaved on one socket wedge it: the backend
+     * sits in `ClientRead` waiting for the rest of an exchange that never
+     * comes, and the driver waits for a reply that never comes either.
+     *
+     * Every property of the outage follows from that, including the ones that
+     * sent the search in the wrong direction for hours:
+     *
+     *  - It hangs rather than erroring. No statement is executing, so no
+     *    statement_timeout can fire; the socket is open, so `connect_timeout`
+     *    cannot either. The session reports the normal 2min timeout.
+     *  - The query never reaches Postgres, so `pg_stat_activity` shows nothing
+     *    running while a request hangs — which reads exactly like a database
+     *    that is idle and healthy, because it is one.
+     *  - ONE wedge kills the instance. The client is a per-process singleton
+     *    (see above), so every later query queues behind the wedged one
+     *    forever. Measured: a probe that passed seven rungs in 200ms each
+     *    failed the eighth, then failed all of them.
+     *  - Only pages that run queries CONCURRENTLY were affected — /, /people,
+     *    /play, /ledger, /t/[slug], /e/[slug] — and /new, the one page that
+     *    queries nothing, stayed up throughout.
+     *  - It is intermittent per attempt, which is why it looked like a flaky
+     *    network. Once it catches, the instance never recovers, which is why
+     *    the site looked permanently down.
+     *
+     * So the pool has to cover the app's real concurrency instead. The widest
+     * fan-out written down is four (`/t/[slug]/manage`); eight leaves room
+     * without inviting a page to open twenty.
+     *
+     * Connections are opened ON DEMAND up to this number, so a page needing
+     * one still opens one — this is a ceiling, not a reservation. The original
+     * worry was not baseless though: many concurrent invocations each holding
+     * several pooler clients is a real limit to watch if traffic ever arrives.
+     * Supavisor's per-tenant client limit is the number to check then, not
+     * Postgres's 60 backends, which the pooler exists to multiplex.
+     *
+     * **A `Promise.all` over a mapped list is still the hazard here.** Three
+     * sites map an unbounded array into concurrent queries; past eight they
+     * queue and pipeline again. Prefer a sequential loop for those. */
+    max: 8,
     idle_timeout: 20,
 
     /* ── A query that cannot run must FAIL, not hang ──────────────────────
