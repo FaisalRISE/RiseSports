@@ -114,6 +114,30 @@ export async function climb(): Promise<Rung[]> {
       db.select().from(tournaments).orderBy(sql`${tournaments.createdAt} desc`),
     ),
   );
+
+  /* ── The last rung, and the one every other rung was built to isolate ──
+   * Every rung above runs ALONE, which is how they were written: the client is
+   * `max: 1`, so the comment above says concurrent queries queue on one
+   * connection and a hanging rung would be blamed on whichever sat behind it.
+   * That caution is why the probes passed for hours while every real page hung.
+   *
+   * Because the pages do the opposite. `Promise.all` over three queries is in
+   * the home page, /people, /play, /e/[slug], and in the stores behind /ledger
+   * and /t/[slug] — and /new, the one page in the app that never runs queries
+   * concurrently, is the one page still answering. Seven for seven.
+   *
+   * So this rung runs three at once, exactly as a page does. If it hangs where
+   * the same three passed one at a time, concurrency on a single pooled
+   * connection is the whole outage. */
+  rungs.push(
+    await rung("concurrent", () =>
+      Promise.all([
+        db.select({ n: count() }).from(people),
+        db.select({ id: people.id }).from(people).limit(1),
+        db.select().from(tournaments).limit(1),
+      ]),
+    ),
+  );
   return rungs;
 }
 
@@ -124,6 +148,12 @@ export function verdict(rungs: Rung[]): string {
     return (
       "Queries with a PARAMETER stop; queries without one work. The fault is " +
       "parameter binding over the pooler, not the tables or the network."
+    );
+  }
+  if (stopped.name === "concurrent") {
+    return (
+      "Every query passes ALONE and three at once hang. Concurrent queries on " +
+      "a single pooled connection are the fault — max: 1 plus Promise.all."
     );
   }
   if (stopped.name === "builder" || stopped.name === "count" || stopped.name === "order") {
