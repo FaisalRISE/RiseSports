@@ -211,7 +211,7 @@ try {
 
   /* Fetched rather than clicked: a download in a headless browser is a fight,
      and what matters is that the route returns a real CSV. */
-  const csv = await p.request.get(`${BASE}/t/${slug2}/schedule.csv`);
+  const csv = await p.request.get(`${BASE}/t/${slug2}/schedule`);
   ok(csv.ok(), `the CSV route answers (${csv.status()})`);
   ok(
     (csv.headers()["content-disposition"] ?? "").includes(".csv"),

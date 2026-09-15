@@ -710,6 +710,13 @@ Stage 1 plan and the last of it to land: times and courts for every match still 
 - **One definition of "the schedule as a table".** `scheduleRows` feeds the manage screen, the
   print pack, the CSV and the message. Written four times they drift — the pack gains a column
   the CSV lacks, the message shows a score the table does not.
+- **A route segment must not contain a dot.** The CSV first lived at
+  `/t/[slug]/schedule.csv`, which served perfectly under `next start` and returned **Vercel's
+  own static 404** in production — a path with a file extension is routed as a static asset and
+  never reaches the function. The tell was the response: 11KB of HTML,
+  `content-disposition: inline; filename="404"`, and none of Next's headers. It is
+  `/t/[slug]/schedule` now; `content-disposition` is what names the downloaded file anyway, so
+  the extension was never doing any work in the URL.
 - **`exportSchedulePDF` is deliberately NOT ported.** It `window.open`s a blank window and
   writes a document into it; `/t/[slug]/print` already does that job, and popups are blocked on
   the phones organisers carry — the same reason `printPack` avoids `window.open`. Likewise the

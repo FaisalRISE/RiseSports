@@ -13,8 +13,17 @@ import { scheduleRows, scheduleCsv } from "@/lib/schedule/share";
  * phone reliably honours — an `<a download>` with a blob: href is blocked in
  * more places than it works.
  *
- * The URL ends in `.csv` deliberately: some Android file managers and mail
- * clients pick the handler from the name rather than the content type.
+ * ── The URL has NO `.csv` on it, and must not get one ────────────────────
+ * It used to live at `/t/[slug]/schedule.csv`, which worked perfectly under
+ * `next start` and returned Vercel's own static 404 in production — the request
+ * never reached the function at all, because a path with a file extension is
+ * routed as a static asset first. The giveaway was the response: an 11KB HTML
+ * page with `content-disposition: inline; filename="404"` and none of Next's
+ * headers on it.
+ *
+ * The downloaded file is still named by `content-disposition` below, which is
+ * what actually decides what lands in the Downloads folder — the extension was
+ * never doing any work in the URL.
  */
 export const dynamic = "force-dynamic";
 

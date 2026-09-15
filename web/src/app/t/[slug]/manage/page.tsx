@@ -538,7 +538,7 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                   className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-black text-emerald-950 hover:brightness-110">
                   Send on WhatsApp
                 </a>
-                <a href={`/t/${slug}/schedule.csv`}
+                <a href={`/t/${slug}/schedule`}
                   className="rounded-lg border border-neutral-600 px-3 py-2 text-xs font-bold text-neutral-300 hover:border-neutral-400">
                   Download CSV
                 </a>
