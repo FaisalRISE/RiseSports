@@ -22,6 +22,20 @@ for(const n of ['Alpha','Bravo','Charlie','Delta','Echo','Foxtrot']){
 const t1=await txt();
 ok(['Alpha','Foxtrot'].every(n=>t1.includes(n)),'all six teams added');
 
+/* One player per team, each with a phone — which is what links them to a RISE
+   person. Without it a team is just a name: it can win the final and there is
+   no profile anywhere for the win to appear on, which is exactly what the
+   honours check below found the first time it ran. */
+const pstamp=String(process.hrtime.bigint()).slice(-6);
+for(const [i,n] of ['Alpha','Bravo','Charlie','Delta','Echo','Foxtrot'].entries()){
+  const form=p.locator(`[data-team="${n}"] form:has(input[placeholder="Player name"])`);
+  await form.locator('input[placeholder="Player name"]').fill(`${n} One`);
+  await form.locator('input[name="phone"]').fill(`07${i}${pstamp}`);
+  await form.locator('button:has-text("Add")').click();
+  await p.waitForTimeout(500);
+}
+ok((await txt()).includes('Alpha One'),'each team has a player with a profile');
+
 console.log('\n== draw two groups ==');
 await p.fill('input[name="groups"]','2');
 await p.fill('input[name="courts"]','Court One, Court Two');
@@ -33,6 +47,36 @@ ok(t2.includes('Court One')&&t2.includes('Court Two'),'courts assigned per group
 ok(t2.includes('Standings'),'standings tables rendered');
 const scoreLinks=await p.locator('a:has-text("Score")').count();
 ok(scoreLinks===6,'6 group fixtures generated (2 groups of 3 = 3 each), got '+scoreLinks);
+
+/* Play every match on the manage page that is not already final, and report
+   how many it finished. Reused for the knockout below: the original version of
+   this suite drew the bracket and stopped there, so nothing ever checked what
+   happens when an event actually ENDS. */
+async function playOutstanding(limit){
+  let done=0;
+  for(let guard=0; guard<limit; guard++){
+    const rows = await p.locator('li:has(a:text("Score"))').all();
+    let target=null;
+    for(const row of rows){
+      const t=await row.textContent().catch(()=>'');
+      if(!/·\s*final/.test(t)){ target=row; break; }
+    }
+    if(!target) break;
+    await target.locator('a:text("Score")').click();
+    await p.waitForURL(/\/score\//,{timeout:20000});
+    await p.waitForSelector('[aria-label^="Point to"]',{timeout:20000});
+    const half=p.locator('[aria-label^="Point to"]').first();
+    for(let k=0;k<16;k++){
+      if(await half.isDisabled().catch(()=>true)) break;
+      await half.click().catch(()=>{});
+      await p.waitForTimeout(120);
+    }
+    done++;
+    await p.goto(B+'/t/friyayy-cup/manage');
+    await p.waitForTimeout(500);
+  }
+  return done;
+}
 
 console.log('\n== score every group match ==');
 let scored=0;
@@ -85,6 +129,44 @@ await p.click('button:has-text("Fill resolved slots")');
 await p.waitForTimeout(1500);
 const t5=await txt();
 ok(!/group [AB] #[12]/.test(t5),'group placings resolved into real teams');
+
+console.log('\n== play the knockout out ==');
+/* Semi-finals, then fill the final's slots from their winners, then the final.
+   Several passes because the final cannot be played until the semis have named
+   who is in it. */
+let koPlayed=0;
+for(let pass=0; pass<4; pass++){
+  koPlayed += await playOutstanding(6);
+  await p.click('button:has-text("Fill resolved slots")').catch(()=>{});
+  await p.waitForTimeout(1200);
+  const unfinished=await p.locator('li:has(a:text("Score"))').evaluateAll(
+    (els)=>els.filter((e)=>!/·\s*final/.test(e.textContent||'')).length);
+  if(unfinished===0) break;
+}
+ok(koPlayed>=3,'played the semi-finals and the final ('+koPlayed+')');
+
+console.log('\n== the event has a champion ==');
+await p.goto(B+'/t/friyayy-cup'); await p.waitForTimeout(900);
+const champBody=await txt();
+ok(champBody.includes('Champion'),'the spectator page names a champion');
+ok(champBody.includes('Decided in the final'),'and says how it was decided');
+/* Honest about the gap rather than quietly showing two medals: without a
+   third-place playoff the losing semi-finalists are joint third. */
+ok(
+  champBody.includes('No third-place playoff was run'),
+  'and says why there is no bronze',
+);
+
+console.log('\n== it reaches the winner\'s profile ==');
+await p.goto(B+'/people'); await p.waitForTimeout(800);
+const links=await p.locator('a[href^="/people/"]').evaluateAll((as)=>as.map((a)=>a.getAttribute('href')));
+let sawHonour=false;
+for(const href of [...new Set(links)].slice(0,10)){
+  await p.goto(B+href); await p.waitForTimeout(400);
+  const body=await txt();
+  if(body.includes('Honours')&&/Winner|Runner-up/.test(body)){ sawHonour=true; break; }
+}
+ok(sawHonour,'a player profile shows what they won');
 
 console.log('\n== spectator page ==');
 await p.goto(B+'/t/friyayy-cup'); await p.waitForTimeout(900);

@@ -7,6 +7,8 @@ import { getTier } from "@/lib/rating";
 import { reliabilityForPerson, playedFromHistory } from "@/lib/rating/reliability";
 import { detectSandbagging, sandbaggingNote } from "@/lib/rating/sandbagging";
 import { maskPhone } from "@/lib/people";
+import { honoursFor } from "@/lib/placings/honours";
+import { PLACING_LABEL, PLACING_MEDAL } from "@/lib/placings";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 
 /* One person's RISE Rating and how it got there.
@@ -51,6 +53,11 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
     person.riseBest ?? 0,
   );
   const flagNote = sandbaggingNote(flag);
+
+  /* What they have won. Derived from the finals themselves rather than kept on
+     the person — see lib/placings. Nothing appears until a final is finished,
+     and a corrected score changes this page with it. */
+  const honours = await honoursFor(id);
 
   const names = await opponentNames(history);
   const tier = person.riseBest == null ? null : getTier(person.riseBest);
@@ -115,6 +122,29 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
             </div>
           </div>
         </section>
+
+        {honours.length > 0 && (
+          <section>
+            <h2 className="mb-3 text-lg font-black">Honours</h2>
+            <ul className="space-y-2">
+              {honours.map((h, i) => (
+                <li key={i} className="flex items-center gap-3 rounded-xl border border-neutral-800 bg-neutral-900/60 p-3">
+                  <span className="text-xl" aria-hidden>{PLACING_MEDAL[h.placing]}</span>
+                  <div className="min-w-0 flex-1">
+                    <Link href={`/t/${h.tournamentSlug}`} className="truncate text-sm font-bold hover:underline">
+                      {h.tournamentName}
+                    </Link>
+                    <p className="text-[11px] text-neutral-500">
+                      {PLACING_LABEL[h.placing]}
+                      {h.categoryName ? ` · ${h.categoryName}` : ""}
+                      {h.at ? ` · ${h.at.toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" })}` : ""}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <section>
           <h2 className="mb-3 text-lg font-black">How this rating was earned</h2>

@@ -8,6 +8,8 @@ import { StandingsTable } from "@/components/StandingsTable";
 import { viewMatch, allowsDraws } from "@/lib/matchState";
 import { floatingTime } from "@/lib/schedule";
 import { loadTournament, groupTables, resolverFactory, resolveSlots } from "@/lib/tournamentState";
+import { podiums, PLACING_MEDAL } from "@/lib/placings";
+import { divisionsOf } from "@/lib/divisions";
 
 /* Spectator view. A Server Component: the scoring engine, the tie-break chain
  * and the knockout resolution all run here; the browser receives finished rows.
@@ -27,6 +29,14 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
   /* Per category: "A1" means the A of the match's OWN category. */
   const resolverFor = resolverFactory(loaded, tables);
   const nameOf = (id: string) => loaded.teams.find((x) => x.id === id)?.name ?? "—";
+
+  /* Who won. Derived from the results every time rather than written down when
+     an event ends — see lib/placings for why. A category still in play simply
+     does not appear. */
+  const divisionRows = await divisionsOf(t.id);
+  const divisionName = new Map(divisionRows.map((d) => [d.id, d.name]));
+  const decided = podiums(loaded, tables);
+  const manyCategories = divisionRows.length > 1;
 
   const knockout = loaded.matches.filter((m) => m.groupId === null);
   const groupMatches = loaded.matches.filter((m) => m.groupId !== null);
@@ -76,6 +86,44 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
           </p>
           <h1 className="text-3xl font-black tracking-tight">{t.name}</h1>
         </header>
+
+        {decided.length > 0 && (
+          <section>
+            <h2 className="mb-3 text-lg font-black">
+              {decided.length === 1 && !manyCategories ? "Champion" : "Champions"}
+            </h2>
+            <div className="space-y-3">
+              {decided.map((p) => (
+                <div key={p.divisionId} className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4">
+                  {manyCategories && (
+                    <div className="mb-2 text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+                      {divisionName.get(p.divisionId) ?? ""}
+                    </div>
+                  )}
+                  <ol className="space-y-1">
+                    {([["gold", p.gold], ["silver", p.silver], ["bronze", p.bronze]] as const)
+                      .filter(([, id]) => !!id)
+                      .map(([place, id]) => (
+                        <li key={place} className="flex items-center gap-3">
+                          <span className="text-xl" aria-hidden>{PLACING_MEDAL[place]}</span>
+                          <span className={place === "gold" ? "text-base font-black" : "text-sm font-semibold text-neutral-300"}>
+                            {nameOf(id!)}
+                          </span>
+                        </li>
+                      ))}
+                  </ol>
+                  {/* Said plainly, because a table-decided title is a different
+                      claim from one won in a final and organisers are asked
+                      about it. */}
+                  <p className="mt-2 text-[11px] text-neutral-500">
+                    {p.via === "final" ? "Decided in the final." : "Top of the table, all matches played."}
+                    {p.via === "final" && !p.bronze && " No third-place playoff was run."}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {tables.length > 0 && (
           <section className="space-y-4">

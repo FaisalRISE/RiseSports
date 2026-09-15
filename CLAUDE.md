@@ -750,7 +750,34 @@ graph** — so the pages and the route each built their own.
   up.** The build collects page data, which opens the database, and two processes on `.pgdata`
   corrupt it. Stop the server, build, seed, then start.
 
-Next areas by size: engines & draws (~35 left), foundations (29), the UI kit (22).
+### Who won (2026-09-15)
+
+`lib/placings/`. Nothing in the app answered that: a final could be played and the event page
+showed a score and moved on. There is now a podium on the event page and an honours list on
+each player's profile.
+
+- **Derived, never stored.** The legacy app writes a `medals` array onto each player when an
+  event ends — a second copy of what the matches already say, which then goes wrong in the
+  ordinary ways: a score corrected later, a final undone and replayed, a medal written twice by
+  a double tap. Computing it on read cannot disagree with the scoreboard and needs no backfill.
+- **A placing is real only once the deciding match has FINISHED.** A live final has no winner
+  and an incomplete table has no champion; both return nothing rather than a guess.
+- **No bronze without a third-place playoff.** Two losing semi-finalists are joint third, and
+  handing it to one of them invents a result. The event page says so in as many words, and the
+  organiser who wants a bronze turns the playoff on.
+- `FINAL` and `THIRD` are matched **exactly**, not by a regex over "final" — "Semi-Final 1"
+  contains it. Tested: switching to `/final/i` fails two tests.
+- **`honours.ts` is a separate, narrower query on purpose.** Running `podiums()` per event would
+  load every match, team and group of each tournament to read one line off the end. It asks for
+  the `Final` / `Third Place` rows the person's teams appear in instead. A league title decided
+  by a table is therefore NOT on the profile — checking a table is complete needs the whole
+  load — and is shown on the event's own page.
+- **`e2e/event.mjs` now plays the knockout out**, which it never did: it drew the bracket and
+  stopped, so nothing ever exercised an event ENDING. It also gives each team a player with a
+  phone — without one, a team is just a name, it can win the final, and there is no profile for
+  the win to land on. That is what the honours check caught on its first run.
+
+Next areas by size: engines & draws (~30 left), foundations (29), the UI kit (22).
 
 ## Access: the site is deliberately open, and the switch is a trap
 
