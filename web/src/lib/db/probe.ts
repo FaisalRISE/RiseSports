@@ -48,6 +48,9 @@ export type Rung = {
   ms: number;
   reason?: string;
   code?: string | null;
+  /* What the rung read back, when the VALUE is the finding rather than
+     whether it answered — the session's own timeout settings, for instance. */
+  note?: string;
 };
 
 /** Never let a connection string's user:password reach a public response. */
@@ -67,7 +70,11 @@ function rootCause(e: unknown): { code?: string; errno?: string; message?: strin
   return cur ?? {};
 }
 
-async function rung(name: string, run: () => Promise<unknown>): Promise<Rung> {
+async function rung(
+  name: string,
+  run: () => Promise<unknown>,
+  describe?: (result: unknown) => string,
+): Promise<Rung> {
   const started = Date.now();
   const give_up = Symbol("timeout");
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -78,7 +85,7 @@ async function rung(name: string, run: () => Promise<unknown>): Promise<Rung> {
     const outcome = await Promise.race([run(), clock]);
     const ms = Date.now() - started;
     if (outcome === give_up) return { name, ok: false, ms, reason: "timeout" };
-    return { name, ok: true, ms };
+    return { name, ok: true, ms, note: describe?.(outcome) };
   } catch (e) {
     const err = rootCause(e);
     return {
@@ -138,6 +145,48 @@ export async function climb(): Promise<Rung[]> {
       ]),
     ),
   );
+  /* ── What limits is this session actually running under? ──────────────
+   * `select 1` came back `57014: canceling statement due to statement timeout`
+   * in 945ms — while seven heavier rungs passed on either side of it. The
+   * database's global statement_timeout is 120000ms and the `postgres` role
+   * carries no override, so nothing in the database's own configuration can
+   * cancel a `select 1` inside a second.
+   *
+   * Which means the limit is being set on the way in, and the session is the
+   * only thing that can be asked. Postgres reports its own effective values,
+   * so this stops the guessing: whatever number comes back is the number the
+   * app is really given, whoever set it. */
+  rungs.push(
+    await rung(
+      "limits",
+      () =>
+        db.execute(
+          sql`select current_setting('statement_timeout') as stmt,
+                     current_setting('idle_in_transaction_session_timeout') as idle,
+                     current_user as who,
+                     current_setting('application_name') as app`,
+        ),
+      (r) => {
+        const row = (Array.isArray(r) ? r[0] : (r as { rows?: unknown[] })?.rows?.[0]) as
+          | Record<string, unknown>
+          | undefined;
+        if (!row) return "no row";
+        return `statement_timeout=${row.stmt} idle_in_txn=${row.idle} user=${row.who} app=${row.app}`;
+      },
+    ),
+  );
+
+  /* The home page's remaining query, which no rung has covered: a count over
+     `matches` filtered on jsonb. Every other query it makes now has a rung. */
+  rungs.push(
+    await rung("jsonb", () =>
+      db.execute(
+        sql`select count(*) from matches
+            where (typed_score_a is not null or jsonb_array_length(log) > 0)`,
+      ),
+    ),
+  );
+
   return rungs;
 }
 
