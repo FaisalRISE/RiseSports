@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { eq } from "drizzle-orm";
 
@@ -10,6 +11,7 @@ import { oslLineupIssues } from "@/lib/formats/osl";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, generateGroups, generateKnockout, generateSingleElim, fillKnockoutSlots, seedByRating, searchRoster, addDivision, setDivisionShape, generateSchedule, dropSchedule } from "./actions";
 import { floatingTime, floatingDay, floatingInputValue } from "@/lib/schedule";
+import { scheduleRows, scheduleText, whatsappHref } from "@/lib/schedule/share";
 import { divisionsOf } from "@/lib/divisions";
 import { SEED_BANDS } from "@/lib/rating";
 import { PersonPicker } from "@/components/PersonPicker";
@@ -41,13 +43,7 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
   const teamsIn = (divisionId: string) =>
     teamRows.filter((x) => x.divisionId === divisionId).length;
 
-  /* The order of play, as it stands. Sorted by the time itself rather than by
-     the slot, so a match given a time by hand sits where it belongs. */
   const divisionName = new Map(divisionRows.map((d) => [d.id, d.name]));
-  const timed = matchRows
-    .filter((m) => m.scheduledAt)
-    .sort((a, b) =>
-      a.scheduledAt!.getTime() - b.scheduledAt!.getTime() || (a.court ?? 0) - (b.court ?? 0));
 
   /* Bind the tournament id server-side so the client cannot aim these actions
      at a different tournament by editing the form. */
@@ -88,6 +84,30 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
   /* Per category: "A1" means the A of the match's OWN category. */
   const resolverFor = loaded ? resolverFactory(loaded, tables) : null;
   const teamNameOf = (id: string) => teamRows.find((x) => x.id === id)?.name ?? "—";
+
+  /* The order of play, from the one definition the print pack, the CSV and the
+     WhatsApp message also use — see lib/schedule/share. Four hand-written
+     versions of "the schedule as a table" is four things to drift. */
+  const allRows = loaded && resolverFor
+    ? scheduleRows(loaded, { tables, resolverFor, divisionName })
+    : [];
+  const timed = allRows.filter((r) => r.time);
+  const firstTimed = matchRows
+    .filter((m) => m.scheduledAt)
+    .sort((a, b) => a.scheduledAt!.getTime() - b.scheduledAt!.getTime())[0];
+
+  /* The link the message points at, built from the request rather than an env
+     var so it is right on localhost, on a preview deploy and in production
+     without anything to configure. */
+  const host = (await headers()).get("host") ?? "rise-sports.vercel.app";
+  const publicUrl = `${host.startsWith("localhost") ? "http" : "https"}://${host}/t/${slug}`;
+  const shareHref = whatsappHref(
+    scheduleText(
+      { name: t.name, day: firstTimed ? floatingDay(firstTimed.scheduledAt!) : null,
+        venue: t.venue, url: publicUrl },
+      allRows,
+    ),
+  );
 
   /* An unfilled knockout side shows its seed reference in words rather than
      "TBD", so an organiser can see where the team will come from. */
@@ -478,20 +498,15 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                   </tr>
                 </thead>
                 <tbody>
-                  {timed.map((m) => (
-                    <tr key={m.id} className="border-b border-neutral-800 last:border-0">
-                      <td className="whitespace-nowrap p-2 font-mono font-bold tabular-nums">
-                        {floatingTime(m.scheduledAt!)}
-                      </td>
-                      <td className="p-2 font-mono tabular-nums text-neutral-500">{m.court ?? "—"}</td>
-                      <td className="truncate p-2 text-[11px] text-neutral-500">
-                        {divisionName.get(m.divisionId) ?? ""}
-                      </td>
+                  {timed.map((r, i) => (
+                    <tr key={i} className="border-b border-neutral-800 last:border-0">
+                      <td className="whitespace-nowrap p-2 font-mono font-bold tabular-nums">{r.time}</td>
+                      <td className="p-2 font-mono tabular-nums text-neutral-500">{r.court ?? "—"}</td>
+                      <td className="truncate p-2 text-[11px] text-neutral-500">{r.category}</td>
                       <td className="p-2">
-                        <span className="text-[11px] text-neutral-500">{m.round}</span>{" "}
-                        {slotLabel(m, "a", m.teamAId ? byTeam.get(m.teamAId)?.name : undefined)}
-                        {" v "}
-                        {slotLabel(m, "b", m.teamBId ? byTeam.get(m.teamBId)?.name : undefined)}
+                        <span className="text-[11px] text-neutral-500">{r.round}</span>{" "}
+                        {r.aLabel} v {r.bLabel}
+                        {r.score && <span className="ml-2 font-mono font-bold">{r.score}</span>}
                       </td>
                     </tr>
                   ))}
@@ -501,17 +516,41 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
           )}
 
           {timed.length > 0 && (
-            <div className="mt-2 flex flex-wrap items-center gap-3">
-              <p className="text-[11px] text-neutral-500">
-                {floatingDay(timed[0].scheduledAt!)} · {timed.length} to play · last starts{" "}
-                {floatingTime(timed[timed.length - 1].scheduledAt!)}
-              </p>
-              <form action={dropSchedule.bind(null, t.id)} className="ml-auto">
-                <button className="text-[11px] font-bold text-neutral-500 hover:text-rose-400">
-                  clear the times
-                </button>
-              </form>
-            </div>
+            <>
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <p className="text-[11px] text-neutral-500">
+                  {firstTimed ? `${floatingDay(firstTimed.scheduledAt!)} · ` : ""}
+                  {timed.length} match{timed.length === 1 ? "" : "es"} · last starts{" "}
+                  {timed[timed.length - 1].time}
+                </p>
+                <form action={dropSchedule.bind(null, t.id)} className="ml-auto">
+                  <button className="text-[11px] font-bold text-neutral-500 hover:text-rose-400">
+                    clear the times
+                  </button>
+                </form>
+              </div>
+
+              {/* Getting it to the players. Both are plain links to something
+                  the server produces — no popup and no blob: download, either
+                  of which a phone browser is entitled to block silently. */}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <a href={shareHref} target="_blank" rel="noopener noreferrer"
+                  className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-black text-emerald-950 hover:brightness-110">
+                  Send on WhatsApp
+                </a>
+                <a href={`/t/${slug}/schedule.csv`}
+                  className="rounded-lg border border-neutral-600 px-3 py-2 text-xs font-bold text-neutral-300 hover:border-neutral-400">
+                  Download CSV
+                </a>
+                <Link href={`/t/${slug}/print`}
+                  className="rounded-lg border border-neutral-600 px-3 py-2 text-xs font-bold text-neutral-300 hover:border-neutral-400">
+                  Print pack
+                </Link>
+                <span className="text-[11px] text-neutral-500">
+                  The message carries the order of play and a link to this event&apos;s page.
+                </span>
+              </div>
+            </>
           )}
         </section>
 

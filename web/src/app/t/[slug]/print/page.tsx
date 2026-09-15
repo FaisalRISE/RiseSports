@@ -5,7 +5,7 @@ import { principalFor } from "@/lib/auth/guard";
 import { canView } from "@/lib/auth/policy";
 import { PrintButton } from "@/components/PrintButton";
 import { GroupSheet, KnockoutSheet, OrderOfPlaySheet, toPrintMatch, type OrderRow, type PrintMatch } from "@/lib/print/sheets";
-import { floatingTime, floatingDay } from "@/lib/schedule";
+import { scheduleRows, scheduleDay } from "@/lib/schedule/share";
 import { divisionsOf } from "@/lib/divisions";
 import type { Team } from "@/lib/db/schema";
 
@@ -69,22 +69,17 @@ export default async function PrintPage({
   /* The order of play, across every category. First in the pack because it is
      the sheet people walk up to and read; the group sheets are for running a
      group, not for finding out when you are on. */
-  const timed = loaded.matches
-    .filter((m) => m.scheduledAt)
-    .sort((a, b) =>
-      a.scheduledAt!.getTime() - b.scheduledAt!.getTime() || (a.court ?? 0) - (b.court ?? 0));
-  const orderRows: OrderRow[] = timed.map((m) => {
-    const [a, b] = resolveSlots(m, resolverFor(m.divisionId), nameOf);
-    return {
-      time: floatingTime(m.scheduledAt!),
-      court: m.court,
-      category: divisionName.get(m.divisionId) ?? "",
-      round: m.round,
-      aLabel: a.label,
-      bLabel: b.label,
-    };
-  });
-  const day = timed.length ? floatingDay(timed[0].scheduledAt!) : null;
+  const orderRows: OrderRow[] = scheduleRows(loaded, { tables, resolverFor, divisionName })
+    .filter((r) => r.time)
+    .map((r) => ({
+      time: r.time,
+      court: r.court,
+      category: r.category,
+      round: r.round,
+      aLabel: r.aLabel,
+      bLabel: r.bLabel,
+    }));
+  const day = scheduleDay(loaded);
 
   /* Knockout rounds named from the END, so the last round is the Final whatever
      the data happens to call it. */

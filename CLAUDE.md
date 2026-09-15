@@ -703,7 +703,47 @@ Stage 1 plan and the last of it to land: times and courts for every match still 
   Measured: `event` and `carryover` fail after the other six plus `schedule`, and pass alone, or
   first, or with `schedule` moved last. Reset `.pgdata` between runs — see `web/e2e/README.md`.
 
-Next areas by size: engines & draws (~40 left), foundations (29), the UI kit (22).
+### Getting the schedule out (2026-09-15)
+
+`lib/schedule/share.ts`, `/t/[slug]/schedule.csv`, and a WhatsApp link on the manage screen.
+
+- **One definition of "the schedule as a table".** `scheduleRows` feeds the manage screen, the
+  print pack, the CSV and the message. Written four times they drift — the pack gains a column
+  the CSV lacks, the message shows a score the table does not.
+- **`exportSchedulePDF` is deliberately NOT ported.** It `window.open`s a blank window and
+  writes a document into it; `/t/[slug]/print` already does that job, and popups are blocked on
+  the phones organisers carry — the same reason `printPack` avoids `window.open`. Likewise the
+  CSV is a normal link to a route, not a `blob:` download, which phone browsers also block.
+- **The WhatsApp message is CAPPED and says so.** The legacy version pasted the whole schedule
+  into a `wa.me` URL; a fifty-match event then makes a URL long enough that clients silently
+  truncate it, and the organiser sends half a message without knowing. Here it stops on a whole
+  match, adds "…and N more", and always ends with the event's own link.
+- The CSV carries a **UTF-8 BOM** (Excel on Windows otherwise reads it as the system codepage
+  and mangles every "–" and every diacritic) and **guards formula injection**: a team called
+  `=1+1` is prefixed with `'`. The legacy exporter escaped quotes and neither of these.
+- The public URL in the message is built from the request's `host` header, so it is right on
+  localhost, on a preview deploy and in production with nothing to configure.
+
+### The database client was one per MODULE COPY, not one per process
+
+Found while the CSV route 404'd for tournaments every page could see. `lib/db/index.ts` held
+its client in a module-level `let`, and **Next gives a Route Handler its own copy of the module
+graph** — so the pages and the route each built their own.
+
+- On PGlite, which is a single-process embedded database, that meant **two clients on one
+  directory**: the handler read an older snapshot (hence "tournament not found" for a row the
+  pages rendered), and the two writers then collided into `RuntimeError: Aborted()`, which looks
+  exactly like a corrupt database.
+- It was **not** only a local problem. In production each copy opens its own `postgres()` pool,
+  multiplying connections against the transaction pooler — the very thing `max: 1` is there to
+  avoid.
+- Fixed by holding the client on `globalThis` under `Symbol.for("rise.db")`, which is one per
+  process. It also stops `next dev` leaking a pool per hot reload.
+- **Related, and it cost an hour twice: never run `next build` while a PGlite-backed server is
+  up.** The build collects page data, which opens the database, and two processes on `.pgdata`
+  corrupt it. Stop the server, build, seed, then start.
+
+Next areas by size: engines & draws (~35 left), foundations (29), the UI kit (22).
 
 ## Access: the site is deliberately open, and the switch is a trap
 

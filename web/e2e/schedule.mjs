@@ -197,6 +197,31 @@ try {
     "and says what the times mean",
   );
 
+  /* ── getting it to the players ───────────────────────────────────────── */
+  console.log("\n== sharing ==");
+
+  await p.goto(`${BASE}/t/${slug2}/manage`);
+  await p.waitForTimeout(800);
+
+  const share = await p.getAttribute('a:has-text("Send on WhatsApp")', "href");
+  ok(share?.startsWith("https://wa.me/?text="), "there is a WhatsApp link");
+  const message = decodeURIComponent((share ?? "").split("text=")[1] ?? "");
+  ok(message.includes("09:00"), "the message carries the order of play");
+  ok(message.includes(`/t/${slug2}`), "and a link back to the event page");
+
+  /* Fetched rather than clicked: a download in a headless browser is a fight,
+     and what matters is that the route returns a real CSV. */
+  const csv = await p.request.get(`${BASE}/t/${slug2}/schedule.csv`);
+  ok(csv.ok(), `the CSV route answers (${csv.status()})`);
+  ok(
+    (csv.headers()["content-disposition"] ?? "").includes(".csv"),
+    "and offers it as a file rather than a page",
+  );
+  const body = await csv.text();
+  ok(body.includes('"Time","Court","Category"'), "with a header row");
+  ok(body.includes("\r\n"), "and CRLF line endings, for Excel");
+  ok(body.charCodeAt(0) === 0xfeff, "and a BOM, so Excel does not mangle the names");
+
   /* ── taking the times back off ───────────────────────────────────────── */
   console.log("\n== clearing ==");
 

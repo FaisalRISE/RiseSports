@@ -38,14 +38,31 @@ import * as schema from "./schema";
  * driver above — which is the point: local and production should not disagree.
  *
  * Initialised lazily so a build that never queries does not need DATABASE_URL.
+ *
+ * ── Why the instance hangs off globalThis ────────────────────────────────
+ * A module-level `let` is one instance per MODULE COPY, not per process, and
+ * Next gives a Route Handler its own copy of the module graph. So a page and a
+ * route handler in the same server each built their own client — and on PGlite,
+ * which is a single-process embedded database, two clients opened the same
+ * directory. The symptoms were a route handler that could not see a tournament
+ * the pages could (it was reading its own older snapshot), and then
+ * `RuntimeError: Aborted()` out of the WASM as the two writers collided.
+ *
+ * Neither is hypothetical and neither announced itself: the first looked like a
+ * missing row, the second like a corrupt database. `globalThis` is one instance
+ * per PROCESS, which is what "the connection" was always meant to mean. It also
+ * stops `next dev` leaking a new pool on every hot reload.
  */
 
 type Db = PostgresJsDatabase<typeof schema>;
 
-let instance: Db | null = null;
+const KEY = Symbol.for("rise.db");
+type Holder = { [KEY]?: Db };
 
 function getDb(): Db {
-  if (instance) return instance;
+  const holder = globalThis as unknown as Holder;
+  const existing = holder[KEY];
+  if (existing) return existing;
 
   const url = process.env.DATABASE_URL;
   if (!url) {
@@ -63,8 +80,9 @@ function getDb(): Db {
     const { PGlite } = req("@electric-sql/pglite");
     const { drizzle: drizzlePglite } = req("drizzle-orm/pglite");
     const dir = url.replace(/^pglite:\/\//, "") || ".pgdata";
-    instance = drizzlePglite(new PGlite(dir), { schema }) as unknown as Db;
-    return instance;
+    const pglite = drizzlePglite(new PGlite(dir), { schema }) as unknown as Db;
+    holder[KEY] = pglite;
+    return pglite;
   }
 
   const client = postgres(url, {
@@ -75,8 +93,9 @@ function getDb(): Db {
     max: 1,
     idle_timeout: 20,
   });
-  instance = drizzlePostgres(client, { schema });
-  return instance;
+  const pg = drizzlePostgres(client, { schema });
+  holder[KEY] = pg;
+  return pg;
 }
 
 export const db = new Proxy({} as Db, {
