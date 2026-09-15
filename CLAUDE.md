@@ -918,7 +918,7 @@ only by typing a URL or going the long way through the roster.
 - The smoke suite now **follows the first link** rather than checking one exists. A profile URL
   built from an undefined id renders perfectly and only fails on click.
 
-### When the database stops answering, the app must SAY so (2026-09-15)
+### The day the site hung, and it was never the database (2026-09-15)
 
 Observed after the "a way in" deploy: every database-backed page stopped responding — no error,
 no 500, just an open socket until the client gave up. Static files and the 404 page served in
@@ -929,13 +929,60 @@ seconds.
 Supabase's own API. The difference is the path: the app reaches Postgres through the
 **transaction pooler on 6543**, and the MCP tools do not.
 
-**Not root-caused.** Vercel's runtime logs are `403 Forbidden` for this hobby project, exactly as
-the note at the top of this file says. Two candidates remain and they need the one test that
-tells them apart: `pnpm db:check`, which connects with the SAME driver and options the app uses.
-It needs the database password, so it is Faisal's to run, and a pass means the pooler is fine and
-the fault is ours.
+**Root cause: `max: 1`.** One connection cannot carry three queries. `Promise.all` over three
+queries does not open three — postgres-js **pipelines** all three down the same socket, and
+Supavisor in TRANSACTION mode binds a client to a backend for the length of a transaction. Three
+implicit transactions interleaved on one socket wedge it: the backend waits in `ClientRead` for
+the rest of an exchange that never arrives, and the driver waits for a reply that never arrives
+either. `max: 8` now covers the app's widest fan-out (four, on `/t/[slug]/manage`); connections
+open on demand, so it is a ceiling and not a reservation.
 
-What WAS fixed, because it is wrong either way: **postgres-js waits forever by default.** With no
+- `max: 1` was chosen because a serverless invocation handles one request and freezes, so one
+  connection each is what a pooler is designed for. **That is true of CONNECTIONS and false of
+  QUERIES**, and the whole outage lives in the gap between them.
+- **A `Promise.all` over a MAPPED list is the remaining hazard.** Three sites map an unbounded
+  array into concurrent queries — `lib/ledger/store.ts:113`, `app/play/page.tsx:58`,
+  `lib/registration/approve.ts:79`. Past eight they pipeline again and wedge the same way. Those
+  want a sequential loop; noted at the change in `lib/db/index.ts`.
+- **Every property that made this hard to find follows from the mechanism**, and each one sent
+  the search somewhere else:
+  - It HANGS rather than erroring. No statement is executing, so no `statement_timeout` can
+    cancel it; the socket is open, so `connect_timeout` cannot fire either. The session reports
+    the normal `2min`.
+  - The query never reaches Postgres, so **`pg_stat_activity` shows an idle, healthy database
+    while a request hangs** — which reads exactly like a network fault and cost four hours in
+    the pooler logs.
+  - **One wedge kills the instance.** The client is a per-process singleton since the `globalThis`
+    change, so every later query queues behind the wedged one forever. That is why five
+    redeploys did not help, and why the site looked permanently down.
+  - Intermittent per attempt, permanent once caught — a flaky network and a dead site at once.
+- **`/health` and `/api/health/db` exist now, and are the first things to hit next time.** A
+  static 404 proves nothing: Vercel serves its OWN static 404 for an unmatched path (the same
+  behaviour that made `schedule.csv` 404 in production), so comparing it with a hanging page
+  compares a file with a function. `/health` is a page that queries nothing; `/api/health/db` is
+  `lib/db/probe.ts` — a LADDER whose rungs add one thing at a time (no parameters, a parameter,
+  a table, both, drizzle's builder, `count()`, an order by, **three at once**, the session's own
+  limits, jsonb). The concurrency rung is the regression test for this outage.
+  - It runs from the deployment, so it needs no password — Vercel already holds it. `db:check`
+    could not be automated for exactly that reason.
+  - Both halves must be compared or neither means anything: `/health/db` runs the same ladder
+    from a PAGE. Rendering worked and querying worked; only the two together failed.
+- **Four theories died on the way, each reasoned from the outside and each looking airtight**:
+  the pooler running out of backends (clients exceed backends every hour, including hours the
+  site worked); parameter binding over the pooler (a real table read with a real parameter passes
+  in 373ms); a stalled module import (there is none outside the tests); and Vercel's build cache
+  (the home page's own component, rendered from a route added that day, hung identically).
+- **The lesson about sampling.** The correlation that was right — all six hanging pages run
+  concurrent queries, and `/new`, the only page that runs none, never stopped answering — was
+  found, then WITHDRAWN because the concurrency rung passed once. One passing sample of an
+  intermittent fault is not a refutation. Prove a negative against an intermittent fault by
+  repeating it, or not at all.
+- A caught database error here is almost never the error: drizzle rethrows a driver failure
+  wrapped in its own, whose message is always `Failed query: <sql>` — the SQL you already knew.
+  The code that names the fault is on `cause`. `describeDbError` walks that chain; anything new
+  reading `e.message` directly gets a sentence it already had.
+
+Also fixed on the way, because it is wrong either way: **postgres-js waits forever by default.** With no
 `connect_timeout`, a connection the pooler has quietly dropped never errors and never gets
 replaced — and every page that could have reported the problem was a page that hung. The home
 page already renders a "database is not reachable" panel carrying the real message; it had no way
