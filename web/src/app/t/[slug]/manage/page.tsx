@@ -21,6 +21,7 @@ import { ScoringControls, type ScoringState } from "./ScoringControls";
 import { maxGroupsFor } from "@/lib/formats/pickleboss";
 import { resolveRules } from "@/lib/scoring/rules";
 import { allowsDraws } from "@/lib/matchState";
+import { PersonLink } from "@/components/PersonLink";
 
 export const dynamic = "force-dynamic";
 
@@ -186,7 +187,7 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                         <span className="w-6 font-mono text-[11px] text-neutral-500">
                           {isOsl ? `A${i + 1}` : i + 1}
                         </span>
-                        <span className="flex-1 truncate">{p.name}</span>
+                        <PersonLink personId={p.personId} name={p.name} className="flex-1 truncate" />
                         <span className={`rounded px-1.5 text-[10px] font-bold ${p.gender === "F" ? "bg-violet-500/20 text-violet-300" : "bg-blue-500/20 text-blue-300"}`}>
                           {p.gender}
                         </span>

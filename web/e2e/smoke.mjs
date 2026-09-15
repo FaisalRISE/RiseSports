@@ -15,6 +15,20 @@ ok(body.includes('Odyssey Sports League 2026'),'seeded OSL tournament listed');
 ok(body.includes('Open access'),'open-access banner visible');
 ok(!body.includes('database is not reachable'),'no db error');
 
+console.log('\n== the home page is a way in, not just a list ==');
+/* Only three pages in the app linked to a profile, and a profile now carries a
+   rating and how it was earned, an honours list, a partner record and a skill
+   chart. All of it was reachable by typing a URL. */
+const homeLinks=await p.$$eval('a[href^="/people/"]',as=>[...new Set(as.map(a=>a.getAttribute('href')))]);
+ok(homeLinks.length>0,'the top-rated list links to profiles ('+homeLinks.length+')');
+ok(/\bPlayers\b/.test(body)&&/\bMatches\b/.test(body)&&/\bEvents\b/.test(body),'the counts are shown');
+ok(body.includes('Top rated'),'and who is top');
+/* The link has to go somewhere. A profile URL built from an undefined id
+   renders happily and 404s only when somebody clicks it. */
+await p.goto(B+homeLinks[0]); await p.waitForTimeout(700);
+ok((await p.textContent('body')).includes('RISE Rating'),'and the first one opens a real profile: '+homeLinks[0]);
+await p.goto(B+'/'); await p.waitForTimeout(400);
+
 console.log('\n== spectator ==');
 await p.goto(B+'/t/osl-2026'); await p.waitForTimeout(400);
 const spec=await p.textContent('body');

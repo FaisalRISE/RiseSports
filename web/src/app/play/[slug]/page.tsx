@@ -20,6 +20,7 @@ import { HostRoster, type RosterRow } from "./HostRoster";
 import { Schedule } from "./Schedule";
 import { SlotsPanel, KotcPanel, LadderPanel } from "./Rotations";
 import { MyStanding, MembershipPanel } from "./Membership";
+import { PersonLink } from "@/components/PersonLink";
 
 export const dynamic = "force-dynamic";
 
@@ -380,7 +381,8 @@ export default async function GamePage({
                 <ul className="mt-2 space-y-1">
                   {view.confirmed.map((r) => (
                     <li key={r.personId} className="flex items-center gap-2 text-sm">
-                      <span className="min-w-0 flex-1 truncate font-bold">{r.person.name}</span>
+                      <PersonLink personId={r.personId} name={r.person.name}
+                        className="min-w-0 flex-1 truncate font-bold" />
                       <span
                         className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
                           r.paid ? "bg-emerald-400/10 text-emerald-400" : "bg-neutral-800 text-neutral-500"
@@ -402,7 +404,8 @@ export default async function GamePage({
                     {view.waitlist.map((r, i) => (
                       <li key={r.personId} className="flex items-center gap-2 text-sm text-neutral-400">
                         <span className="w-5 shrink-0 tabular-nums text-neutral-600">{i + 1}.</span>
-                        <span className="min-w-0 flex-1 truncate">{r.person.name}</span>
+                        <PersonLink personId={r.personId} name={r.person.name}
+                          className="min-w-0 flex-1 truncate" />
                       </li>
                     ))}
                   </ol>

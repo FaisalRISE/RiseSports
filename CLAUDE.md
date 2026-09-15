@@ -897,7 +897,28 @@ its "Play vs to rate" hint sits behind a logically contradictory condition, so t
 asked for has no working implementation there. And the legacy picker accepts **free-text tags**
 which then leak into every other player's suggestions — deliberately not ported.
 
-Next areas by size: engines & draws (~30 left), foundations (29), the UI kit (~18).
+### A way in (2026-09-15)
+
+Only THREE pages in the app linked to a player's profile, and the community session page — where
+most play actually happens — showed every name as plain text. Meanwhile a profile had grown a
+rating and how it was earned, an honours list, a partner record and a skill chart, all reachable
+only by typing a URL or going the long way through the roster.
+
+- **`<PersonLink>`**, one component, because of the null case. `players.personId` is null for
+  anyone an organiser added without a phone: they exist inside that event and have no profile.
+  `<Link href={`/people/${undefined}`}>` renders happily and 404s only when somebody clicks it,
+  and no test would notice. A person with no id is plain text, once, in one file.
+- Wired into the community session roster and the manage screen's squads.
+- **The home page** gained what the legacy `HomeTab` has and this one never did: players,
+  matches and events as counts, and the top five rated, linked. "Matches" counts matches that
+  were PLAYED, not drawn — a fixture nobody turned up for is not a match that happened.
+- Counted in the database with drizzle's `count()`, not by loading rows and measuring the array,
+  and not with a hand-written `count(*)` — that returns a STRING from postgres-js and a number
+  from PGlite, so it reads right locally and is wrong in production.
+- The smoke suite now **follows the first link** rather than checking one exists. A profile URL
+  built from an undefined id renders perfectly and only fails on click.
+
+Next areas by size: engines & draws (~30 left), foundations (~27), the UI kit (~16).
 
 ## Access: the site is deliberately open, and the switch is a trap
 
