@@ -92,6 +92,29 @@ function getDb(): Db {
        pooler; one connection each is what the pooler is designed for. */
     max: 1,
     idle_timeout: 20,
+
+    /* ── A query that cannot run must FAIL, not hang ──────────────────────
+     * Observed 2026-09-15: every database-backed page stopped answering —
+     * no error, no 500, just an open socket until the client gave up, while
+     * static files served instantly and the database itself was healthy
+     * (15 of 60 connections, nothing stuck, the same queries instant through
+     * Supabase's own API). Intermittent: roughly one request in four returned
+     * normally in under two seconds.
+     *
+     * Whatever the cause upstream, hanging is the app's own fault. postgres-js
+     * waits FOREVER by default, so a connection the pooler has quietly dropped
+     * never errors and never gets replaced — and every page that could have
+     * told somebody what was wrong was the page that hung. The home page
+     * already renders a "database is not reachable" panel with the real
+     * message; it had no way to fire.
+     *
+     * `connect_timeout` turns an unreachable pooler into an error in ten
+     * seconds. `max_lifetime` retires a connection periodically rather than
+     * holding one open indefinitely on a warm instance — a long-lived client
+     * against a TRANSACTION pooler is exactly the thing that goes stale, and
+     * this client is now one per process by design (see the note above). */
+    connect_timeout: 10,
+    max_lifetime: 60 * 15,
   });
   const pg = drizzlePostgres(client, { schema });
   holder[KEY] = pg;

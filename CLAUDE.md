@@ -918,6 +918,32 @@ only by typing a URL or going the long way through the roster.
 - The smoke suite now **follows the first link** rather than checking one exists. A profile URL
   built from an undefined id renders perfectly and only fails on click.
 
+### When the database stops answering, the app must SAY so (2026-09-15)
+
+Observed after the "a way in" deploy: every database-backed page stopped responding — no error,
+no 500, just an open socket until the client gave up. Static files and the 404 page served in
+300ms throughout. Intermittent: roughly one request in four came back normally in under two
+seconds.
+
+**It was not the database.** 15 of 60 connections, none stuck, the same queries instant through
+Supabase's own API. The difference is the path: the app reaches Postgres through the
+**transaction pooler on 6543**, and the MCP tools do not.
+
+**Not root-caused.** Vercel's runtime logs are `403 Forbidden` for this hobby project, exactly as
+the note at the top of this file says. Two candidates remain and they need the one test that
+tells them apart: `pnpm db:check`, which connects with the SAME driver and options the app uses.
+It needs the database password, so it is Faisal's to run, and a pass means the pooler is fine and
+the fault is ours.
+
+What WAS fixed, because it is wrong either way: **postgres-js waits forever by default.** With no
+`connect_timeout`, a connection the pooler has quietly dropped never errors and never gets
+replaced — and every page that could have reported the problem was a page that hung. The home
+page already renders a "database is not reachable" panel carrying the real message; it had no way
+to fire. Now `connect_timeout: 10` turns an unreachable pooler into an error, and
+`max_lifetime: 900` retires a connection rather than holding one open indefinitely on a warm
+instance. A long-lived client against a TRANSACTION pooler is exactly what goes stale, and since
+the `globalThis` change that client is one per process by design.
+
 Next areas by size: engines & draws (~30 left), foundations (~27), the UI kit (~16).
 
 ## Access: the site is deliberately open, and the switch is a trap
