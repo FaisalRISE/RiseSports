@@ -645,7 +645,59 @@ console; the remaining port is engines, foundations and the UI kit.
   `playingMs` 136,570 and `pausedMs` 26,782 — summing to the wall-clock span between
   `startedAt` and `endedAt` to the millisecond, with `pauseCount: 1` despite the relabel.
 
-Next areas by size: engines & draws (45), foundations (29), the UI kit (22).
+### The order of play (2026-09-15)
+
+`lib/schedule/` + the manage screen, the public page and the print pack. This is item 5 of the
+Stage 1 plan and the last of it to land: times and courts for every match still to be played.
+
+- **The clash key is a PERSON, not a `players` row.** A human entered in Men's Doubles and Mixed
+  is two teams and two player rows (`teams.divisionId` — "one person, two teams"). Keyed on the
+  row, the scheduler puts them on two courts at 10:30 and every check passes. `busyKey` uses
+  `personId`, and falls back to the **normalised name** when nobody linked a profile — chosen
+  deliberately: two different Rahuls merged costs a slightly longer day, one Rahul missed puts a
+  real person on two courts and is discovered by him standing there.
+- **Dependencies are a constraint, not a tiebreak.** The legacy `buildTimedSchedule`
+  (`app.source.js:666`) sorted by an integer round and used it as a preference, so a knockout
+  could be placed before the group feeding it whenever the group matches happened to clash. Here
+  the wait is already written down — a knockout slot is a seed reference — so `dependsOn` carries
+  real match ids and a match is not eligible until every one of them sits in an EARLIER slot.
+  `lib/schedule/store` reuses **`resolveRef`** with a resolver that answers in dependency keys,
+  rather than parsing the reference grammar a second time.
+- **Termination is argued, not hoped for**: within a slot the first candidate cannot clash
+  (nobody is on court yet), and an acyclic graph with anything left always has a match whose
+  dependencies are placed — so every slot places at least one. `MAX_SLOTS` is a backstop against
+  a future edit breaking that reasoning. A circular wait is reported in `skipped`, never spun on.
+- **Times are WALL CLOCK at the venue, stored as "floating" UTC.** The organiser types 09:00 and
+  everybody reads 09:00; nobody converts, because everybody is in the same building. So the
+  `datetime-local` value is read AS IF UTC and every render passes `timeZone: "UTC"` back. What
+  goes in comes out, on any server. **Do not treat `matches.scheduled_at` as a true instant** —
+  a calendar export or a "starts in 20 minutes" would be wrong by the venue's offset. Pinned by
+  tests that pass under `TZ=UTC` and fail under `TZ=Asia/Kolkata` if anything starts converting:
+  verified by installing the naive version, exactly as `genSessionDates` was.
+- A match that has STARTED keeps the time it has. A match that cannot be placed has its old time
+  **removed** — a stale 10:30 on a match no longer in the plan is worse than a blank, because
+  somebody turns up for it.
+- Deliberately not done: **pinned courts.** `groups.court` is a free-text name, so mapping it to
+  a court number is guesswork, and cross-category scheduling is what fills courts in the first
+  place. Adding `preferredCourt` to `ScheduleMatch` later is additive.
+- **`e2e/schedule.mjs` is differential, and has to be.** Same phone in both categories → the two
+  matches must not share a time; four different phones → they should. Either half alone proves
+  nothing: a scheduler that gave everything its own slot passes the first, one that ignored
+  people entirely passes the second.
+
+### Two things found while building it
+
+- **`Draw groups & fixtures` silently does nothing when the group count exceeds the field.**
+  The control defaults to 2 groups; two teams split across two groups leaves one entrant in each
+  and `generateGroups` skips both (`plan.entrants.length < 2`). No matches, no message. Not
+  fixed here — it is the draw's behaviour, not the scheduler's — but a clamp to
+  `floor(teams / 2)` would turn a silent no-op into the obvious draw.
+- **The e2e suites are order-sensitive**, because they use fixed `waitForTimeout` waits and a
+  PGlite database carrying ten tournaments answers more slowly than a two-second wait allows.
+  Measured: `event` and `carryover` fail after the other six plus `schedule`, and pass alone, or
+  first, or with `schedule` moved last. Reset `.pgdata` between runs — see `web/e2e/README.md`.
+
+Next areas by size: engines & draws (~40 left), foundations (29), the UI kit (22).
 
 ## Access: the site is deliberately open, and the switch is a trap
 

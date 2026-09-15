@@ -21,6 +21,7 @@
     "e2e:divergence": "node e2e/divergence.mjs",
     "e2e:carryover": "node e2e/carryover.mjs",
     "e2e:divisions": "node e2e/divisions.mjs",
+    "e2e:schedule": "node e2e/schedule.mjs",
     "e2e:registration": "node e2e/registration.mjs"
   },
   "dependencies": {

@@ -8,7 +8,8 @@ import { viewMatch } from "@/lib/matchState";
 import { sportOf } from "@/lib/sports/registry";
 import { oslLineupIssues } from "@/lib/formats/osl";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
-import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, generateGroups, generateKnockout, generateSingleElim, fillKnockoutSlots, seedByRating, searchRoster, addDivision, setDivisionShape } from "./actions";
+import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, generateGroups, generateKnockout, generateSingleElim, fillKnockoutSlots, seedByRating, searchRoster, addDivision, setDivisionShape, generateSchedule, dropSchedule } from "./actions";
+import { floatingTime, floatingDay, floatingInputValue } from "@/lib/schedule";
 import { divisionsOf } from "@/lib/divisions";
 import { SEED_BANDS } from "@/lib/rating";
 import { PersonPicker } from "@/components/PersonPicker";
@@ -36,6 +37,14 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
   const isOsl = t.format === "osl";
 
   const squadOf = (teamId: string) => playerRows.filter((p) => p.teamId === teamId);
+
+  /* The order of play, as it stands. Sorted by the time itself rather than by
+     the slot, so a match given a time by hand sits where it belongs. */
+  const divisionName = new Map(divisionRows.map((d) => [d.id, d.name]));
+  const timed = matchRows
+    .filter((m) => m.scheduledAt)
+    .sort((a, b) =>
+      a.scheduledAt!.getTime() - b.scheduledAt!.getTime() || (a.court ?? 0) - (b.court ?? 0));
 
   /* Bind the tournament id server-side so the client cannot aim these actions
      at a different tournament by editing the form. */
@@ -126,7 +135,12 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                 ? oslLineupIssues(squad.slice(0, 6).map((p) => ({ id: p.id, name: p.name, gender: p.gender })))
                 : [];
               return (
-                <div key={team.id} className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
+                /* `data-team` for the same reason the category cards carry
+                   `data-category`: the e2e scripts have to address ONE team's
+                   roster form, and every card is the same chain of utility
+                   classes. */
+                <div key={team.id} data-team={team.name}
+                  className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
                   <div className="mb-2 flex items-center gap-2">
                     <span className="h-3 w-3 rounded" style={{ background: team.colour ?? "#666" }} />
                     <span className="font-bold">{team.name}</span>
@@ -404,6 +418,90 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
           </section>
         )}
 
+        {/* ---------- order of play ---------- */}
+        <section>
+          <h2 className="mb-1 text-lg font-black">Order of play</h2>
+          <p className="mb-3 text-[12px] text-neutral-500">
+            Times and courts for every match still to be played. Nobody is given two matches at
+            once — across categories, so a player entered in two of them is counted as one person.
+            A knockout is never placed before the group that feeds it.
+          </p>
+
+          <form action={generateSchedule.bind(null, t.id)}
+            className="grid gap-2 rounded-xl border border-neutral-800 bg-neutral-900/60 p-3 sm:grid-cols-[1fr_auto_auto_auto]">
+            <label className="block">
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-neutral-500">First match</span>
+              <input type="datetime-local" name="startsAt" required
+                defaultValue={t.startsAt ? floatingInputValue(t.startsAt) : ""}
+                className="w-full rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm" />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-neutral-500">Courts</span>
+              <input type="number" name="courts" min={1} max={20} defaultValue={t.courts}
+                className="w-20 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm" />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-neutral-500">Minutes each</span>
+              <input type="number" name="matchMinutes" min={5} max={180} step={5} defaultValue={t.matchMinutes}
+                className="w-24 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm" />
+            </label>
+            <button className="self-end rounded-lg bg-neutral-200 px-4 py-2 text-xs font-black text-neutral-900">
+              Draw up the times
+            </button>
+          </form>
+
+          {timed.length > 0 && (
+            <div className="mt-3 overflow-x-auto rounded-xl border border-neutral-800">
+              {/* Addressed by the e2e suite: the standings tables above are
+                  also `table tbody tr`, and scraping both silently mixed a
+                  four-row group table into the order of play. */}
+              <table data-testid="order-of-play" className="w-full min-w-[34rem] text-left text-[13px]">
+                <thead>
+                  <tr className="border-b border-neutral-800 text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+                    <th className="p-2">Time</th>
+                    <th className="p-2">Court</th>
+                    <th className="p-2">Category</th>
+                    <th className="p-2">Match</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {timed.map((m) => (
+                    <tr key={m.id} className="border-b border-neutral-800 last:border-0">
+                      <td className="whitespace-nowrap p-2 font-mono font-bold tabular-nums">
+                        {floatingTime(m.scheduledAt!)}
+                      </td>
+                      <td className="p-2 font-mono tabular-nums text-neutral-500">{m.court ?? "—"}</td>
+                      <td className="truncate p-2 text-[11px] text-neutral-500">
+                        {divisionName.get(m.divisionId) ?? ""}
+                      </td>
+                      <td className="p-2">
+                        <span className="text-[11px] text-neutral-500">{m.round}</span>{" "}
+                        {slotLabel(m, "a", m.teamAId ? byTeam.get(m.teamAId)?.name : undefined)}
+                        {" v "}
+                        {slotLabel(m, "b", m.teamBId ? byTeam.get(m.teamBId)?.name : undefined)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {timed.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <p className="text-[11px] text-neutral-500">
+                {floatingDay(timed[0].scheduledAt!)} · {timed.length} to play · last starts{" "}
+                {floatingTime(timed[timed.length - 1].scheduledAt!)}
+              </p>
+              <form action={dropSchedule.bind(null, t.id)} className="ml-auto">
+                <button className="text-[11px] font-bold text-neutral-500 hover:text-rose-400">
+                  clear the times
+                </button>
+              </form>
+            </div>
+          )}
+        </section>
+
         {/* ---------- matches ---------- */}
         <section>
           <h2 className="mb-3 text-lg font-black">Matches</h2>
@@ -416,6 +514,7 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                 <li key={m.id} className="flex items-center gap-3 rounded-xl border border-neutral-800 bg-neutral-900/60 p-3">
                   <div className="min-w-0 flex-1">
                     <p className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+                      {m.scheduledAt ? `${floatingTime(m.scheduledAt)}${m.court ? ` · court ${m.court}` : ""} · ` : ""}
                       {m.round}
                       {v.osl && !v.over ? ` · ${v.osl.pairLabel}` : ""}
                       {v.over ? " · final" : v.rallies > 0 ? " · live" : ""}

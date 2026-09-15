@@ -4,7 +4,9 @@ import { loadTournament, resolverFactory, groupTables, resolveSlots } from "@/li
 import { principalFor } from "@/lib/auth/guard";
 import { canView } from "@/lib/auth/policy";
 import { PrintButton } from "@/components/PrintButton";
-import { GroupSheet, KnockoutSheet, toPrintMatch, type PrintMatch } from "@/lib/print/sheets";
+import { GroupSheet, KnockoutSheet, OrderOfPlaySheet, toPrintMatch, type OrderRow, type PrintMatch } from "@/lib/print/sheets";
+import { floatingTime, floatingDay } from "@/lib/schedule";
+import { divisionsOf } from "@/lib/divisions";
 import type { Team } from "@/lib/db/schema";
 
 /* The printable pack.
@@ -33,6 +35,9 @@ export default async function PrintPage({
   const t = loaded.tournament;
   if (!canView(await principalFor(t.id), t.status)) notFound();
 
+  const divisionRows = await divisionsOf(t.id);
+  const divisionName = new Map(divisionRows.map((d) => [d.id, d.name]));
+
   const tables = groupTables(loaded);
   /* Per category: "A1" means the A of the match's OWN category. */
   const resolverFor = resolverFactory(loaded, tables);
@@ -60,6 +65,26 @@ export default async function PrintPage({
     const teams = [...ids].map((id) => byId.get(id)).filter((x): x is Team => !!x);
     return { group: g, teams, matches: ms.map(asPrint) };
   });
+
+  /* The order of play, across every category. First in the pack because it is
+     the sheet people walk up to and read; the group sheets are for running a
+     group, not for finding out when you are on. */
+  const timed = loaded.matches
+    .filter((m) => m.scheduledAt)
+    .sort((a, b) =>
+      a.scheduledAt!.getTime() - b.scheduledAt!.getTime() || (a.court ?? 0) - (b.court ?? 0));
+  const orderRows: OrderRow[] = timed.map((m) => {
+    const [a, b] = resolveSlots(m, resolverFor(m.divisionId), nameOf);
+    return {
+      time: floatingTime(m.scheduledAt!),
+      court: m.court,
+      category: divisionName.get(m.divisionId) ?? "",
+      round: m.round,
+      aLabel: a.label,
+      bLabel: b.label,
+    };
+  });
+  const day = timed.length ? floatingDay(timed[0].scheduledAt!) : null;
 
   /* Knockout rounds named from the END, so the last round is the Final whatever
      the data happens to call it. */
@@ -123,6 +148,7 @@ export default async function PrintPage({
       </div>
 
       <div className="pack mx-auto max-w-4xl bg-white p-6 text-black">
+        <OrderOfPlaySheet tournament={t} day={day} rows={orderRows} printedAt={printedAt} />
         {groupSheets.map((s) => (
           <GroupSheet
             key={s.group.id}
@@ -135,7 +161,7 @@ export default async function PrintPage({
           />
         ))}
         <KnockoutSheet tournament={t} rounds={rounds} printedAt={printedAt} />
-        {groupSheets.length === 0 && rounds.length === 0 && (
+        {groupSheets.length === 0 && rounds.length === 0 && orderRows.length === 0 && (
           <p className="p-8 text-center text-sm text-neutral-600">
             Nothing to print yet — draw the groups first.
           </p>

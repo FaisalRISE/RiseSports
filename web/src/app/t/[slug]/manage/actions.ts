@@ -711,3 +711,50 @@ export async function describeScoring(input: {
   const { goldenInfo } = await import("@/lib/scoring/rules");
   return goldenInfo(v.target, v.winBy2, v.goldenAt, v.scoreType);
 }
+
+/* ── Order of play ─────────────────────────────────────────────────────── */
+
+const scheduleSchema = z.object({
+  startsAt: z.string().min(1),
+  courts: z.coerce.number().int().min(1).max(20).catch(2),
+  matchMinutes: z.coerce.number().int().min(5).max(180).catch(20),
+});
+
+/**
+ * Put times and courts against every match that has not been played.
+ *
+ * The engine is `lib/schedule`; this only reads the form. What it is FOR is the
+ * multi-category day: a person entered in Men's Doubles and Mixed must never be
+ * given two matches at once, and until categories existed there was nothing to
+ * clash. See lib/schedule/store for how "who is on court" and "what is this
+ * waiting for" are read out of the rows.
+ */
+export async function generateSchedule(tournamentId: string, formData: FormData) {
+  const t = await requireManager(tournamentId);
+  const v = scheduleSchema.parse({
+    startsAt: formData.get("startsAt"),
+    courts: formData.get("courts"),
+    matchMinutes: formData.get("matchMinutes"),
+  });
+
+  const { floatingInstant } = await import("@/lib/schedule");
+  const startsAt = floatingInstant(v.startsAt);
+  if (!startsAt) return;
+
+  const { applySchedule } = await import("@/lib/schedule/store");
+  await applySchedule(t.id, { courts: v.courts, matchMinutes: v.matchMinutes, startsAt });
+
+  revalidatePath(`/t/${t.slug}/manage`);
+  revalidatePath(`/t/${t.slug}`);
+  revalidatePath(`/t/${t.slug}/print`);
+}
+
+/** Take the times back off. The draw itself is untouched. */
+export async function dropSchedule(tournamentId: string) {
+  const t = await requireManager(tournamentId);
+  const { clearSchedule } = await import("@/lib/schedule/store");
+  await clearSchedule(t.id);
+  revalidatePath(`/t/${t.slug}/manage`);
+  revalidatePath(`/t/${t.slug}`);
+  revalidatePath(`/t/${t.slug}/print`);
+}

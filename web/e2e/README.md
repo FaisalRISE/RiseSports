@@ -1,6 +1,6 @@
 # End-to-end tests
 
-Four scripts, all driving the real app in a real browser:
+Eight scripts, all driving the real app in a real browser:
 
 | Script | What it covers |
 |---|---|
@@ -8,6 +8,7 @@ Four scripts, all driving the real app in a real browser:
 | `pnpm e2e:event` | a whole event: create → teams → groups → score every match → knockout |
 | `pnpm e2e:offline` | scoring with no network, the queue, the service worker, reconnection |
 | `pnpm e2e:divergence` | two devices scoring one match, and the conflict prompt |
+| `pnpm e2e:schedule` | the order of play: one person entered in two categories is never drawn to play twice at once |
 
 Playwright is a devDependency. Once per machine:
 
@@ -87,3 +88,23 @@ The divergence script asserts the opposite failure too: a device that only
 watched, or whose write was merely behind, must **never** be prompted. Prompting
 without a real conflict trains referees to dismiss the prompt, and then the one
 that matters gets dismissed as well.
+
+## Give each script a fresh database
+
+These scripts are written against a freshly seeded database and use fixed
+`waitForTimeout` waits rather than waiting on a condition. Run all eight back to
+back against one PGlite file and the last few start failing — not because
+anything is broken, but because a database carrying ten tournaments answers more
+slowly than a two-second wait allows. Measured: `event` and `carryover` fail
+when they run after the other six plus `schedule`, and pass when they run first,
+or alone, or with `schedule` moved to the end.
+
+So reset between runs:
+
+```bash
+rm -rf .pgdata
+DATABASE_URL=pglite://.pgdata pnpm db:setup
+```
+
+The real fix is to replace the fixed waits with condition waits, which is worth
+doing the next time one of these scripts is touched.

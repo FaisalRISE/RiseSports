@@ -27,10 +27,14 @@ import "server-only";
 import type { Group, Match, Team, Tournament } from "@/lib/db/schema";
 import { viewMatch, rulesFor } from "@/lib/matchState";
 import { sportOf } from "@/lib/sports/registry";
+import { floatingTime } from "@/lib/schedule";
 
 export type PrintMatch = {
   /** `matches.court` is an integer, `groups.court` is text — both print. */
   court: number | string | null;
+  /** Wall clock at the venue, already formatted — see lib/schedule for why it
+   *  is never converted. Null when the order of play has not been drawn. */
+  time: string | null;
   aLabel: string;
   bLabel: string;
   aId: string | null;
@@ -52,6 +56,7 @@ export function toPrintMatch(
   const played = withData && (v.typed || v.over);
   return {
     court: m.court,
+    time: m.scheduledAt ? floatingTime(m.scheduledAt) : null,
     aLabel: labels[0],
     bLabel: labels[1],
     aId: m.teamAId,
@@ -92,7 +97,10 @@ export const FIXTURE_CAPTION =
   "Left score box belongs to the team on the left, right box to the team on the right. " +
   "The higher score wins — no separate winner column.";
 
-/* Court, then the two teams either side of their score boxes, winner in bold.
+/* Time and court, then the two teams either side of their score boxes, winner
+   in bold. The time column appears only when there IS an order of play — a
+   blank column on every sheet of an event that never drew one is a question
+   the organiser has to answer at the court.
    Blank boxes when printing before play — that is the whole point.
    `caption` is optional because a sheet with several tables (the knockout has
    one per round) must still show the explanation ONCE, not under each. */
@@ -104,11 +112,13 @@ export function FixtureTable({
   caption?: boolean;
 }) {
   if (!matches.length) return null;
+  const timed = matches.some((m) => m.time);
   return (
     <>
       <table className="fx">
         <thead>
           <tr>
+            {timed && <th className="c" style={{ width: 46 }}>Time</th>}
             <th className="c" style={{ width: 42 }}>Court</th>
             <th>Team</th>
             <th className="c" style={{ width: 50 }}>Score</th>
@@ -122,6 +132,7 @@ export function FixtureTable({
             const bWon = m.played && m.scoreB! > m.scoreA!;
             return (
               <tr key={i}>
+                {timed && <td className="c ct b">{m.time ?? ""}</td>}
                 <td className="c ct">{m.court ?? ""}</td>
                 <td className={aWon ? "win" : ""}>{m.aLabel || "TBD"}</td>
                 <td className="c sbox">{m.played ? m.scoreA : ""}</td>
@@ -308,6 +319,92 @@ export function KnockoutSheet({
           mistake as repeating it under each match, just at a coarser grain. */}
       <div className="cap">{FIXTURE_CAPTION}</div>
       <RulesLine tournament={tournament} />
+    </section>
+  );
+}
+
+export type OrderRow = {
+  time: string;
+  court: number | null;
+  category: string;
+  round: string;
+  aLabel: string;
+  bLabel: string;
+};
+
+/**
+ * The order of play: every match, every category, one page, by time.
+ *
+ * The sheet that actually goes on the wall. The per-group sheets are for
+ * running and settling a group; this is the one a player walks up to and reads
+ * to find out when they are on — which is why the category is a column rather
+ * than a heading, and why it is sorted by the clock and nothing else.
+ *
+ * Rows are grouped under their time so a reader's eye lands on "10:30" once
+ * rather than four times down the page.
+ */
+export function OrderOfPlaySheet({
+  tournament,
+  day,
+  rows,
+  printedAt,
+}: {
+  tournament: Tournament;
+  day: string | null;
+  rows: OrderRow[];
+  printedAt: string;
+}) {
+  if (!rows.length) return null;
+
+  const blocks: { time: string; rows: OrderRow[] }[] = [];
+  for (const r of rows) {
+    const last = blocks[blocks.length - 1];
+    if (last && last.time === r.time) last.rows.push(r);
+    else blocks.push({ time: r.time, rows: [r] });
+  }
+
+  return (
+    <section className="psheet">
+      <PrintHead
+        tournament={tournament}
+        title="Order of play"
+        sub={day ? `${tournament.name} — ${day}` : tournament.name}
+        printedAt={printedAt}
+      />
+      <table className="fx">
+        <thead>
+          <tr>
+            <th className="c" style={{ width: 52 }}>Time</th>
+            <th className="c" style={{ width: 42 }}>Court</th>
+            <th style={{ width: 110 }}>Category</th>
+            <th>Match</th>
+          </tr>
+        </thead>
+        <tbody>
+          {blocks.flatMap((b) =>
+            b.rows.map((r, i) => (
+              <tr key={`${b.time}-${i}`}>
+                {/* The time spans its block, so it is read once. */}
+                {i === 0 && (
+                  <td className="c b" rowSpan={b.rows.length} style={{ verticalAlign: "top" }}>
+                    {b.time}
+                  </td>
+                )}
+                <td className="c ct">{r.court ?? ""}</td>
+                <td className="ct">{r.category}</td>
+                <td>
+                  <span className="ct">{r.round}</span> {r.aLabel || "TBD"} v {r.bLabel || "TBD"}
+                </td>
+              </tr>
+            )),
+          )}
+        </tbody>
+      </table>
+      <div className="cap">
+        Times are when a match is due to START. Nobody is drawn to play two matches at once, and a
+        knockout is never drawn before the group that feeds it — but a match whose teams are still
+        to be decided is placed on its position in the draw, not on who ends up in it.
+      </div>
     </section>
   );
 }

@@ -6,6 +6,7 @@ import { canView } from "@/lib/auth/policy";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { StandingsTable } from "@/components/StandingsTable";
 import { viewMatch, allowsDraws } from "@/lib/matchState";
+import { floatingTime } from "@/lib/schedule";
 import { loadTournament, groupTables, resolverFactory, resolveSlots } from "@/lib/tournamentState";
 
 /* Spectator view. A Server Component: the scoring engine, the tie-break chain
@@ -39,6 +40,11 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
     return (
       <li key={m.id} className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-3">
         <div className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest">
+          {m.scheduledAt && (
+            <span className="font-mono tabular-nums text-neutral-300">
+              {floatingTime(m.scheduledAt)}{m.court ? ` · Ct ${m.court}` : ""}
+            </span>
+          )}
           <span className="text-neutral-500">{m.round}</span>
           {live && <span className="text-rose-400">● Live</span>}
           {decided && <span className="text-emerald-400">Final</span>}

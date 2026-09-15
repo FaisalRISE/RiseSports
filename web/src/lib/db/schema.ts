@@ -43,6 +43,15 @@ export const tournaments = pgTable(
     scorerPinHash: text("scorer_pin_hash"),
     startsAt: timestamp("starts_at", { withTimezone: true }),
 
+    /* What the scheduler needs and nothing else does: how many courts are
+       booked, and how long a match is allowed to take. Stored rather than asked
+       for each time, because an organiser redrawing the sheet after a late
+       entry should not have to remember what they typed an hour ago — and
+       because "we have four courts" is a fact about the event, not about one
+       press of a button. See lib/schedule. */
+    courts: integer("courts").notNull().default(2),
+    matchMinutes: integer("match_minutes").notNull().default(20),
+
     /* The lifecycle, replacing the old `published` boolean.
      *
      *   draft    — being set up; only the organiser sees it
