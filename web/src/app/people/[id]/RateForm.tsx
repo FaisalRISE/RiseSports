@@ -97,9 +97,16 @@ export function RateForm({
       </div>
 
       <div>
-        <h4 className="mb-2 text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+        <h4 className="mb-1 text-[10px] font-bold uppercase tracking-widest text-neutral-500">
           What are they like to play?
         </h4>
+        {/* Said plainly. Only court-mates can endorse, and a subject's
+            court-mates are listed on the same page — so a tag with one or two
+            behind it is close to attributable, and the person ticking it should
+            know that before they tick. */}
+        <p className="mb-2 text-[11px] text-neutral-500">
+          These are published against their name as a count. Anyone can see them.
+        </p>
         <div className="flex flex-wrap gap-2">
           {tags.map((tag) => (
             <label key={tag} className="cursor-pointer">

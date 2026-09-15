@@ -50,49 +50,49 @@ export const SPORTS: Record<SportId, Sport> = {
     playersPerCourt: 4, targets: [11, 15, 21], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
     scoring: { target: 11, winBy: 2, cap: null, golden: null }, serveModel: "sideout",
     skills: ["Serve", "Return", "Dink", "Drive", "Volley", "Drop Shot", "Lob", "Positioning", "Smash", "Reset", "Poach", "Backhand", "Speed Ups"],
-    tags: ["Spin Server", "Power Player", "Dink Master", "Net Rusher", "Serial Lobber", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Hands", "Soft Game", "Hard Hitter", "Great Partner", "Court General", "Comeback King"],
+    tags: ["Spin Server", "Power Player", "Dink Master", "Net Rusher", "Lob Specialist", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Hands", "Soft Game", "Hard Hitter", "Great Partner", "Court General", "Comeback Artist"],
   },
   bd: {
     id: "bd", name: "Badminton", emoji: "\u{1F3F8}", court: "court",
     playersPerCourt: 4, targets: [15, 21, 30], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
     scoring: { target: 21, winBy: 2, cap: 30, golden: 29 }, serveModel: "rally",
     skills: ["Serve", "Return", "Clear", "Drop", "Smash", "Net Kill", "Drive", "Lift", "Defence", "Footwork", "Deception", "Backhand", "Positioning"],
-    tags: ["Big Smash", "Net Killer", "Deceptive", "Retriever", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Tireless", "Soft Touch", "Hard Hitter", "Great Partner", "Court General", "Comeback King"],
+    tags: ["Big Smash", "Net Killer", "Deceptive", "Retriever", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Tireless", "Soft Touch", "Hard Hitter", "Great Partner", "Court General", "Comeback Artist"],
   },
   tt: {
     id: "tt", name: "Table Tennis", emoji: "\u{1F3D3}", court: "table",
     playersPerCourt: 4, targets: [11, 21], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
     scoring: { target: 11, winBy: 2, cap: null, golden: null }, serveModel: "alt2",
     skills: ["Serve", "Return", "Topspin", "Backspin", "Block", "Smash", "Loop", "Push", "Flick", "Footwork", "Placement", "Backhand", "Spin Reading"],
-    tags: ["Spin Server", "Looper", "Blocker", "Chopper", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Feet", "Soft Touch", "Hard Hitter", "Great Partner", "Table General", "Comeback King"],
+    tags: ["Spin Server", "Looper", "Blocker", "Chopper", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Feet", "Soft Touch", "Hard Hitter", "Great Partner", "Table General", "Comeback Artist"],
   },
   pd: {
     id: "pd", name: "Padel", emoji: "\u{1F3BE}", court: "court",
     playersPerCourt: 4, targets: [], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
     scoring: null, setBased: true, serveModel: "games",
     skills: ["Serve", "Return", "Volley", "Bandeja", "Vibora", "Smash", "Wall Play", "Lob", "Drop", "Positioning", "Defence", "Backhand", "Court Coverage"],
-    tags: ["Big Smash", "Wall Master", "Bandeja Specialist", "Retriever", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Feet", "Soft Touch", "Hard Hitter", "Great Partner", "Court General", "Comeback King"],
+    tags: ["Big Smash", "Wall Master", "Bandeja Specialist", "Retriever", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Feet", "Soft Touch", "Hard Hitter", "Great Partner", "Court General", "Comeback Artist"],
   },
   tn: {
     id: "tn", name: "Tennis", emoji: "\u{1F3BE}", court: "court",
     playersPerCourt: 4, targets: [], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
     scoring: null, setBased: true, serveModel: "games",
     skills: ["Serve", "Return", "Forehand", "Backhand", "Volley", "Smash", "Slice", "Topspin", "Drop Shot", "Lob", "Footwork", "Positioning", "Mental"],
-    tags: ["Big Server", "Baseliner", "Serve & Volley", "Retriever", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Feet", "Soft Touch", "Hard Hitter", "Great Partner", "Court General", "Comeback King"],
+    tags: ["Big Server", "Baseliner", "Serve & Volley", "Retriever", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Feet", "Soft Touch", "Hard Hitter", "Great Partner", "Court General", "Comeback Artist"],
   },
   cr: {
     id: "cr", name: "Carrom", emoji: "\u{1F7E4}", court: "board", board: true,
     playersPerCourt: 4, targets: [21, 25, 29], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
     scoring: { target: 25, winBy: 1, cap: null, golden: null }, serveModel: "turns",
     skills: ["Strike", "Thumb Shot", "Cut", "Rebound", "Board Control", "Queen Cover", "Defence", "Placement", "Angles", "Break", "Consistency", "Pocketing", "Focus"],
-    tags: ["Sharp Shooter", "Queen Hunter", "Thumb Specialist", "Defender", "Steady Hand", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Break", "Soft Touch", "Power Striker", "Great Partner", "Board General", "Comeback King"],
+    tags: ["Sharp Shooter", "Queen Hunter", "Thumb Specialist", "Defender", "Steady Hand", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Break", "Soft Touch", "Power Striker", "Great Partner", "Board General", "Comeback Artist"],
   },
   ch: {
     id: "ch", name: "Chess", emoji: "\u{265F}", court: "board", board: true,
     playersPerCourt: 2, targets: [1], formats: ["gn", "ms", "ws"],
     scoring: { target: 1, winBy: 1, cap: null, golden: null }, serveModel: "turns", draws: true,
     skills: ["Openings", "Tactics", "Endgame", "Calculation", "Positional", "Time Management", "Defence", "Attack", "Pawn Structure", "Piece Activity", "Prophylaxis", "Conversion", "Composure"],
-    tags: ["Opening Prep", "Tactician", "Endgame Grinder", "Blitz Specialist", "Solid", "Wall", "Consistent", "Clutch Player", "Positional", "Fast Calculator", "Quiet Mover", "Attacker", "Great Sport", "Board General", "Comeback King"],
+    tags: ["Opening Prep", "Tactician", "Endgame Grinder", "Blitz Specialist", "Solid", "Wall", "Consistent", "Clutch Player", "Positional", "Fast Calculator", "Quiet Mover", "Attacker", "Great Sport", "Board General", "Comeback Artist"],
   },
 };
 
@@ -107,6 +107,28 @@ export function sportOf(x?: SportId | { sport?: SportId | null } | null): Sport 
 
 export const skillsFor = (x?: Parameters<typeof sportOf>[0]) => sportOf(x).skills;
 export const tagsFor = (x?: Parameters<typeof sportOf>[0]) => sportOf(x).tags;
+
+/* Two tags were renamed on 2026-09-15, before endorsements became visible
+ * anywhere but one profile card — which was the last moment it was cheap.
+ *
+ *   "Serial Lobber"  -> "Lob Specialist"   "serial" is how you describe an
+ *                                          offender; repeated lobbing is a
+ *                                          standing rec-play grievance, and
+ *                                          this was about to be pinned next to
+ *                                          real names on a public list.
+ *   "Comeback King"  -> "Comeback Artist"  the only gendered noun in all seven
+ *                                          vocabularies, on an app with a
+ *                                          Women filter.
+ *
+ * Rows store the tag TEXT, so `drizzle/0015` rewrites the ones already saved.
+ * This map is kept so a row written by an older deploy still reads correctly.
+ */
+export const RENAMED_TAGS: Record<string, string> = {
+  "Serial Lobber": "Lob Specialist",
+  "Comeback King": "Comeback Artist",
+};
+
+export const canonicalTag = (tag: string): string => RENAMED_TAGS[tag] ?? tag;
 export const formatsFor = (x?: Parameters<typeof sportOf>[0]) => sportOf(x).formats;
 
 /** Rating keys are sport-namespaced so ratings never bleed between sports. */

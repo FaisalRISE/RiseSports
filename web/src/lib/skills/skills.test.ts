@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { SkillRadar } from "@/components/SkillRadar";
-import { skillsFor, tagsFor, SPORTS, type SportId } from "@/lib/sports/registry";
+import { skillsFor, tagsFor, canonicalTag, SPORTS, type SportId } from "@/lib/sports/registry";
 import type { SkillAverage } from "./store";
 
 /* The store and the eligibility rule both talk to the database, so they are
@@ -129,5 +129,41 @@ describe("the migration closes the tables it opens", () => {
     expect(sql).toMatch(
       /CREATE UNIQUE INDEX "skill_ratings_one_per_rater_idx"[\s\S]*?"subject_person_id","rater_person_id","sport","skill"/,
     );
+  });
+});
+
+describe("the tag vocabulary", () => {
+  /* Renamed 2026-09-15, while endorsements were still on one profile card and
+     nowhere else — the last moment it was cheap. Rows store the tag TEXT, so
+     drizzle/0015 moves the ones already saved. */
+  it("no longer ships a tag that reads as a complaint", () => {
+    for (const id of Object.keys(SPORTS) as SportId[]) {
+      expect(tagsFor(id)).not.toContain("Serial Lobber");
+    }
+    expect(tagsFor("pb")).toContain("Lob Specialist");
+  });
+
+  it("no longer ships a gendered one, in any sport", () => {
+    for (const id of Object.keys(SPORTS) as SportId[]) {
+      expect(tagsFor(id)).not.toContain("Comeback King");
+      expect(tagsFor(id)).toContain("Comeback Artist");
+    }
+  });
+
+  it("still reads an old row written before the rename", () => {
+    expect(canonicalTag("Serial Lobber")).toBe("Lob Specialist");
+    expect(canonicalTag("Comeback King")).toBe("Comeback Artist");
+    expect(canonicalTag("Dink Master")).toBe("Dink Master");
+  });
+
+  it("moves the rows that were already saved", () => {
+    const sql = fs.readFileSync(
+      path.resolve(process.cwd(), "drizzle/0015_rapid_kang.sql"),
+      "utf8",
+    );
+    expect(sql).toMatch(/UPDATE "skill_endorsements" SET "tag" = 'Lob Specialist'/);
+    expect(sql).toMatch(/UPDATE "skill_endorsements" SET "tag" = 'Comeback Artist'/);
+    /* And an index a (sport, tag) search can actually use. */
+    expect(sql).toMatch(/CREATE INDEX "skill_endorsements_tag_idx"[\s\S]*?"sport","tag"/);
   });
 });

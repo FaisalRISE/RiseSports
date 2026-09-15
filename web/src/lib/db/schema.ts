@@ -415,6 +415,12 @@ export const people = pgTable(
     /** Spec §6.2 — per partner: matches, wins, avg partner/opponent rating. */
     partnerStats: jsonb("partner_stats").$type<Record<string, unknown>>().notNull().default({}),
     lastPlayedAt: timestamp("last_played_at", { withTimezone: true }),
+    /* Keep other people's endorsements off this person's public surfaces.
+       Nothing in the app could take a tag down except the rater who left it, and
+       making tags visible on the roster without a way to say no is how a label
+       somebody else chose becomes permanent. Honoured in ONE place —
+       lib/skills/tags.ts — so no surface can forget it. */
+    hideTags: boolean("hide_tags").notNull().default(false),
     flags: jsonb("flags").$type<Record<string, unknown>>().notNull().default({}),
 
     /* DUPR is a STARTING REFERENCE, not a mirror. Many players never update it,
@@ -956,6 +962,10 @@ export const skillEndorsements = pgTable(
   },
   (t) => [
     index("skill_endorsements_subject_idx").on(t.subjectPersonId),
+    /* "who is endorsed as Dink Master in pickleball" reads by sport and tag,
+       and the unique index below leads with the subject, so it cannot serve
+       that. Harmless at nought rows; invisible until a tournament weekend. */
+    index("skill_endorsements_tag_idx").on(t.sport, t.tag),
     uniqueIndex("skill_endorsements_one_per_rater_idx")
       .on(t.subjectPersonId, t.raterPersonId, t.sport, t.tag),
   ],

@@ -177,6 +177,114 @@ try {
   );
   ok(/1 person/.test(denied), "and the existing rating is still visible to them");
 
+  console.log("\n== a tag needs THREE people before it leaves the profile ==");
+  /* One tick is attributable — a subject who plays with four people and sees a
+     tag can usually name who said it — and one tick is also all it takes to
+     farm, because identity is a cookie anyone can set. Three independent people
+     saying the same thing is a different claim. */
+  const tagUrl = `${BASE}/people?sport=pb&tag=${encodeURIComponent("Spin Server")}`;
+  await beThem(null);
+  await p.goto(tagUrl); await p.waitForTimeout(800);
+  const oneRater = await text(p);
+  ok(
+    !oneRater.includes(`Vikram ${stamp}`),
+    "one endorsement does not put them on the public tag list",
+  );
+  ok(/Nobody has been endorsed/.test(oneRater), "and the list says so plainly");
+
+  /* Bring in two more people who played them, so three agree. */
+  await p.goto(`${BASE}/t/${slug}/manage`); await p.waitForTimeout(700);
+  await addTeam("Greens");
+  await addTeam("Golds");
+  await addPlayer("Greens", `Nita ${stamp}`, `0773${stamp}`);
+  await addPlayer("Golds", `Omar ${stamp}`, `0774${stamp}`);
+  /* ONE group, so all four play all four. Left at the default this splits into
+     two groups of two and Nita never faces Vikram - which is the eligibility
+     rule working correctly and the test setting itself up wrong. */
+  await p.locator('[data-category="Main"] input[name="groups"]').fill("1");
+  await p.locator('[data-category="Main"] button:has-text("Draw groups & fixtures")').click();
+  await p.waitForTimeout(1600);
+
+  /* Play every fixture so all four have shared a court with each other. */
+  for (let i = 0; i < 10; i++) {
+    const rows = await p.locator('li:has(a:text("Score"))').all();
+    let target = null;
+    for (const row of rows) {
+      const t = await row.textContent().catch(() => "");
+      if (!/·\s*final/.test(t)) { target = row; break; }
+    }
+    if (!target) break;
+    await target.locator('a:text("Score")').click();
+    await p.waitForURL(/\/score\//, { timeout: 20000 });
+    await p.waitForSelector('[aria-label^="Point to"]', { timeout: 20000 });
+    const h = p.locator('[aria-label^="Point to"]').first();
+    for (let k = 0; k < 16; k++) {
+      if (await h.isDisabled().catch(() => true)) break;
+      await h.click().catch(() => {});
+      await p.waitForTimeout(110);
+    }
+    await p.goto(`${BASE}/t/${slug}/manage`); await p.waitForTimeout(400);
+  }
+
+  const nita = await personIdFor(`Nita ${stamp}`);
+  const omar = await personIdFor(`Omar ${stamp}`);
+  ok(!!nita && !!omar, "two more players exist");
+
+  /* Each endorses Vikram with the same tag. */
+  for (const who of [nita, omar]) {
+    await beThem(who);
+    await p.goto(`${BASE}/people/${vikram}`); await p.waitForTimeout(800);
+    const btn = p.locator('button:has-text("Rate "), button:has-text("Change what you said")');
+    if (await btn.count()) {
+      await btn.first().click();
+      await p.waitForTimeout(500);
+      await p.locator('label:has(input[name="tag:Spin Server"])').click();
+      await p.click('form button:has-text("Save")');
+      await p.waitForTimeout(1500);
+    }
+  }
+
+  await beThem(null);
+  await p.goto(`${BASE}/people/${vikram}`); await p.waitForTimeout(900);
+  /* The COUNT, not just the string - one rater also renders "Spin Server". */
+  const chipCount = await p.locator('text=/Spin Server/').first().locator("..").textContent();
+  ok(/Spin Server\s*3/.test((chipCount ?? "").replace(/\s+/g, " ")),
+     `three raters on the profile chip (${(chipCount ?? "").trim().slice(0, 40)})`);
+
+  await p.goto(tagUrl); await p.waitForTimeout(900);
+  const threeRaters = await text(p);
+  ok(
+    threeRaters.includes(`Vikram ${stamp}`),
+    "and THREE puts them on the public tag list",
+  );
+
+  console.log("\n== the filter is a filter ==");
+  const onList = async (url) => {
+    await p.goto(url); await p.waitForTimeout(800);
+    return [...new Set(await p.$$eval('ol li a[href^="/people/"]', (as) =>
+      as.map((a) => a.getAttribute("href"))))];
+  };
+  const everyone = await onList(`${BASE}/people?sport=pb`);
+  const tagged = await onList(tagUrl);
+  ok(tagged.length > 0 && tagged.length < everyone.length,
+     `narrower than the unfiltered list (${tagged.length} of ${everyone.length})`);
+
+  const wrongSport = await onList(`${BASE}/people?sport=ch&tag=${encodeURIComponent("Spin Server")}`);
+  ok(wrongSport.length === 0, "a tag that does not exist in the chosen sport returns NOBODY");
+  const bogus = await onList(`${BASE}/people?sport=pb&tag=NotARealTag`);
+  ok(bogus.length === 0, "and so does an invented one — not everybody");
+
+  console.log("\n== the subject can switch them off ==");
+  await beThem(vikram);
+  await p.goto(`${BASE}/people/${vikram}`); await p.waitForTimeout(800);
+  await p.click('button:has-text("Hide my endorsements")');
+  await p.waitForTimeout(1600);
+  const hidden = await onList(tagUrl);
+  ok(!hidden.includes(`/people/${vikram}`), "hidden means gone from the tag list");
+  await beThem(null);
+  await p.goto(`${BASE}/people/${vikram}`); await p.waitForTimeout(800);
+  ok(/Spin Server/.test(await text(p)), "but still on their own profile");
+
   console.log("\n== errors ==");
   const bad = realErrors(errs);
   ok(bad.length === 0, `no runtime errors: ${JSON.stringify(bad.slice(0, 3))}`);

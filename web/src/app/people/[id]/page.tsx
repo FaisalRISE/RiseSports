@@ -14,6 +14,8 @@ import { mayRate } from "@/lib/skills/eligibility";
 import { myPersonId } from "@/lib/community/me";
 import { SkillRadar } from "@/components/SkillRadar";
 import { RateForm } from "./RateForm";
+import { toggleTagVisibility } from "./actions";
+import { PUBLIC_TAG_THRESHOLD } from "@/lib/skills/tags";
 import { SPORTS, skillsFor, tagsFor, sportOf, DEFAULT_SPORT, type SportId } from "@/lib/sports/registry";
 import { PLACING_LABEL, PLACING_MEDAL } from "@/lib/placings";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
@@ -25,6 +27,13 @@ import { OpenAccessBanner } from "@/components/OpenAccessBanner";
  * number. It is also where the Reliability Index earns its place: a rating
  * built on four games against the same two people should not look like one
  * built on forty. */
+/* Not indexed. These pages list real people — name, gender, the last four
+   digits of a phone number, and now labels other players chose for them — and
+   nobody on them opted in: a `people` row is created by an organiser entering
+   somebody into an event. Playing a match is consent to be scored. It is not
+   consent to be a search result. */
+export const metadata = { robots: { index: false, follow: false } };
+
 export const dynamic = "force-dynamic";
 
 export default async function PersonPage({
@@ -191,7 +200,7 @@ export default async function PersonPage({
           <div className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
             {profile.raters === 0 ? (
               <p className="py-6 text-center text-sm text-neutral-500">
-                Nobody has rated {person.name.split(" ")[0]} yet.
+                No peer ratings in {sportOf(sport).name} yet.
               </p>
             ) : (
               <div className="flex justify-center text-neutral-400">
@@ -200,15 +209,49 @@ export default async function PersonPage({
             )}
 
             {profile.tags.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-2 border-t border-neutral-800 pt-3">
-                {profile.tags.map((t) => (
-                  <span key={t.tag}
-                    className="inline-flex items-center gap-1 rounded-full border border-neutral-700 px-3 py-1 text-[11px] font-bold text-neutral-300">
-                    {t.tag}
-                    <span className="font-mono text-neutral-500">{t.count}</span>
-                  </span>
-                ))}
+              <div className="mt-3 border-t border-neutral-800 pt-3">
+                <div className="flex flex-wrap gap-2">
+                  {profile.tags.map((t) => (
+                    /* The count is shown HERE and nowhere else — this is the
+                       page about this person, where the detail belongs. The
+                       link only goes somewhere useful once enough people agree,
+                       so below the threshold it is not a link. */
+                    t.count >= PUBLIC_TAG_THRESHOLD ? (
+                      <Link key={t.tag} href={`/people?sport=${sport}&tag=${encodeURIComponent(t.tag)}`}
+                        className="inline-flex items-center gap-1 rounded-full border border-neutral-600 px-3 py-1 text-[11px] font-bold text-neutral-200 hover:border-neutral-400">
+                        {t.tag}
+                        <span className="font-mono text-neutral-500">{t.count}</span>
+                      </Link>
+                    ) : (
+                      <span key={t.tag}
+                        className="inline-flex items-center gap-1 rounded-full border border-neutral-700 px-3 py-1 text-[11px] font-bold text-neutral-300">
+                        {t.tag}
+                        <span className="font-mono text-neutral-500">{t.count}</span>
+                      </span>
+                    )
+                  ))}
+                </div>
+                <p className="mt-2 text-[11px] text-neutral-500">
+                  {person.hideTags
+                    ? "Hidden from lists — these show on this page only."
+                    : `Shown on player lists once ${PUBLIC_TAG_THRESHOLD} people agree.`}
+                </p>
               </div>
+            )}
+
+            {/* Your own page: the one control anybody has over a label another
+                player chose for them. */}
+            {!permission.allowed && permission.reason === "self" && profile.tags.length > 0 && (
+              <form
+                action={toggleTagVisibility.bind(null, id, !person.hideTags)}
+                className="mt-3 border-t border-neutral-800 pt-3"
+              >
+                <button className="text-[11px] font-bold text-neutral-500 hover:text-neutral-300">
+                  {person.hideTags
+                    ? "Show my endorsements on player lists"
+                    : "Hide my endorsements from player lists"}
+                </button>
+              </form>
             )}
 
             <div className="mt-4 border-t border-neutral-800 pt-3">

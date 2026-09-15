@@ -848,6 +848,54 @@ Rating**, which is measured from results; this is opinion and is labelled as suc
   finger hits. Playwright's `.check()` on the input fails with "label intercepts pointer
   events"; click the label, which is what a user does.
 
+### Making endorsements visible, and what had to come with it (2026-09-15)
+
+Tags are now searchable on the roster and shown as chips on a row. Three guards went in at the
+same time, because every part of the original plan removed obscurity while adding no control.
+
+- **THREE distinct raters before a tag leaves the profile** (`PUBLIC_TAG_THRESHOLD`). One tick
+  is close to attributable — only court-mates may endorse, and a subject's court-mates are on
+  the same page — and one tick is also all it takes to farm, since identity is a cookie anyone
+  can set (`chooseIdentity` accepts any person id). Counts appear on the profile and **nowhere
+  else**: a number on a list invites a leaderboard of adjectives.
+- **`people.hideTags`** — the only control anybody had over a label another player chose for
+  them was the rater un-ticking it. Honoured inside `lib/skills/tags.ts` so no surface can
+  forget, including the filter predicate (or the filter would find someone whose chips the list
+  then refuses to draw).
+- **`robots: noindex`** on `/people` and `/people/[id]`. These list real people — name, gender,
+  the last four digits of a phone, and now other people's labels — and nobody on them opted in;
+  a `people` row is created by an organiser. Playing a match is consent to be scored, not to be
+  a search result. There was no crawl guard anywhere in the app.
+
+- **Two tags renamed while it was still cheap**: `Serial Lobber` → `Lob Specialist` ("serial" is
+  how you describe an offender, and repeated lobbing is a standing rec-play grievance) and
+  `Comeback King` → `Comeback Artist` (the only gendered noun across all seven vocabularies, in
+  an app with a Women filter). Rows store the tag TEXT, so `0015` rewrites the saved ones and
+  `canonicalTag` still reads an older row.
+- **A tag needs a SPORT with it.** Four of the fifteen strings appear in all seven sports and
+  the rest mean different things in each, so a chip with no sport is ambiguous by construction.
+  Chips render only once a sport is chosen; the filter refuses without one.
+- **The predicate is a correlated EXISTS in the WHERE, before the LIMIT.** A join multiplies the
+  person row by their endorsements; filtering in JavaScript afterwards searches only the hundred
+  highest-rated people and silently drops anyone below — no error, and a plausible-looking list.
+- An absent tag and an *unusable* one take different paths: absent → no predicate, invalid →
+  `sql\`false\``. The `.filter(Boolean)` idiom makes "silently everybody" the default outcome of
+  a dropped predicate, which is the trap this file records twice already.
+
+Two bugs found in passing and fixed, both pre-existing:
+- `ratedSports` had **no ORDER BY**, so the profile's default sport could change between two
+  loads of the same page; and it read `skillRatings` only, making a tags-only sport unreachable.
+- The roster's `ORDER BY riseBest DESC` had **no `nulls last`** — Postgres sorts DESC as NULLS
+  FIRST and `rise_best` is nullable, so an unrated person headed the leaderboard showing a dash
+  — and no tie-break, so the hundred-row cut was whatever the planner felt like.
+
+Found by a five-agent survey of the legacy behaviour and an adversarial review of the plan; the
+abuse pass is what produced the three guards above. Two things it turned up about the legacy app
+worth recording: its "played against" gate (`ne`, app.source.js:6718) is **never called**, and
+its "Play vs to rate" hint sits behind a logically contradictory condition, so the rule Faisal
+asked for has no working implementation there. And the legacy picker accepts **free-text tags**
+which then leak into every other player's suggestions — deliberately not ported.
+
 Next areas by size: engines & draws (~30 left), foundations (29), the UI kit (~18).
 
 ## Access: the site is deliberately open, and the switch is a trap

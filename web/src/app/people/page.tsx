@@ -1,11 +1,12 @@
 import Link from "next/link";
-import { and, count, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
+import { and, count, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { people, players, ratingHistory } from "@/lib/db/schema";
 import { getTier } from "@/lib/rating";
 import { maskPhone, normalisePhone } from "@/lib/people";
 import { reliabilityForPerson } from "@/lib/rating/reliability";
-import { SPORTS, formatLabel, ratingKey, sportOf, type SportId } from "@/lib/sports/registry";
+import { SPORTS, formatLabel, ratingKey, sportOf, tagsFor, canonicalTag, type SportId } from "@/lib/sports/registry";
+import { topTagsFor, endorsedAs, PUBLIC_TAG_THRESHOLD } from "@/lib/skills/tags";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 
 /* The roster — every player RISE knows about, and what their rating is.
@@ -13,6 +14,13 @@ import { OpenAccessBanner } from "@/components/OpenAccessBanner";
  * This is the reference the whole thing exists to be: an organiser looking up
  * someone before an event, or checking that the Rahul they just added is the
  * Rahul who played last month. */
+/* Not indexed. These pages list real people — name, gender, the last four
+   digits of a phone number, and now labels other players chose for them — and
+   nobody on them opted in: a `people` row is created by an organiser entering
+   somebody into an event. Playing a match is consent to be scored. It is not
+   consent to be a search result. */
+export const metadata = { robots: { index: false, follow: false } };
+
 export const dynamic = "force-dynamic";
 
 const bandOf = (score: number | null) =>
@@ -21,9 +29,10 @@ const bandOf = (score: number | null) =>
 export default async function PeoplePage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; sport?: string; format?: string; gender?: string }>;
+  searchParams: Promise<{ q?: string; sport?: string; format?: string; gender?: string; tag?: string }>;
 }) {
-  const { q, sport: sportParam, format: formatParam, gender: genderParam } = await searchParams;
+  const { q, sport: sportParam, format: formatParam, gender: genderParam, tag: tagParam } =
+    await searchParams;
   const query = (q ?? "").trim();
   const phone = normalisePhone(query);
 
@@ -37,6 +46,19 @@ export default async function PeoplePage({
     sport && sportOf(sport).formats.includes(formatParam ?? "") ? formatParam! : null;
   const gender = genderParam === "M" || genderParam === "F" ? genderParam : null;
   const key = sport && format ? ratingKey(sport, format) : null;
+
+  /* A tag needs a SPORT with it. Four of the fifteen strings appear in all seven
+     sports and the rest mean different things in each, so "Wall" on its own
+     names nothing — and the row chips would be unreadable without the sport to
+     read them against.
+     An absent tag and an unusable one take different paths ON PURPOSE: absent
+     means no predicate, while a tag that is not in this sport's list means an
+     EMPTY result. The `.filter(Boolean)` idiom below makes "silently everybody"
+     the default outcome of a dropped predicate, which is the trap CLAUDE.md
+     records twice. */
+  const askedTag = tagParam ? canonicalTag(tagParam) : null;
+  const tag = sport && askedTag && tagsFor(sport).includes(askedTag) ? askedTag : null;
+  const tagUnusable = !!askedTag && !tag;
 
   /* Read out of the JSONB by key. `->>` gives text, so the cast is what makes
      the sort numeric — without it 9 sorts after 1000. */
@@ -60,13 +82,28 @@ export default async function PeoplePage({
        is not worth a difference that would only ever show up in production, on
        a page that returns an empty list either way when nobody is rated. */
     keyed ? sql`${people.riseRatings} -> ${key} is not null` : undefined,
+    /* Correlated EXISTS, inside the WHERE and therefore BEFORE the limit. A
+       join would multiply the person row by their endorsements; a filter in
+       JavaScript afterwards would only search the hundred highest-rated people
+       and silently drop an endorsed player ranked below them. */
+    tag ? endorsedAs(sport!, tag) : undefined,
+    /* A tag that cannot exist in this sport returns nobody rather than
+       everybody. */
+    tagUnusable ? sql`false` : undefined,
   ].filter(Boolean);
 
   const found = await db
     .select()
     .from(people)
     .where(filters.length ? and(...filters) : undefined)
-    .orderBy(keyed ? desc(keyed) : desc(people.riseBest))
+    /* `nulls last` because Postgres sorts DESC as NULLS FIRST, and `rise_best`
+       is nullable — without it an unrated person heads the leaderboard showing
+       a dash. The name is a tie-break so the hundred-row cut is stable rather
+       than whatever the planner felt like. Both were wrong before any of this. */
+    .orderBy(
+      keyed ? sql`${keyed} desc nulls last` : sql`${people.riseBest} desc nulls last`,
+      people.name,
+    )
     .limit(100);
 
   const ids = found.map((p) => p.id);
@@ -96,6 +133,12 @@ export default async function PeoplePage({
       : Promise.resolve([]),
   ]);
 
+  /* Chips only where a sport has been chosen — see lib/skills/tags for why a
+     tag without its sport is ambiguous by construction. One grouped query for
+     the whole page, and the threshold and the hide flag are applied in there so
+     this screen cannot forget either. */
+  const chips = sport ? await topTagsFor(ids, sport) : new Map<string, string[]>();
+
   const eventsBy = new Map(counts.map((c) => [c.personId, Number(c.n)]));
   const rows = found.map((person) => ({
     person,
@@ -115,8 +158,13 @@ export default async function PeoplePage({
           </Link>
           <h1 className="mt-2 text-2xl font-black tracking-tight">Players</h1>
           <p className="text-[11px] font-bold uppercase tracking-widest text-neutral-500">
-            {key
-              ? `${sportOf(sport).name} · ${formatLabel(format!)}${gender ? ` · ${gender === "F" ? "Women" : "Men"}` : ""}`
+            {sport
+              ? [
+                  sportOf(sport).name,
+                  format ? formatLabel(format) : null,
+                  tag ? `endorsed “${tag}”` : null,
+                  gender ? (gender === "F" ? "Women" : "Men") : null,
+                ].filter(Boolean).join(" · ")
               : "RISE Ratings across every event"}
           </p>
         </header>
@@ -148,6 +196,13 @@ export default async function PeoplePage({
                 <option key={f} value={f}>{formatLabel(f)}</option>
               ))}
             </select>
+            <select name="tag" defaultValue={tag ?? ""} disabled={!sport}
+              className="rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-xs disabled:opacity-40">
+              <option value="">Any endorsement</option>
+              {(sport ? tagsFor(sport) : []).map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
             <select name="gender" defaultValue={gender ?? ""}
               className="rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-xs">
               <option value="">Everyone</option>
@@ -157,7 +212,7 @@ export default async function PeoplePage({
             <button className="rounded-lg border border-neutral-600 px-3 py-2 text-xs font-bold text-neutral-300">
               Apply
             </button>
-            {(key || gender || query) && (
+            {(key || gender || query || tag || sport) && (
               <Link href="/people" className="self-center text-[11px] font-bold text-neutral-500 hover:text-neutral-300">
                 clear
               </Link>
@@ -169,11 +224,26 @@ export default async function PeoplePage({
               would compare numbers that were never on the same scale.
             </p>
           )}
+          {!sport && (
+            <p className="text-[11px] text-neutral-500">
+              Endorsements are per sport, so pick one to search by them.
+            </p>
+          )}
+          {tag && (
+            <p className="text-[11px] text-neutral-500">
+              Showing players {PUBLIC_TAG_THRESHOLD} or more people have endorsed as “{tag}”.
+              One person&apos;s opinion stays on their profile.
+            </p>
+          )}
         </form>
 
         {rows.length === 0 ? (
           <p className="rounded-xl border border-dashed border-neutral-800 p-8 text-center text-sm text-neutral-500">
-            {key
+            {tag
+              ? `Nobody has been endorsed as “${tag}” by ${PUBLIC_TAG_THRESHOLD} people yet.`
+              : tagUnusable
+              ? "That endorsement does not exist in this sport."
+              : key
               ? `Nobody has a ${formatLabel(format!)} rating in ${sportOf(sport).name} yet.`
               : query
                 ? `Nobody matching "${query}".`
@@ -200,6 +270,22 @@ export default async function PeoplePage({
                         {events} {events === 1 ? "event" : "events"}
                         {tier ? ` · ${tier.emoji} ${tier.name}` : ""}
                       </div>
+                      {/* No count beside a chip: a number out here invites a
+                          leaderboard of adjectives, and the detail belongs on
+                          the profile. Nothing at all when there are none —
+                          an empty state here would line up absences down the
+                          page, and the people with no chips are the ones with
+                          the fewest regular partners. */}
+                      {(chips.get(person.id) ?? []).length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {(chips.get(person.id) ?? []).map((t) => (
+                            <span key={t}
+                              className="rounded-full border border-neutral-700 px-2 py-0.5 text-[10px] font-bold text-neutral-400">
+                              {t}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     {band && (
                       <span

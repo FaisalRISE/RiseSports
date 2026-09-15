@@ -11,7 +11,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { skillEndorsements, skillRatings } from "@/lib/db/schema";
+import { people, skillEndorsements, skillRatings } from "@/lib/db/schema";
 import { skillsFor, tagsFor, type SportId } from "@/lib/sports/registry";
 import { mayRate, type RatePermission } from "./eligibility";
 
@@ -82,7 +82,13 @@ export async function skillProfile(
   return {
     sport,
     skills,
-    raters: new Set(rows.map((r) => r.raterPersonId)).size,
+    /* Everyone who has said ANYTHING — scores or tags. Counting only scorers
+       made a tags-only profile print "not rated yet" directly above a row of
+       chips. */
+    raters: new Set([
+      ...rows.map((r) => r.raterPersonId),
+      ...tagRows.map((r) => r.raterPersonId),
+    ]).size,
     tags: [...tally.entries()]
       .map(([tag, count]) => ({ tag, count }))
       .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag)),
@@ -227,13 +233,34 @@ export async function saveSkillRating(input: {
   return { ok: true, skills: scores.length, tags: tags.length };
 }
 
-/** Which sports this person has been rated in, for the picker. */
+/**
+ * Which sports this person has been rated in, for the picker.
+ *
+ * Ordered, and over BOTH tables. Without the ORDER BY Postgres is free to
+ * return the rows in any order, so the profile's default sport — `already[0]` —
+ * could differ between two loads of the same page and the chart would change
+ * sport on a refresh. And reading only `skillRatings` made a sport with
+ * endorsements but no scores unreachable through the picker.
+ */
 export async function ratedSports(subjectPersonId: string): Promise<SportId[]> {
-  const rows = await db
-    .select({ sport: skillRatings.sport })
-    .from(skillRatings)
-    .where(eq(skillRatings.subjectPersonId, subjectPersonId));
-  return [...new Set(rows.map((r) => r.sport))];
+  const [scored, tagged] = await Promise.all([
+    db
+      .select({ sport: skillRatings.sport })
+      .from(skillRatings)
+      .where(eq(skillRatings.subjectPersonId, subjectPersonId))
+      .orderBy(skillRatings.sport),
+    db
+      .select({ sport: skillEndorsements.sport })
+      .from(skillEndorsements)
+      .where(eq(skillEndorsements.subjectPersonId, subjectPersonId))
+      .orderBy(skillEndorsements.sport),
+  ]);
+  return [...new Set([...scored, ...tagged].map((r) => r.sport))].sort();
+}
+
+/** Turn this person's tags off, or back on, everywhere but their own profile. */
+export async function setHideTags(personId: string, hide: boolean): Promise<void> {
+  await db.update(people).set({ hideTags: hide }).where(eq(people.id, personId));
 }
 
 /** Remove a rater's whole view of somebody — used when a profile is merged. */

@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { myPersonId } from "@/lib/community/me";
-import { saveSkillRating, MIN_SCORE, MAX_SCORE } from "@/lib/skills/store";
+import { saveSkillRating, setHideTags, MIN_SCORE, MAX_SCORE } from "@/lib/skills/store";
 import { skillsFor, tagsFor, SPORTS, type SportId } from "@/lib/sports/registry";
 
 /* Rating somebody's skills.
@@ -58,4 +58,38 @@ export async function rateSkills(
           (res.tags ? ` and ${res.tags} tag${res.tags === 1 ? "" : "s"}` : "") +
           ". Rating again replaces what you said, it does not add to it.",
   };
+}
+
+/**
+ * Switch your own endorsements off everywhere but your profile.
+ *
+ * Only for YOURSELF: the person id comes from the cookie and the form's subject
+ * has to match it, so this cannot be used to silence somebody else's profile.
+ * That check is as strong as the cookie is, which is a name badge until sign-in
+ * lands — but the rule is written to be right the day it can be trusted, and it
+ * is the only control anybody has over a label another player chose for them.
+ */
+export async function setTagVisibility(
+  subjectPersonId: string,
+  hide: boolean,
+): Promise<RateResult> {
+  const subject = z.string().min(1).max(64).parse(subjectPersonId);
+  const me = await myPersonId();
+  if (!me || me !== subject) return { ok: false, error: "You can only change your own." };
+
+  await setHideTags(subject, hide);
+  revalidatePath(`/people/${subject}`);
+  revalidatePath("/people");
+  return {
+    ok: true,
+    message: hide
+      ? "Your endorsements are hidden from lists. They are still on your profile."
+      : "Your endorsements are shown again.",
+  };
+}
+
+/** Form-shaped wrapper: a `<form action>` must resolve to void. The page
+ *  revalidates, so the flipped button label is the feedback. */
+export async function toggleTagVisibility(subjectPersonId: string, hide: boolean): Promise<void> {
+  await setTagVisibility(subjectPersonId, hide);
 }
