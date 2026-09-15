@@ -803,7 +803,52 @@ each player's profile.
   - `formatLabel` moved from a private helper in the tournament ratings page into the registry
     — the moment a second caller wanted the same six strings.
 
-Next areas by size: engines & draws (~30 left), foundations (29), the UI kit (~20).
+### Peer ratings and endorsements (2026-09-15)
+
+`lib/skills/`, the radar on a profile, `e2e/skills.mjs`. What other players say you are good
+at — thirteen skills and fifteen tags per sport, from the registry. **It never touches the RISE
+Rating**, which is measured from results; this is opinion and is labelled as such on screen.
+
+- **Who may rate.** Faisal, 2026-09-15: *"only people who have played against you and or with
+  you or in your network (a feature to be added later) will be able to rate you and endorse
+  your skills."* So the rule is SHARED A COURT, either side of the net — partners included,
+  which is the "with you" half. The network is not built and is not faked; when it lands it
+  becomes a second way to qualify, not a replacement.
+  - "Played" means a match that has been **scored**. A fixture on the order of play is two
+    names on a sheet, and a draw published a week early would otherwise open up ratings for
+    matches nobody has played.
+  - **Both halves of the app count.** Tournament matches go through teams (`players.teamId`);
+    community line-ups are person ids already. Leaving community out would have made the
+    feature look broken for the people using the app most.
+- **One row per rater, not a running average.** The legacy app folds each rating into
+  `skills` + `skillRatingsCount`, which cannot tell two submissions from one person apart from
+  two people's — so anyone can lift their own numbers by pressing Save repeatedly. A UNIQUE
+  index on (subject, rater, sport, skill) makes a second rating REPLACE the first. The
+  averages are computed on read, so a removed rater simply stops counting.
+  - Tags are a set: saving replaces that rater's selection, scoped to them, so un-ticking means
+    something.
+- **The database enforces the rules too**, because a Server Action is a public endpoint: CHECKs
+  for `score BETWEEN 1 AND 5` and `rater <> subject` on both tables, hand-written into the
+  migration next to the RLS (drizzle-kit generates none of them). `schema.test.ts` proves each
+  one by trying to insert a row that breaks it.
+- **The radar is hand-drawn SVG on the server** — no library, no client bundle, no hydration
+  boundary for thirteen points of trigonometry. Labels are **anchored by position** (start on
+  the right, end on the left, middle top and bottom) or they collide with the shape; an unrated
+  axis is drawn at zero rather than dropped, because twelve points make a different shape and a
+  reader cannot tell a missing axis from a weak one.
+- **The refusal is stated, not hidden.** A control that is simply absent reads as a bug; a
+  reason reads as a rule. Three different messages for "who are you", "that is you" and "play
+  them first".
+- **The honest limit**: this answers *may this person rate that one*. Whether the browser is
+  really that person is the `rs_me` cookie's problem, and it is a name badge until sign-in
+  lands. The guard is written to be right the day the cookie can be trusted.
+- The e2e is differential for the same reason the scheduler's is: an opponent CAN, a stranger
+  CANNOT and is told why, and rating twice still reads "1 person".
+- **Radio inputs are `sr-only` behind their labels** — the accessible pattern, and what a
+  finger hits. Playwright's `.check()` on the input fails with "label intercepts pointer
+  events"; click the label, which is what a user does.
+
+Next areas by size: engines & draws (~30 left), foundations (29), the UI kit (~18).
 
 ## Access: the site is deliberately open, and the switch is a trap
 

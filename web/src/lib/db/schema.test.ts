@@ -50,7 +50,8 @@ describe("the generated migration applies to a real Postgres", () => {
       "ledger_books", "ledger_entries", "ledger_members", "ledger_payments",
       "matches", "people", "players",
       "rating_history", "rating_ledger", "registration_players", "registrations",
-      "scorer_grants", "teams", "tournaments", "users",
+      "scorer_grants", "skill_endorsements", "skill_ratings",
+      "teams", "tournaments", "users",
       "venue_bookings", "venues",
     ]);
   });
@@ -362,6 +363,79 @@ describe("a rating record always names the match that caused it", () => {
     await expect(
       db.insert(schema.ratingHistory).values(historyRow({ communityMatchId: cm.id }) as never),
     ).rejects.toThrow();
+  });
+});
+
+describe("peer ratings, enforced by the database", () => {
+  /* The rules are also checked in lib/skills, but that is a Server Action and
+     a Server Action is a public endpoint. These CHECKs are the floor that holds
+     however the row arrives. */
+  const person = async (id: string, name: string) => {
+    await db.insert(schema.people).values({ id, name } as never).onConflictDoNothing();
+    return id;
+  };
+
+  it("refuses a score outside the scale", async () => {
+    const a = await person("sk-a", "Rater");
+    const b = await person("sk-b", "Subject");
+    for (const score of [0, 6, -1, 99]) {
+      await expect(
+        db.insert(schema.skillRatings).values({
+          id: `bad-${score}`, subjectPersonId: b, raterPersonId: a,
+          sport: "pb", skill: "Serve", score,
+        } as never),
+      ).rejects.toThrow();
+    }
+  });
+
+  it("accepts one inside it", async () => {
+    await expect(
+      db.insert(schema.skillRatings).values({
+        id: "good-1", subjectPersonId: "sk-b", raterPersonId: "sk-a",
+        sport: "pb", skill: "Serve", score: 4,
+      } as never),
+    ).resolves.toBeDefined();
+  });
+
+  it("refuses a self-rating, which is not a peer review", async () => {
+    await expect(
+      db.insert(schema.skillRatings).values({
+        id: "self-1", subjectPersonId: "sk-a", raterPersonId: "sk-a",
+        sport: "pb", skill: "Serve", score: 5,
+      } as never),
+    ).rejects.toThrow();
+    await expect(
+      db.insert(schema.skillEndorsements).values({
+        id: "self-2", subjectPersonId: "sk-a", raterPersonId: "sk-a",
+        sport: "pb", tag: "Wall",
+      } as never),
+    ).rejects.toThrow();
+  });
+
+  it("gives one rater ONE voice per skill", async () => {
+    /* The whole reason the rows are kept individually instead of folded into a
+       running average: without this index, pressing Save twice counts twice. */
+    await expect(
+      db.insert(schema.skillRatings).values({
+        id: "dupe-1", subjectPersonId: "sk-b", raterPersonId: "sk-a",
+        sport: "pb", skill: "Serve", score: 1,
+      } as never),
+    ).rejects.toThrow();
+  });
+
+  it("but lets the same rater score a DIFFERENT skill, and another sport", async () => {
+    await expect(
+      db.insert(schema.skillRatings).values({
+        id: "ok-2", subjectPersonId: "sk-b", raterPersonId: "sk-a",
+        sport: "pb", skill: "Dink", score: 5,
+      } as never),
+    ).resolves.toBeDefined();
+    await expect(
+      db.insert(schema.skillRatings).values({
+        id: "ok-3", subjectPersonId: "sk-b", raterPersonId: "sk-a",
+        sport: "bd", skill: "Serve", score: 5,
+      } as never),
+    ).resolves.toBeDefined();
   });
 });
 

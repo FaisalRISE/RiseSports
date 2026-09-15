@@ -9,6 +9,12 @@ import { detectSandbagging, sandbaggingNote } from "@/lib/rating/sandbagging";
 import { maskPhone } from "@/lib/people";
 import { honoursFor } from "@/lib/placings/honours";
 import { partnersOf, RATE_THRESHOLD } from "@/lib/rating/partners";
+import { skillProfile, myRatings, ratedSports } from "@/lib/skills/store";
+import { mayRate } from "@/lib/skills/eligibility";
+import { myPersonId } from "@/lib/community/me";
+import { SkillRadar } from "@/components/SkillRadar";
+import { RateForm } from "./RateForm";
+import { SPORTS, skillsFor, tagsFor, sportOf, DEFAULT_SPORT, type SportId } from "@/lib/sports/registry";
 import { PLACING_LABEL, PLACING_MEDAL } from "@/lib/placings";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 
@@ -21,8 +27,15 @@ import { OpenAccessBanner } from "@/components/OpenAccessBanner";
  * built on forty. */
 export const dynamic = "force-dynamic";
 
-export default async function PersonPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function PersonPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ sport?: string }>;
+}) {
   const { id } = await params;
+  const { sport: sportParam } = await searchParams;
 
   const [person] = await db.select().from(people).where(eq(people.id, id)).limit(1);
   if (!person) notFound();
@@ -63,6 +76,23 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
   /* Written on every rated match since the engine was ported and shown nowhere
      until now — see lib/rating/partners. */
   const partners = await partnersOf(person.partnerStats);
+
+  /* ── Peer ratings ─────────────────────────────────────────────────────
+   * Thirteen skills, and they differ per sport, so the chart is always OF a
+   * sport. Defaults to one this person has actually been rated in rather than
+   * to pickleball, so a chess player's profile does not open on an empty
+   * pickleball radar. */
+  const already = await ratedSports(id);
+  const sport: SportId =
+    (sportParam && sportParam in SPORTS ? (sportParam as SportId) : null) ??
+    already[0] ??
+    DEFAULT_SPORT;
+
+  const [profile, me] = await Promise.all([skillProfile(id, sport), myPersonId()]);
+  const permission = await mayRate(me, id);
+  const mine = permission.allowed && me
+    ? await myRatings(id, me, sport)
+    : { scores: {}, tags: [] };
 
   const names = await opponentNames(history);
   const tier = person.riseBest == null ? null : getTier(person.riseBest);
@@ -124,6 +154,85 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
                 ? `entered ${person.duprEnteredAt.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`
                 : "not provided"}
               {person.seedSource === "dupr" && " · used to seed"}
+            </div>
+          </div>
+        </section>
+
+        {/* What other players say. Never feeds the RISE Rating — that is
+            measured from results, and this is opinion. */}
+        <section>
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <h2 className="text-lg font-black">Skills</h2>
+            <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-500">
+              {profile.raters === 0
+                ? "not rated yet"
+                : `${profile.raters} ${profile.raters === 1 ? "person" : "people"}`}
+            </span>
+            {already.length > 1 && (
+              <div className="ml-auto flex gap-1">
+                {already.map((sp) => (
+                  <Link key={sp} href={`/people/${id}?sport=${sp}`}
+                    className={`rounded-lg border px-2 py-1 text-[11px] font-bold ${
+                      sp === sport
+                        ? "border-amber-400 bg-amber-400 text-amber-950"
+                        : "border-neutral-700 text-neutral-400"
+                    }`}>
+                    {sportOf(sp).emoji} {sportOf(sp).name}
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
+          <p className="mb-3 text-[12px] text-neutral-500">
+            {sportOf(sport).name} · rated by people they have played with or against. This is
+            opinion, and it never moves the RISE Rating.
+          </p>
+
+          <div className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
+            {profile.raters === 0 ? (
+              <p className="py-6 text-center text-sm text-neutral-500">
+                Nobody has rated {person.name.split(" ")[0]} yet.
+              </p>
+            ) : (
+              <div className="flex justify-center text-neutral-400">
+                <SkillRadar skills={profile.skills} compare={mine.scores} />
+              </div>
+            )}
+
+            {profile.tags.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2 border-t border-neutral-800 pt-3">
+                {profile.tags.map((t) => (
+                  <span key={t.tag}
+                    className="inline-flex items-center gap-1 rounded-full border border-neutral-700 px-3 py-1 text-[11px] font-bold text-neutral-300">
+                    {t.tag}
+                    <span className="font-mono text-neutral-500">{t.count}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            <div className="mt-4 border-t border-neutral-800 pt-3">
+              {permission.allowed ? (
+                <RateForm
+                  subjectPersonId={id}
+                  subjectName={person.name}
+                  sport={sport}
+                  sportName={sportOf(sport).name}
+                  skills={skillsFor(sport)}
+                  tags={tagsFor(sport)}
+                  mine={mine}
+                />
+              ) : (
+                /* Said out loud rather than hidden. A control that is simply
+                   absent reads as a bug; a reason reads as a rule. */
+                <p className="text-[12px] text-neutral-500">
+                  {permission.reason === "self"
+                    ? "You cannot rate yourself."
+                    : permission.reason === "anonymous"
+                      ? "Pick who you are on the Play tab to rate people you have played."
+                      : `You can rate ${person.name.split(" ")[0]} once you have played with or against them.`}
+                </p>
+              )}
             </div>
           </div>
         </section>

@@ -900,6 +900,67 @@ export const ledgerPayments = pgTable(
   ],
 );
 
+/* ── Peer ratings and endorsements ────────────────────────────────────────
+ *
+ * What other players say you are good at. The RISE Rating measures results;
+ * this is the other half — "great hands at the net", "always a good partner" —
+ * and it never touches the rating.
+ *
+ * ── One row per rater, not a running average ─────────────────────────────
+ * The legacy app keeps an average and a count on the player
+ * (`skills`, `skillRatingsCount`) and folds each new rating in. That cannot
+ * tell two ratings from one person apart from two people's, so anybody can lift
+ * their own numbers by submitting repeatedly, and there is no way to find out
+ * afterwards or take it back.
+ *
+ * A row per (subject, rater, sport, skill) with a UNIQUE index makes a second
+ * rating from the same person REPLACE their first. One person, one voice —
+ * enforced by the database rather than by the screen.
+ *
+ * `sport` is on the row because the thirteen skills differ per sport: a
+ * pickleball dink and a chess endgame are not the same axis.
+ */
+export const skillRatings = pgTable(
+  "skill_ratings",
+  {
+    id: id(),
+    subjectPersonId: text("subject_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+    raterPersonId: text("rater_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+    sport: text("sport").$type<SportId>().notNull(),
+    /** One of SPORTS[sport].skills. */
+    skill: text("skill").notNull(),
+    /** 1-5, the legacy scale, with 3 as the neutral default. */
+    score: integer("score").notNull(),
+    createdAt: created(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("skill_ratings_subject_idx").on(t.subjectPersonId),
+    /* The anti-inflation guard. Rating the same skill again updates this row. */
+    uniqueIndex("skill_ratings_one_per_rater_idx")
+      .on(t.subjectPersonId, t.raterPersonId, t.sport, t.skill),
+  ],
+);
+
+/** A tag somebody put on you ("Dink Master"). Same one-per-rater rule. */
+export const skillEndorsements = pgTable(
+  "skill_endorsements",
+  {
+    id: id(),
+    subjectPersonId: text("subject_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+    raterPersonId: text("rater_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+    sport: text("sport").$type<SportId>().notNull(),
+    /** One of SPORTS[sport].tags. */
+    tag: text("tag").notNull(),
+    createdAt: created(),
+  },
+  (t) => [
+    index("skill_endorsements_subject_idx").on(t.subjectPersonId),
+    uniqueIndex("skill_endorsements_one_per_rater_idx")
+      .on(t.subjectPersonId, t.raterPersonId, t.sport, t.tag),
+  ],
+);
+
 export type Tournament = typeof tournaments.$inferSelect;
 export type Team = typeof teams.$inferSelect;
 export type Group = typeof groups.$inferSelect;
@@ -924,3 +985,5 @@ export type LedgerBookRow = typeof ledgerBooks.$inferSelect;
 export type LedgerMemberRow = typeof ledgerMembers.$inferSelect;
 export type LedgerEntryRow = typeof ledgerEntries.$inferSelect;
 export type LedgerPaymentRow = typeof ledgerPayments.$inferSelect;
+export type SkillRating = typeof skillRatings.$inferSelect;
+export type SkillEndorsement = typeof skillEndorsements.$inferSelect;
