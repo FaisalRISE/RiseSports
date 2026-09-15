@@ -44,6 +44,18 @@ function scrub(text: string): string {
   return text.replace(/\/\/[^@\s/]+@/g, "//***@");
 }
 
+/* Drizzle rethrows a driver failure wrapped in its own error, whose message is
+   always "Failed query: <sql>" — the SQL we already knew, and nothing about why
+   it failed. The driver's error, with the code that names the fault, is on
+   `cause`. Walk to the end of that chain. */
+function rootCause(e: unknown): { code?: string; errno?: string; message?: string } {
+  let cur = e as { cause?: unknown; code?: string; errno?: string; message?: string };
+  for (let hop = 0; hop < 5 && cur?.cause; hop++) {
+    cur = cur.cause as typeof cur;
+  }
+  return cur ?? {};
+}
+
 export async function GET() {
   const started = Date.now();
   const give_up = Symbol("timeout");
@@ -80,14 +92,15 @@ export async function GET() {
     );
   } catch (e) {
     const ms = Date.now() - started;
-    const err = e as { code?: string; errno?: string; message?: string };
+    const err = rootCause(e);
+    const wrapper = (e as { message?: string }).message ?? String(e);
     return Response.json(
       {
         ok: false,
         stage: "connect",
         reason: "error",
         code: err.code ?? err.errno ?? null,
-        message: scrub(err.message ?? String(e)).slice(0, 300),
+        message: scrub(err.message ?? wrapper).slice(0, 300),
         ms,
       },
       { status: 503, headers: { "cache-control": "no-store" } },
