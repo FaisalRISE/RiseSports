@@ -11,7 +11,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { people, skillEndorsements, skillRatings } from "@/lib/db/schema";
+import { people, skillEndorsements, skillRatings, type EndorsementPolicy } from "@/lib/db/schema";
 import { skillsFor, tagsFor, type SportId } from "@/lib/sports/registry";
 import { mayRate, type RatePermission } from "./eligibility";
 
@@ -258,9 +258,12 @@ export async function ratedSports(subjectPersonId: string): Promise<SportId[]> {
   return [...new Set([...scored, ...tagged].map((r) => r.sport))].sort();
 }
 
-/** Turn this person's tags off, or back on, everywhere but their own profile. */
-export async function setHideTags(personId: string, hide: boolean): Promise<void> {
-  await db.update(people).set({ hideTags: hide }).where(eq(people.id, personId));
+/** Record who this person is willing to be rated and endorsed by. */
+export async function setEndorsementPolicy(
+  personId: string,
+  policy: EndorsementPolicy,
+): Promise<void> {
+  await db.update(people).set({ endorsementPolicy: policy }).where(eq(people.id, personId));
 }
 
 /** Remove a rater's whole view of somebody — used when a profile is merged. */

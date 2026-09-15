@@ -4,8 +4,9 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { myPersonId } from "@/lib/community/me";
-import { saveSkillRating, setHideTags, MIN_SCORE, MAX_SCORE } from "@/lib/skills/store";
+import { saveSkillRating, setEndorsementPolicy, MIN_SCORE, MAX_SCORE } from "@/lib/skills/store";
 import { skillsFor, tagsFor, SPORTS, type SportId } from "@/lib/sports/registry";
+import type { EndorsementPolicy } from "@/lib/db/schema";
 
 /* Rating somebody's skills.
  *
@@ -61,35 +62,27 @@ export async function rateSkills(
 }
 
 /**
- * Switch your own endorsements off everywhere but your profile.
+ * Choose who may rate and endorse you.
  *
- * Only for YOURSELF: the person id comes from the cookie and the form's subject
- * has to match it, so this cannot be used to silence somebody else's profile.
- * That check is as strong as the cookie is, which is a name badge until sign-in
- * lands — but the rule is written to be right the day it can be trusted, and it
- * is the only control anybody has over a label another player chose for them.
+ * Only for YOURSELF: the person id comes from the cookie and the subject has to
+ * match it, so this cannot be used to open somebody else's profile up or close
+ * it down. That check is as strong as the cookie is, which is a name badge
+ * until sign-in lands — the rule is written to be right the day it can be
+ * trusted.
+ *
+ * "network" is accepted and stored, and today qualifies nobody, because
+ * connections do not exist yet. The form does not offer it for that reason;
+ * a crafted post that sets it simply closes that person's ratings.
  */
-export async function setTagVisibility(
+export async function setPolicy(
   subjectPersonId: string,
-  hide: boolean,
-): Promise<RateResult> {
+  policy: EndorsementPolicy,
+): Promise<void> {
   const subject = z.string().min(1).max(64).parse(subjectPersonId);
+  const chosen = z.enum(["network", "played", "anyone"]).parse(policy);
   const me = await myPersonId();
-  if (!me || me !== subject) return { ok: false, error: "You can only change your own." };
+  if (!me || me !== subject) return;
 
-  await setHideTags(subject, hide);
+  await setEndorsementPolicy(subject, chosen);
   revalidatePath(`/people/${subject}`);
-  revalidatePath("/people");
-  return {
-    ok: true,
-    message: hide
-      ? "Your endorsements are hidden from lists. They are still on your profile."
-      : "Your endorsements are shown again.",
-  };
-}
-
-/** Form-shaped wrapper: a `<form action>` must resolve to void. The page
- *  revalidates, so the flipped button label is the feedback. */
-export async function toggleTagVisibility(subjectPersonId: string, hide: boolean): Promise<void> {
-  await setTagVisibility(subjectPersonId, hide);
 }

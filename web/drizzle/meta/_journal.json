@@ -113,6 +113,20 @@
       "when": 1789469544616,
       "tag": "0015_rapid_kang",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1789471231367,
+      "tag": "0016_public_ikaris",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1789471240832,
+      "tag": "0017_big_captain_cross",
+      "breakpoints": true
     }
   ]
 }

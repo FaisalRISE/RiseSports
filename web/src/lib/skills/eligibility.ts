@@ -2,15 +2,24 @@ import "server-only";
 
 /* Who is allowed to rate you.
  *
- * Faisal, 2026-09-15: "only people who have played against you and or with you
- * or in your network (a feature to be added later) will be able to rate you and
- * endorse your skills."
+ * Faisal, 2026-09-15: "we can have a setting in a player's profile to receive
+ * endorsement from his connected networks, players played with or vs, or from
+ * anyone. So the player himself/herself will set the criteria."
  *
- * So the rule is SHARED A COURT — either side of the net. A partner is included
- * deliberately: they have the best view of your third shot of anyone in the
- * building, and "with you" is in the sentence above. The network half is not
- * built yet and is not faked here; when it arrives it becomes a second way to
- * qualify, not a replacement for this one.
+ * So the rule is NOT the app's to fix — each person chooses it, and
+ * `people.endorsementPolicy` holds their answer:
+ *
+ *   "played"   the default. Shared a court, either side of the net. A partner
+ *              counts deliberately: they have the best view of your third shot
+ *              of anyone in the building, and "with or vs" says so.
+ *   "anyone"   any identified person but yourself.
+ *   "network"  people you are connected to. Connections do not exist yet, so
+ *              this currently qualifies nobody — which is honest rather than
+ *              convenient, and is why the form shows it greyed. The day
+ *              connections land, `networkOf` is the only thing to write.
+ *
+ * The default is "played" because it is the middle setting and the one nobody
+ * has to think about.
  *
  * ── What "played" means ──────────────────────────────────────────────────
  * A match that has been SCORED. A fixture on the order of play is two names on
@@ -34,7 +43,7 @@ import "server-only";
 
 import { and, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { communityMatches, matches, players } from "@/lib/db/schema";
+import { communityMatches, matches, people, players } from "@/lib/db/schema";
 
 /** A match nobody has scored yet is not evidence that anybody played. */
 const SCORED = sql`(${matches.typedScoreA} is not null or jsonb_array_length(${matches.log}) > 0)`;
@@ -110,10 +119,27 @@ export async function courtMates(personId: string): Promise<Set<string>> {
 
 export type RatePermission =
   | { allowed: true }
-  | { allowed: false; reason: "self" | "not-played" | "anonymous" };
+  | { allowed: false; reason: "self" | "not-played" | "not-connected" | "anonymous" };
+
+/**
+ * Who this person is connected to.
+ *
+ * A placeholder with an honest answer rather than a guess: connections are not
+ * built, so nobody is connected to anybody. It is a function rather than an
+ * inlined empty set so that the day the feature lands there is exactly one
+ * place to change, and `mayRate` already calls it.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export async function networkOf(personId: string): Promise<Set<string>> {
+  return new Set();
+}
 
 /**
  * May `rater` rate `subject`?
+ *
+ * The SUBJECT's setting decides, and it is read here rather than passed in —
+ * a caller that could supply the policy is a caller that could supply the wrong
+ * one, and this is the gate every write goes through.
  *
  * Deliberately returns WHY, so the screen can say "play them first" rather than
  * hiding a control with no explanation — a missing button is a bug report.
@@ -124,6 +150,23 @@ export async function mayRate(
 ): Promise<RatePermission> {
   if (!raterPersonId) return { allowed: false, reason: "anonymous" };
   if (raterPersonId === subjectPersonId) return { allowed: false, reason: "self" };
+
+  const [subject] = await db
+    .select({ policy: people.endorsementPolicy })
+    .from(people)
+    .where(eq(people.id, subjectPersonId))
+    .limit(1);
+  /* A person who is not there cannot be rated. Failing CLOSED on a missing row
+     rather than falling through to the permissive branch. */
+  if (!subject) return { allowed: false, reason: "not-played" };
+
+  if (subject.policy === "anyone") return { allowed: true };
+
+  if (subject.policy === "network") {
+    const net = await networkOf(subjectPersonId);
+    return net.has(raterPersonId) ? { allowed: true } : { allowed: false, reason: "not-connected" };
+  }
+
   const mates = await courtMates(subjectPersonId);
   return mates.has(raterPersonId) ? { allowed: true } : { allowed: false, reason: "not-played" };
 }

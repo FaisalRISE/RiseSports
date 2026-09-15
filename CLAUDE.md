@@ -848,40 +848,41 @@ Rating**, which is measured from results; this is opinion and is labelled as suc
   finger hits. Playwright's `.check()` on the input fails with "label intercepts pointer
   events"; click the label, which is what a user does.
 
-### Making endorsements visible, and what had to come with it (2026-09-15)
+### Endorsements stay on the profile, and the SUBJECT sets the rule (2026-09-15)
 
-Tags are now searchable on the roster and shown as chips on a row. Three guards went in at the
-same time, because every part of the original plan removed obscurity while adding no control.
+A first pass made tags searchable on the roster with a three-rater threshold and a hide flag.
+Faisal reversed both halves the same day, and the replacement is better:
 
-- **THREE distinct raters before a tag leaves the profile** (`PUBLIC_TAG_THRESHOLD`). One tick
-  is close to attributable — only court-mates may endorse, and a subject's court-mates are on
-  the same page — and one tick is also all it takes to farm, since identity is a cookie anyone
-  can set (`chooseIdentity` accepts any person id). Counts appear on the profile and **nowhere
-  else**: a number on a list invites a leaderboard of adjectives.
-- **`people.hideTags`** — the only control anybody had over a label another player chose for
-  them was the rater un-ticking it. Honoured inside `lib/skills/tags.ts` so no surface can
-  forget, including the filter predicate (or the filter would find someone whose chips the list
-  then refuses to draw).
-- **`robots: noindex`** on `/people` and `/people/[id]`. These list real people — name, gender,
-  the last four digits of a phone, and now other people's labels — and nobody on them opted in;
-  a `people` row is created by an organiser. Playing a match is consent to be scored, not to be
-  a search result. There was no crawl guard anywhere in the app.
+> "endorsement stays in profile only… we can have a setting in a player's profile to receive
+> endorsement from his connected networks, players played with or vs, or from anyone. So the
+> player himself/herself will set the criteria."
+
+- **No tag surface outside the profile.** The roster filter, the row chips, the public threshold
+  and `lib/skills/tags.ts` are all gone. Counts live on the profile, where the detail belongs
+  and where there is no list for them to leak onto.
+- **`people.endorsementPolicy`** — `network | played | anyone`, default `played`. `mayRate` reads
+  it from the SUBJECT's row; a caller that could pass the policy in is a caller that could pass
+  the wrong one. It governs skills and tags together, because they are given in one form by one
+  person.
+- **`network` is stored and implemented, and qualifies nobody**, because connections do not
+  exist yet. `networkOf()` returns an empty set and is the only thing to write the day they do.
+  The picker shows it greyed with the reason — a setting that can be chosen and silently means
+  "nobody" reads as a bug.
+- Fails **closed** on a missing subject row rather than falling through to the permissive branch.
+- **`robots: noindex`** on `/people` and `/people/[id]` stays. They list real people — name,
+  gender, the last four digits of a phone — and nobody on them opted in; a `people` row is
+  created by an organiser. Playing a match is consent to be scored, not to be a search result.
+  There was no crawl guard anywhere in the app.
+- Two migrations, not one: drizzle-kit prompts for rename-vs-drop when a column goes and another
+  arrives in the same table, and a prompt cannot be answered from a non-TTY shell. Splitting it
+  into a pure ADD (`0016`) and a pure DROP (`0017`) keeps both auto-generated, with correct
+  snapshots and journal entries — the hand-written-migration trap this file records from `0008`.
 
 - **Two tags renamed while it was still cheap**: `Serial Lobber` → `Lob Specialist` ("serial" is
   how you describe an offender, and repeated lobbing is a standing rec-play grievance) and
   `Comeback King` → `Comeback Artist` (the only gendered noun across all seven vocabularies, in
   an app with a Women filter). Rows store the tag TEXT, so `0015` rewrites the saved ones and
   `canonicalTag` still reads an older row.
-- **A tag needs a SPORT with it.** Four of the fifteen strings appear in all seven sports and
-  the rest mean different things in each, so a chip with no sport is ambiguous by construction.
-  Chips render only once a sport is chosen; the filter refuses without one.
-- **The predicate is a correlated EXISTS in the WHERE, before the LIMIT.** A join multiplies the
-  person row by their endorsements; filtering in JavaScript afterwards searches only the hundred
-  highest-rated people and silently drops anyone below — no error, and a plausible-looking list.
-- An absent tag and an *unusable* one take different paths: absent → no predicate, invalid →
-  `sql\`false\``. The `.filter(Boolean)` idiom makes "silently everybody" the default outcome of
-  a dropped predicate, which is the trap this file records twice already.
-
 Two bugs found in passing and fixed, both pre-existing:
 - `ratedSports` had **no ORDER BY**, so the profile's default sport could change between two
   loads of the same page; and it read `skillRatings` only, making a tags-only sport unreachable.

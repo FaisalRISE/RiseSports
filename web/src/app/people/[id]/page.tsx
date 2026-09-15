@@ -14,8 +14,7 @@ import { mayRate } from "@/lib/skills/eligibility";
 import { myPersonId } from "@/lib/community/me";
 import { SkillRadar } from "@/components/SkillRadar";
 import { RateForm } from "./RateForm";
-import { toggleTagVisibility } from "./actions";
-import { PUBLIC_TAG_THRESHOLD } from "@/lib/skills/tags";
+import { PolicyPicker } from "./PolicyPicker";
 import { SPORTS, skillsFor, tagsFor, sportOf, DEFAULT_SPORT, type SportId } from "@/lib/sports/registry";
 import { PLACING_LABEL, PLACING_MEDAL } from "@/lib/placings";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
@@ -209,49 +208,23 @@ export default async function PersonPage({
             )}
 
             {profile.tags.length > 0 && (
-              <div className="mt-3 border-t border-neutral-800 pt-3">
-                <div className="flex flex-wrap gap-2">
-                  {profile.tags.map((t) => (
-                    /* The count is shown HERE and nowhere else — this is the
-                       page about this person, where the detail belongs. The
-                       link only goes somewhere useful once enough people agree,
-                       so below the threshold it is not a link. */
-                    t.count >= PUBLIC_TAG_THRESHOLD ? (
-                      <Link key={t.tag} href={`/people?sport=${sport}&tag=${encodeURIComponent(t.tag)}`}
-                        className="inline-flex items-center gap-1 rounded-full border border-neutral-600 px-3 py-1 text-[11px] font-bold text-neutral-200 hover:border-neutral-400">
-                        {t.tag}
-                        <span className="font-mono text-neutral-500">{t.count}</span>
-                      </Link>
-                    ) : (
-                      <span key={t.tag}
-                        className="inline-flex items-center gap-1 rounded-full border border-neutral-700 px-3 py-1 text-[11px] font-bold text-neutral-300">
-                        {t.tag}
-                        <span className="font-mono text-neutral-500">{t.count}</span>
-                      </span>
-                    )
-                  ))}
-                </div>
-                <p className="mt-2 text-[11px] text-neutral-500">
-                  {person.hideTags
-                    ? "Hidden from lists — these show on this page only."
-                    : `Shown on player lists once ${PUBLIC_TAG_THRESHOLD} people agree.`}
-                </p>
+              <div className="mt-3 flex flex-wrap gap-2 border-t border-neutral-800 pt-3">
+                {profile.tags.map((t) => (
+                  /* The count stays here. Endorsements live on the profile and
+                     nowhere else — Faisal, 2026-09-15 — so there is no list to
+                     link out to and no count to leak onto one. */
+                  <span key={t.tag}
+                    className="inline-flex items-center gap-1 rounded-full border border-neutral-700 px-3 py-1 text-[11px] font-bold text-neutral-300">
+                    {t.tag}
+                    <span className="font-mono text-neutral-500">{t.count}</span>
+                  </span>
+                ))}
               </div>
             )}
 
-            {/* Your own page: the one control anybody has over a label another
-                player chose for them. */}
-            {!permission.allowed && permission.reason === "self" && profile.tags.length > 0 && (
-              <form
-                action={toggleTagVisibility.bind(null, id, !person.hideTags)}
-                className="mt-3 border-t border-neutral-800 pt-3"
-              >
-                <button className="text-[11px] font-bold text-neutral-500 hover:text-neutral-300">
-                  {person.hideTags
-                    ? "Show my endorsements on player lists"
-                    : "Hide my endorsements from player lists"}
-                </button>
-              </form>
+            {/* Your own page: you decide who may label you. */}
+            {!permission.allowed && permission.reason === "self" && (
+              <PolicyPicker personId={id} policy={person.endorsementPolicy} />
             )}
 
             <div className="mt-4 border-t border-neutral-800 pt-3">
@@ -273,7 +246,9 @@ export default async function PersonPage({
                     ? "You cannot rate yourself."
                     : permission.reason === "anonymous"
                       ? "Pick who you are on the Play tab to rate people you have played."
-                      : `You can rate ${person.name.split(" ")[0]} once you have played with or against them.`}
+                      : permission.reason === "not-connected"
+                        ? `${person.name.split(" ")[0]} only takes ratings from their connections.`
+                        : `${person.name.split(" ")[0]} takes ratings from people they have played with or against.`}
                 </p>
               )}
             </div>
