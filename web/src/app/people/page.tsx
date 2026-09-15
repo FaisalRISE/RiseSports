@@ -53,8 +53,13 @@ export default async function PeoplePage({
     search,
     gender ? eq(people.gender, gender) : undefined,
     /* Only people who HAVE a rating in this format. Everyone else is not
-       unranked here, they are simply not in this competition. */
-    keyed ? sql`${people.riseRatings} ? ${key}` : undefined,
+       unranked here, they are simply not in this competition.
+       `-> key IS NOT NULL` rather than the `?` existence operator: `?` is also
+       a parameter placeholder in several Postgres drivers, and this app runs on
+       two of them — PGlite locally, postgres-js against Supabase. The operator
+       is not worth a difference that would only ever show up in production, on
+       a page that returns an empty list either way when nobody is rated. */
+    keyed ? sql`${people.riseRatings} -> ${key} is not null` : undefined,
   ].filter(Boolean);
 
   const found = await db

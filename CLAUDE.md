@@ -792,7 +792,12 @@ each player's profile.
   - Format needs a sport: the keys are `"pb:md"`, so "doubles" alone names nothing. The page
     says so when only a sport is picked.
   - The query reads the JSONB by key (`riseRatings ->> 'pb:md'`, cast to int so 9 does not sort
-    after 1000) and filters on `riseRatings ? 'pb:md'`. **Verified by counting, not by a 200**:
+    after 1000) and filters on `riseRatings -> 'pb:md' is not null`. **Not the `?` existence
+    operator**: `?` is also a parameter placeholder in several Postgres drivers, and this app
+    runs on two — PGlite locally, postgres-js against Supabase. It is not worth a difference
+    that could only ever appear in production, on a page that shows an empty list either way
+    when nobody is rated, so the ambiguity is removed rather than tested.
+  - **Verified by counting, not by a 200**:
     a filter that does nothing returns everybody and a broken one returns nobody, and both look
     fine from the status code. Measured 6 in `pb:ms`, 8 in `pb:mx`, 0 in `pb:wd`, 14 unfiltered.
   - `formatLabel` moved from a private helper in the tournament ratings page into the registry
