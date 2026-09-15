@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { roundRobin, spreadRounds, splitIntoGroups } from "./roundRobin";
-import { picklebossRuleOverrides, planGroups, knockoutRefsFromGroups, PICKLEBOSS_TARGET } from "./pickleboss";
+import { picklebossRuleOverrides, planGroups, knockoutRefsFromGroups, maxGroupsFor, PICKLEBOSS_TARGET } from "./pickleboss";
 import { resolveRules } from "@/lib/scoring/rules";
 import { replayRallies, type Side } from "@/lib/scoring/replay";
 import { isSeedRef } from "@/lib/brackets";
@@ -134,6 +134,61 @@ describe("group planning", () => {
 
   it("copes with no court names", () => {
     expect(planGroups(entrants, 2)[0].court).toBeNull();
+  });
+});
+
+describe("more groups than the field can fill", () => {
+  /* The bug: the Groups control defaults to 2, and two teams split across two
+     groups left ONE entrant in each. `generateGroups` skips a group it cannot
+     draw fixtures for, so both were skipped — the organiser pressed Draw, no
+     matches appeared, and nothing said why. Found while building the order of
+     play, where the two teams simply never showed up on the sheet. */
+
+  const field = (n: number) => Array.from({ length: n }, (_, i) => `t${i + 1}`);
+
+  it("knows how many groups a field can fill", () => {
+    expect(maxGroupsFor(2)).toBe(1);
+    expect(maxGroupsFor(3)).toBe(1);
+    expect(maxGroupsFor(4)).toBe(2);
+    expect(maxGroupsFor(5)).toBe(2);
+    expect(maxGroupsFor(12)).toBe(6);
+    /* Never zero: a degenerate field still gets one group, which the caller
+       then declines to draw fixtures for. */
+    expect(maxGroupsFor(1)).toBe(1);
+    expect(maxGroupsFor(0)).toBe(1);
+  });
+
+  it("draws two teams as ONE group with a fixture, not two groups with none", () => {
+    const plans = planGroups(field(2), 2);
+    expect(plans).toHaveLength(1);
+    expect(plans[0].entrants).toHaveLength(2);
+    expect(plans[0].rounds.flat()).toHaveLength(1);
+  });
+
+  it("puts three teams in one round robin rather than stranding the third", () => {
+    const plans = planGroups(field(3), 2);
+    expect(plans).toHaveLength(1);
+    expect(plans[0].rounds.flat()).toHaveLength(3);
+  });
+
+  it("leaves a field that CAN fill the groups exactly as it was", () => {
+    expect(planGroups(field(5), 2).map((p) => p.entrants.length)).toEqual([3, 2]);
+    expect(planGroups(field(12), 3).map((p) => p.entrants.length)).toEqual([4, 4, 4]);
+  });
+
+  it("never draws a group nobody can play in", () => {
+    /* The property, over every field and every request the form allows: each
+       group has at least two entrants, and nobody is left out of the draw. */
+    for (let teams = 2; teams <= 16; teams++) {
+      for (let asked = 1; asked <= 8; asked++) {
+        const plans = planGroups(field(teams), asked);
+        for (const p of plans) {
+          expect(p.entrants.length).toBeGreaterThanOrEqual(2);
+          expect(p.rounds.flat().length).toBeGreaterThan(0);
+        }
+        expect(plans.flatMap((p) => p.entrants)).toHaveLength(teams);
+      }
+    }
   });
 });
 

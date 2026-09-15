@@ -53,12 +53,13 @@ async function addPlayer(teamName, playerName, phone) {
 
 const drawCard = (categoryName) => p.locator(`[data-category="${categoryName}"]`);
 
-/* ONE group. The control defaults to two, and two teams split across two
-   groups leaves one entrant in each, which draws no fixtures at all — the draw
-   silently does nothing. Not what is under test here, so it is set explicitly. */
-async function drawGroups(categoryName, groups = 1) {
+/* Deliberately does NOT set the group count. Two teams used to be split across
+   the control's default of two groups, leaving one entrant in each and drawing
+   no fixtures at all — the organiser pressed Draw and nothing happened. The
+   count is now clamped to what the field can fill, so the default works, and
+   leaving it alone here is what makes this a guard against that coming back. */
+async function drawGroups(categoryName) {
   const c = drawCard(categoryName);
-  await c.locator('input[name="groups"]').fill(String(groups));
   await c.locator('button:has-text("Draw groups & fixtures")').click();
   await p.waitForTimeout(1200);
 }
@@ -108,6 +109,13 @@ try {
 
   await drawGroups("Main");
   await drawGroups("Mixed");
+
+  /* Before anything about times: the draw has to have produced fixtures at all.
+     With two teams per category and the group count left at its default, it
+     used to produce none. */
+  const drawn = await text(p);
+  ok(!drawn.includes("No matches yet."), "the default group count drew fixtures for a field of two");
+  ok(drawn.includes("MainA"), "and both teams are in them");
 
   await drawTimes({ courts: 4 });
 

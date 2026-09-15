@@ -49,17 +49,34 @@ export type GroupPlan<T> = {
 };
 
 /**
+ * The most groups `n` entrants can be drawn into.
+ *
+ * A group of one has no fixtures — there is nobody to play — so the ceiling is
+ * `floor(n / 2)`. Asking for more than that does not produce small groups; it
+ * produces groups that cannot be played, and the teams in them never appear on
+ * the order of play at all.
+ */
+export const maxGroupsFor = (entrants: number): number => Math.max(1, Math.floor(entrants / 2));
+
+/**
  * Draw `entrants` into groups and generate each group's fixtures.
  *
  * Groups are snaked so the strong pairs do not all land in group A, and each
  * group's rounds are spread so a pair rarely plays twice in a row.
+ *
+ * `groupCount` is CLAMPED to what the field can fill. Two teams asked into the
+ * default two groups used to leave one entrant in each, and `generateGroups`
+ * skipped both: the organiser pressed Draw, nothing happened, and nothing said
+ * why. Clamping here rather than in the form means every caller gets it and the
+ * rule lives with the algorithm it belongs to.
  */
 export function planGroups<T>(
   entrants: T[],
   groupCount: number,
   courts: string[] = [],
 ): GroupPlan<T>[] {
-  const drawn = splitIntoGroups(entrants, groupCount);
+  const count = Math.max(1, Math.min(groupCount, maxGroupsFor(entrants.length)));
+  const drawn = splitIntoGroups(entrants, count);
   return drawn.map((members, i) => ({
     key: GROUP_KEYS[i] ?? String(i + 1),
     court: courts[i] ?? null,

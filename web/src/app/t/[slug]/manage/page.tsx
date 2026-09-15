@@ -16,6 +16,7 @@ import { PersonPicker } from "@/components/PersonPicker";
 import { loadTournament, groupTables, resolverFactory, resolveSlots } from "@/lib/tournamentState";
 import { StandingsTable } from "@/components/StandingsTable";
 import { ScoringControls, type ScoringState } from "./ScoringControls";
+import { maxGroupsFor } from "@/lib/formats/pickleboss";
 import { resolveRules } from "@/lib/scoring/rules";
 import { allowsDraws } from "@/lib/matchState";
 
@@ -37,6 +38,8 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
   const isOsl = t.format === "osl";
 
   const squadOf = (teamId: string) => playerRows.filter((p) => p.teamId === teamId);
+  const teamsIn = (divisionId: string) =>
+    teamRows.filter((x) => x.divisionId === divisionId).length;
 
   /* The order of play, as it stands. Sorted by the time itself rather than by
      the slot, so a match given a time by hand sits where it belongs. */
@@ -332,8 +335,18 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                         ) : (
                           <label className="flex items-center gap-2 text-sm">
                             <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Groups</span>
-                            <input name="groups" type="number" min={1} max={8} defaultValue={2}
+                            {/* The ceiling is what the field can actually fill —
+                                a group of one has nobody to play. The server
+                                clamps to the same number (planGroups), so this
+                                is the constraint made visible rather than the
+                                place it is enforced. */}
+                            <input name="groups" type="number" min={1}
+                              max={Math.min(8, maxGroupsFor(teamsIn(d.id)))}
+                              defaultValue={Math.min(2, maxGroupsFor(teamsIn(d.id)))}
                               className="w-16 rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm" />
+                            <span className="text-[11px] text-neutral-500">
+                              max {Math.min(8, maxGroupsFor(teamsIn(d.id)))} for {teamsIn(d.id)} teams
+                            </span>
                           </label>
                         )}
                         <input name="courts" placeholder="Court names, comma separated (optional)"

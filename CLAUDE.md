@@ -687,11 +687,17 @@ Stage 1 plan and the last of it to land: times and courts for every match still 
 
 ### Two things found while building it
 
-- **`Draw groups & fixtures` silently does nothing when the group count exceeds the field.**
-  The control defaults to 2 groups; two teams split across two groups leaves one entrant in each
-  and `generateGroups` skips both (`plan.entrants.length < 2`). No matches, no message. Not
-  fixed here — it is the draw's behaviour, not the scheduler's — but a clamp to
-  `floor(teams / 2)` would turn a silent no-op into the obvious draw.
+- **`Draw groups & fixtures` used to do nothing when the group count exceeded the field, and
+  said nothing about it.** The control defaults to 2 groups; two teams split across two groups
+  left one entrant in each and `generateGroups` skipped both (`plan.entrants.length < 2`). No
+  matches, no message. **Fixed 2026-09-15**: `maxGroupsFor(n) = max(1, floor(n / 2))` — a group
+  of one has nobody to play — and `planGroups` clamps to it.
+  - Clamped in `planGroups`, not in the form handler, so the rule lives with the algorithm and
+    every caller gets it. The form shows the same ceiling (`max`, and "max N for M teams") so
+    the constraint is visible before the click rather than applied silently after it.
+  - `e2e/schedule.mjs` deliberately does NOT set the group count, which is what makes it a guard
+    against the regression. Found only because the two teams never appeared on the order of
+    play — the draw itself looked like it had worked.
 - **The e2e suites are order-sensitive**, because they use fixed `waitForTimeout` waits and a
   PGlite database carrying ten tournaments answers more slowly than a two-second wait allows.
   Measured: `event` and `carryover` fail after the other six plus `schedule`, and pass alone, or
