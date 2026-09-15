@@ -1,43 +1,62 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 
-/* Can the app reach Postgres, and if not, at which step does it stop?
+/* Can the app reach Postgres, and if not, which KIND of query stops?
  *
  * ── Why a route and not the `db:check` script ────────────────────────────
  * CLAUDE.md records that telling "the pooler is broken" from "our code is
  * broken" needs one test: connect with the SAME driver and the SAME options
  * the app uses. The script that does this (`npm run db:check`) needs the
  * database password, so it was Faisal's to run and nobody's to automate.
+ * Vercel already holds that password, so running the check INSIDE the
+ * deployment asks the same question from the right place with no secret typed
+ * anywhere.
  *
- * Vercel already holds that password. Running the check INSIDE the deployment
- * asks exactly the same question from exactly the right place — the serverless
- * instance, through the pooler, with the app's own client — and needs nobody to
- * type a secret anywhere.
+ * ── What the first version established, and what it left open ───────────
+ * `select 1` answers in about 200ms warm. Meanwhile `/`, `/people` and
+ * `/t/[slug]` return zero bytes for two minutes, and `/health` — a page with
+ * the same layout, fonts and render path that queries nothing — answers in
+ * 1.5s. So the pooler is fine and rendering is fine. What is left is the
+ * queries the pages actually run, and they differ from `select 1` in one
+ * visible way: PARAMETERS.
  *
- * ── The timeout is the whole point ──────────────────────────────────────
- * `connect_timeout` only covers opening the socket. Supavisor's logs during
- * the outage show clients AUTHENTICATING and then never being handed a
- * database backend, which is past the point `connect_timeout` guards: the
- * socket is open, so postgres-js waits forever for a reply that never comes.
- * That is why the pages hung rather than erroring, and why this probe has to
- * race its own timer instead of trusting the driver to give up.
+ * The evidence for that came from the database's own view of a stuck backend,
+ * caught mid-outage at five and a half minutes:
  *
- * So the answer separates three outcomes that look identical from outside:
+ *     state: active   wait_event: ClientRead
+ *     select "id","name","rise_best" from "people" ... limit $1
  *
- *   ok                      → the path is fine; look elsewhere
- *   error + a driver code   → it refused, and said why (auth, DNS, refused)
- *   timeout + elapsed ms    → it accepted us and went silent — the pooler
+ * `ClientRead` means the backend had received part of an extended-protocol
+ * exchange and was waiting for the client to send the rest. It never did. A
+ * statement timeout cannot fire on that, because nothing is executing — which
+ * is exactly why the pages hang instead of erroring, and why `connect_timeout`
+ * never fired either.
+ *
+ * ── So the probes are a LADDER, not one check ───────────────────────────
+ * Each rung adds one thing, and each is timed on its own, so the answer names
+ * the step that stops rather than "the database":
+ *
+ *     plain      select 1                 no parameters at all
+ *     param      select $1::int           a parameter, no table
+ *     table      count(*) from people     a table, no parameter
+ *     both       ... from people limit $1 a table AND a parameter
+ *
+ * If `plain` and `table` pass while `param` and `both` hang, parameter binding
+ * over the transaction pooler is the fault and nothing about the tables or the
+ * network is. If all four pass, the fault is above the driver.
  *
  * ── What it deliberately does not say ───────────────────────────────────
  * A driver error message can carry the host and username. This is a public URL
- * on a public site, so the message is passed through only after the connection
- * string's own credentials are stripped out of it.
+ * on a public site, so credentials are stripped from any message before it is
+ * passed through, and nothing here reports a host, a user or a password.
  */
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const BUDGET_MS = 20_000;
+/* Short on purpose. A hanging rung must not hold the response for the whole
+   function budget — four rungs at 6s still answers inside any page timeout. */
+const RUNG_MS = 6_000;
 
 /** Never let a connection string's user:password reach a public response. */
 function scrub(text: string): string {
@@ -56,58 +75,60 @@ function rootCause(e: unknown): { code?: string; errno?: string; message?: strin
   return cur ?? {};
 }
 
-export async function GET() {
+type Rung = { name: string; ok: boolean; ms: number; reason?: string; code?: string | null };
+
+async function rung(name: string, run: () => Promise<unknown>): Promise<Rung> {
   const started = Date.now();
   const give_up = Symbol("timeout");
   let timer: ReturnType<typeof setTimeout> | undefined;
-
   try {
-    const probe = db.execute(sql`select 1 as one`);
     const clock = new Promise<typeof give_up>((resolve) => {
-      timer = setTimeout(() => resolve(give_up), BUDGET_MS);
+      timer = setTimeout(() => resolve(give_up), RUNG_MS);
     });
-    const outcome = await Promise.race([probe, clock]);
+    const outcome = await Promise.race([run(), clock]);
     const ms = Date.now() - started;
-
-    if (outcome === give_up) {
-      return Response.json(
-        {
-          ok: false,
-          stage: "query",
-          reason: "timeout",
-          ms,
-          /* Said in words, because the point of this route is to be read by
-             somebody who is not going to interpret a driver code. */
-          means:
-            "The socket opened and the server never answered. That is the pooler " +
-            "holding the connection without handing it a database backend.",
-        },
-        { status: 503, headers: { "cache-control": "no-store" } },
-      );
-    }
-
-    return Response.json(
-      { ok: true, stage: "query", ms },
-      { headers: { "cache-control": "no-store" } },
-    );
+    if (outcome === give_up) return { name, ok: false, ms, reason: "timeout" };
+    return { name, ok: true, ms };
   } catch (e) {
-    const ms = Date.now() - started;
     const err = rootCause(e);
-    const wrapper = (e as { message?: string }).message ?? String(e);
-    return Response.json(
-      {
-        ok: false,
-        stage: "connect",
-        reason: "error",
-        code: err.code ?? err.errno ?? null,
-        message: scrub(err.message ?? wrapper).slice(0, 300),
-        ms,
-      },
-      { status: 503, headers: { "cache-control": "no-store" } },
-    );
+    return {
+      name,
+      ok: false,
+      ms: Date.now() - started,
+      reason: scrub(err.message ?? (e as Error).message ?? String(e)).slice(0, 200),
+      code: err.code ?? err.errno ?? null,
+    };
   } finally {
-    /* The probe may still be pending; the timer must not keep the instance
-       awake waiting to resolve a promise nobody is reading any more. */
     if (timer) clearTimeout(timer);
   }
+}
+
+export async function GET() {
+  /* Sequential, not Promise.all. The client is `max: 1`, so concurrent queries
+     queue on one connection and a rung that hangs would be blamed on whichever
+     rung happened to be behind it. */
+  const rungs: Rung[] = [];
+  rungs.push(await rung("plain", () => db.execute(sql`select 1 as one`)));
+  rungs.push(await rung("param", () => db.execute(sql`select ${1}::int as one`)));
+  rungs.push(await rung("table", () => db.execute(sql`select count(*) from people`)));
+  rungs.push(
+    await rung("both", () => db.execute(sql`select id from people limit ${1}`)),
+  );
+
+  const stopped = rungs.find((r) => !r.ok);
+  return Response.json(
+    {
+      ok: !stopped,
+      /* Said in words, because the point of this route is to be read by
+         somebody who is not going to interpret a driver code. */
+      verdict: !stopped
+        ? "Every kind of query works from here."
+        : stopped.name === "param" || stopped.name === "both"
+          ? "Queries with a PARAMETER stop; queries without one work. The fault " +
+            "is parameter binding over the pooler, not the tables or the network."
+          : `Stopped at "${stopped.name}".`,
+      rungs,
+    },
+    { status: stopped ? 503 : 200, headers: { "cache-control": "no-store" } },
+  );
 }
