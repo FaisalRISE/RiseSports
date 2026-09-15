@@ -1,7 +1,8 @@
 import "server-only";
 
-import { sql } from "drizzle-orm";
+import { count, sql } from "drizzle-orm";
 import { db } from "./index";
+import { people, tournaments } from "./schema";
 
 /* The connection ladder, in one place because two callers need the same rungs.
  *
@@ -17,6 +18,18 @@ import { db } from "./index";
  *   param   select $1::int            a parameter, no table
  *   table   count(*) from people      a table, no parameter
  *   both    ... from people limit $1  a table AND a parameter
+ *
+ * Every one of those passes from a route AND from a page, in about 200ms warm,
+ * while `/`, `/people`, `/play`, `/ledger`, `/t/[slug]` and `/e/[slug]` all
+ * return zero bytes — and `/new`, the only page that queries nothing, answers
+ * in 440ms. So it is not the pooler, not the network, not rendering, and not
+ * querying from a page. What is left is one difference between this file and
+ * every real page: the four rungs above are RAW SQL, and every page in the app
+ * uses drizzle's schema query builder.
+ *
+ *   builder select id from people limit 1  the builder, one table
+ *   count   count() from people            drizzle's count() helper
+ *   order   tournaments ordered            the home page's own first query
  *
  * Sequential, never Promise.all: the client is `max: 1`, so concurrent queries
  * queue on one connection and a rung that hangs would be blamed on whichever
@@ -86,6 +99,21 @@ export async function climb(): Promise<Rung[]> {
   rungs.push(await rung("param", () => db.execute(sql`select ${1}::int as one`)));
   rungs.push(await rung("table", () => db.execute(sql`select count(*) from people`)));
   rungs.push(await rung("both", () => db.execute(sql`select id from people limit ${1}`)));
+
+  /* The builder, which is the only thing the working probes have never used and
+     every hanging page does. Same tables, same connection — the difference is
+     drizzle's schema layer rather than a hand-written string. */
+  rungs.push(
+    await rung("builder", () => db.select({ id: people.id }).from(people).limit(1)),
+  );
+  rungs.push(await rung("count", () => db.select({ n: count() }).from(people)));
+  /* The home page's own first query, verbatim — a full row select with an
+     order by, which is where it stops answering. */
+  rungs.push(
+    await rung("order", () =>
+      db.select().from(tournaments).orderBy(sql`${tournaments.createdAt} desc`),
+    ),
+  );
   return rungs;
 }
 
@@ -96,6 +124,12 @@ export function verdict(rungs: Rung[]): string {
     return (
       "Queries with a PARAMETER stop; queries without one work. The fault is " +
       "parameter binding over the pooler, not the tables or the network."
+    );
+  }
+  if (stopped.name === "builder" || stopped.name === "count" || stopped.name === "order") {
+    return (
+      "Raw SQL works and drizzle's query BUILDER does not, on the same tables " +
+      "and the same connection. The fault is above the driver."
     );
   }
   return `Stopped at "${stopped.name}".`;
