@@ -255,6 +255,47 @@ ok(moved.length>0,'at least one player moved: '+moved.map(r=>r[0]+' '+r[4]).join
 ok(rrows.reduce((s,r)=>s+dnum(r),0)===0,'movements sum to zero across the table');
 ok(rrows.some(r=>/Beginner|Intermediate|Advanced|Pro|Elite/i.test(r[6])),'tier shown');
 
+console.log('\n== the roster, one format at a time ==');
+/* Singles and doubles are rated separately, so a leaderboard of both compares
+   numbers that were never on the same scale. This event's teams are one player
+   each (singles); club-night's are pairs (mixed doubles). A filter that is
+   doing nothing would return the same list for both, and one that is broken
+   would return none — so both halves are checked. */
+const rosterIds=async(qs)=>{
+  await p.goto(B+'/people'+qs); await p.waitForTimeout(700);
+  return [...new Set(await p.$$eval('ol li a[href^="/people/"]',as=>as.map(a=>a.getAttribute('href'))))];
+};
+const all=await rosterIds('');
+const singles=await rosterIds('?sport=pb&format=ms');
+const mixed=await rosterIds('?sport=pb&format=mx');
+const empty=await rosterIds('?sport=pb&format=wd');
+
+ok(singles.length>0,'the singles board has players ('+singles.length+')');
+ok(mixed.length>0,'the mixed doubles board has players ('+mixed.length+')');
+ok(singles.length<all.length,'and each is narrower than the whole roster ('+all.length+')');
+ok(
+  singles.every(h=>!mixed.includes(h)),
+  'nobody appears on both boards — these players played one format each',
+);
+ok(empty.length===0,'a format nobody has played is empty, not everybody');
+const head=await txt();
+ok(head.includes("Women's doubles"),'and the page says which board you are looking at');
+
+console.log('\n== who they play with ==');
+/* partnerStats has been written on every rated match since the engine was
+   ported and shown nowhere until now. */
+let sawPartners=false;
+for(const href of mixed.slice(0,4)){
+  await p.goto(B+href); await p.waitForTimeout(500);
+  const body=await txt();
+  if(body.includes('Who they play with')){
+    sawPartners=true;
+    ok(/needs 4 matches together/.test(body),'a win rate is withheld until it means something');
+    break;
+  }
+}
+ok(sawPartners,'a doubles player profile lists their partners');
+
 console.log('\n== errors ==');
 const real=errs.filter(e=>!/favicon|net::ERR/.test(e));
 ok(real.length===0,'no runtime errors: '+JSON.stringify(real.slice(0,3)));

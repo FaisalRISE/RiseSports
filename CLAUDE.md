@@ -777,7 +777,28 @@ each player's profile.
   phone — without one, a team is just a name, it can win the final, and there is no profile for
   the win to land on. That is what the honours check caught on its first run.
 
-Next areas by size: engines & draws (~30 left), foundations (29), the UI kit (22).
+### The player pages (2026-09-15)
+
+- **`people.partnerStats` had been written on every rated match since the engine was ported and
+  shown nowhere.** Spec §6.2 keeps it so a disputed carry guard can point at a specific person;
+  it also answers the question a player actually asks. `lib/rating/partners.ts` reads it.
+  - **A win rate is withheld below four matches together.** Two matches is 0%, 50% or 100% and
+    every one of those reads as a verdict. The counts always show; the rate waits. The threshold
+    is a judgement, and it is stated on screen rather than hidden.
+- **The roster filters by sport + format, and that changes which rating it shows.** Singles and
+  doubles are rated separately (§2), so one list of both ranks numbers that were never on the
+  same scale. Choosing a format switches the page off `riseBest` — a max() across everything —
+  and onto that format's own rating, including the tier.
+  - Format needs a sport: the keys are `"pb:md"`, so "doubles" alone names nothing. The page
+    says so when only a sport is picked.
+  - The query reads the JSONB by key (`riseRatings ->> 'pb:md'`, cast to int so 9 does not sort
+    after 1000) and filters on `riseRatings ? 'pb:md'`. **Verified by counting, not by a 200**:
+    a filter that does nothing returns everybody and a broken one returns nobody, and both look
+    fine from the status code. Measured 6 in `pb:ms`, 8 in `pb:mx`, 0 in `pb:wd`, 14 unfiltered.
+  - `formatLabel` moved from a private helper in the tournament ratings page into the registry
+    — the moment a second caller wanted the same six strings.
+
+Next areas by size: engines & draws (~30 left), foundations (29), the UI kit (~20).
 
 ## Access: the site is deliberately open, and the switch is a trap
 

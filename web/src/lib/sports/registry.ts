@@ -112,3 +112,17 @@ export const formatsFor = (x?: Parameters<typeof sportOf>[0]) => sportOf(x).form
 /** Rating keys are sport-namespaced so ratings never bleed between sports. */
 export const ratingKey = (sport: SportId | null | undefined, format: string) =>
   `${sport ?? DEFAULT_SPORT}:${format}`;
+
+/* The format codes in words. Lived as a private helper inside the tournament
+   ratings page until the roster grew a format filter and needed the same six
+   strings — which is the moment two copies start drifting. */
+export const FORMAT_LABELS: Record<string, string> = {
+  ms: "Men's singles",
+  ws: "Women's singles",
+  md: "Men's doubles",
+  wd: "Women's doubles",
+  mx: "Mixed doubles",
+  gn: "Open",
+};
+
+export const formatLabel = (format: string): string => FORMAT_LABELS[format] ?? "Open";

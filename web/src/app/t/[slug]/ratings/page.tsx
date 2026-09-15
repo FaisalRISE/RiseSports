@@ -7,7 +7,7 @@ import { loadTournament } from "@/lib/tournamentState";
 import { tournamentRatings, ratingFormatFor } from "@/lib/rating/tournament";
 import { principalFor } from "@/lib/auth/guard";
 import { canView } from "@/lib/auth/policy";
-import { sportOf } from "@/lib/sports/registry";
+import { sportOf, formatLabel } from "@/lib/sports/registry";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 
 /* RISE Ratings for this event.
@@ -152,14 +152,5 @@ export default async function RatingsPage({ params }: { params: Promise<{ slug: 
         </p>
       </main>
     </>
-  );
-}
-
-function formatLabel(format: string): string {
-  return (
-    {
-      ms: "Men's singles", ws: "Women's singles", md: "Men's doubles",
-      wd: "Women's doubles", mx: "Mixed doubles", gn: "Open",
-    }[format] ?? "Open"
   );
 }

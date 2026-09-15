@@ -8,6 +8,7 @@ import { reliabilityForPerson, playedFromHistory } from "@/lib/rating/reliabilit
 import { detectSandbagging, sandbaggingNote } from "@/lib/rating/sandbagging";
 import { maskPhone } from "@/lib/people";
 import { honoursFor } from "@/lib/placings/honours";
+import { partnersOf, RATE_THRESHOLD } from "@/lib/rating/partners";
 import { PLACING_LABEL, PLACING_MEDAL } from "@/lib/placings";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 
@@ -58,6 +59,10 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
      the person — see lib/placings. Nothing appears until a final is finished,
      and a corrected score changes this page with it. */
   const honours = await honoursFor(id);
+
+  /* Written on every rated match since the engine was ported and shown nowhere
+     until now — see lib/rating/partners. */
+  const partners = await partnersOf(person.partnerStats);
 
   const names = await opponentNames(history);
   const tier = person.riseBest == null ? null : getTier(person.riseBest);
@@ -143,6 +148,50 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
                 </li>
               ))}
             </ul>
+          </section>
+        )}
+
+        {partners.length > 0 && (
+          <section>
+            <h2 className="mb-1 text-lg font-black">Who they play with</h2>
+            <p className="mb-3 text-[12px] text-neutral-500">
+              Doubles partners, most played first. A win rate needs {RATE_THRESHOLD} matches
+              together before it is shown — below that it is one good day, not a pattern.
+            </p>
+            <div className="overflow-x-auto rounded-xl border border-neutral-800">
+              <table className="w-full min-w-[30rem] text-left text-[13px]">
+                <thead>
+                  <tr className="border-b border-neutral-800 text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+                    <th className="p-2">Partner</th>
+                    <th className="p-2 text-right">Played</th>
+                    <th className="p-2 text-right">Won</th>
+                    <th className="p-2 text-right">Rate</th>
+                    <th className="p-2 text-right">Their rating</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {partners.map((pt) => (
+                    <tr key={pt.personId} className="border-b border-neutral-800 last:border-0">
+                      <td className="p-2">
+                        <Link href={`/people/${pt.personId}`} className="font-semibold hover:underline">
+                          {pt.name}
+                        </Link>
+                      </td>
+                      <td className="p-2 text-right font-mono tabular-nums">{pt.matches}</td>
+                      <td className="p-2 text-right font-mono tabular-nums">{pt.wins}</td>
+                      <td className="p-2 text-right font-mono tabular-nums">
+                        {pt.winRate == null
+                          ? <span className="text-neutral-600">—</span>
+                          : `${pt.winRate}%`}
+                      </td>
+                      <td className="p-2 text-right font-mono tabular-nums text-neutral-400">
+                        {pt.avgPartnerRating || "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </section>
         )}
 
