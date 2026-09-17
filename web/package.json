@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "vitest run src/lib/__tests__/db-fanout.test.ts && next build",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",

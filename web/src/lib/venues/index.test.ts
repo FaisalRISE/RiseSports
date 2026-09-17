@@ -248,6 +248,84 @@ describe("cancelling your own booking", () => {
   });
 });
 
+describe("loading bookings for every venue at once", () => {
+  /* /play renders every venue with its bookings. It used to ask per venue —
+     one or two queries each, all fired together — which grows with the number
+     of venues and, past the pool of eight, pipelines on one socket and wedges
+     the instance. So the page asks once for everything and groups in memory,
+     and these tests prove the grouping is not where venues get mixed up. */
+  const LATER = "06:30–07:00";
+
+  async function three() {
+    const b = await v.createVenue({
+      name: "Rally Point", area: "Andheri", courts: 1,
+      openTime: "06:00", closeTime: "08:00", pricePaise: 0, ownerPersonId: null,
+    });
+    const c = await v.createVenue({
+      name: "Quiet Court", area: "Juhu", courts: 1,
+      openTime: "06:00", closeTime: "08:00", pricePaise: 0, ownerPersonId: null,
+    });
+
+    await v.requestBooking(venue, { date: "2026-09-19", slot: SLOT, personId: null, guestName: "Later day" });
+    await v.requestBooking(venue, { date: DATE, slot: LATER, personId: null, guestName: "Later slot" });
+    await v.requestBooking(venue, { date: DATE, slot: SLOT, personId: "p2", guestName: "typed name" });
+    await v.requestBooking(b, { date: DATE, slot: SLOT, personId: null, guestName: "Declined one" });
+    await v.requestBooking(b, { date: DATE, slot: SLOT, personId: null, guestName: "Kept one" });
+
+    const [declined] = (await v.bookingsFor(b)).filter((x) => x.who === "Declined one");
+    await v.declineBooking(b, declined.id);
+    return { a: venue, b, c };
+  }
+
+  it("keeps each venue's bookings with that venue, soonest first", async () => {
+    const { a, b, c } = await three();
+    const all = await v.bookingsForVenues([a, b, c]);
+
+    expect(all.get(a.id)!.map((x) => [x.date, x.slot])).toEqual([
+      [DATE, SLOT], [DATE, LATER], ["2026-09-19", SLOT],
+    ]);
+    expect(all.get(b.id)!.map((x) => x.who)).toEqual(["Kept one"]);
+    /* A venue with nothing booked is present and empty, not missing — the
+       page reads it by id and would otherwise need a fallback everywhere. */
+    expect(all.get(c.id)).toEqual([]);
+  });
+
+  it("drops declined requests and uses a linked person's real name", async () => {
+    const { a, b } = await three();
+    const all = await v.bookingsForVenues([a, b]);
+
+    expect(all.get(b.id)!.some((x) => x.who === "Declined one")).toBe(false);
+    const linked = all.get(a.id)!.find((x) => x.personId === "p2")!;
+    expect(linked.who).toBe("Player 2");
+  });
+
+  it("agrees with asking for one venue", async () => {
+    const { a, b, c } = await three();
+    const all = await v.bookingsForVenues([a, b, c]);
+    for (const one of [a, b, c]) expect(await v.bookingsFor(one)).toEqual(all.get(one.id));
+  });
+
+  it("asks the database twice however many venues there are", async () => {
+    const { a, b, c } = await three();
+    let total = 0;
+    const original = client.query.bind(client);
+    const spy = vi.spyOn(client, "query").mockImplementation(((...args: Parameters<typeof client.query>) => {
+      total++;
+      return original(...args);
+    }) as typeof client.query);
+    try {
+      await v.bookingsForVenues([a, b, c]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(total).toBeLessThanOrEqual(2);
+  });
+
+  it("asks nothing at all for no venues", async () => {
+    expect((await v.bookingsForVenues([])).size).toBe(0);
+  });
+});
+
 describe("deleting a venue", () => {
   it("takes its bookings with it", async () => {
     await v.requestBooking(venue, { date: DATE, slot: SLOT, personId: "p2", guestName: "" });

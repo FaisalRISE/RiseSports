@@ -7,7 +7,7 @@ import { me } from "@/lib/community/me";
 import {
   localISO, prettyDate, prettyDays, priceLabel, restrictionChips,
 } from "@/lib/community";
-import { listVenues, slotsFor, bookingsFor, isVenueOwner } from "@/lib/venues";
+import { listVenues, slotsFor, bookingsForVenues, isVenueOwner } from "@/lib/venues";
 import { sportOf } from "@/lib/sports/registry";
 import { IdentityBar } from "./IdentityBar";
 import { Venues, type VenueView } from "./Venues";
@@ -55,23 +55,26 @@ export default async function PlayPage() {
       }
     }
 
-    venueViews = await Promise.all(
-      all.map(async (v) => ({
-        slug: v.slug,
-        name: v.name,
-        area: v.area,
-        courts: v.courts,
-        openTime: v.openTime,
-        closeTime: v.closeTime,
-        priceLabel: priceLabel(v.pricePaise),
-        ownerName: (v.ownerPersonId && owners.get(v.ownerPersonId)) || null,
-        /* Open access lets anyone run an unclaimed venue, same posture as the
-           rest of the app while there is no sign-in. */
-        isOwner: isVenueOwner(v, viewer?.id ?? null) || v.ownerPersonId === null,
-        slots: slotsFor(v),
-        bookings: await bookingsFor(v),
-      })),
-    );
+    /* One call for every venue's bookings, not one per venue fired together —
+       that grew with the number of venues, and past eight concurrent queries
+       it wedges the instance (see lib/db/index.ts). */
+    const bookings = await bookingsForVenues(all);
+
+    venueViews = all.map((v) => ({
+      slug: v.slug,
+      name: v.name,
+      area: v.area,
+      courts: v.courts,
+      openTime: v.openTime,
+      closeTime: v.closeTime,
+      priceLabel: priceLabel(v.pricePaise),
+      ownerName: (v.ownerPersonId && owners.get(v.ownerPersonId)) || null,
+      /* Open access lets anyone run an unclaimed venue, same posture as the
+         rest of the app while there is no sign-in. */
+      isOwner: isVenueOwner(v, viewer?.id ?? null) || v.ownerPersonId === null,
+      slots: slotsFor(v),
+      bookings: bookings.get(v.id) ?? [],
+    }));
   }
 
   return (

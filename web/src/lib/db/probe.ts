@@ -31,9 +31,10 @@ import { people, tournaments } from "./schema";
  *   count   count() from people            drizzle's count() helper
  *   order   tournaments ordered            the home page's own first query
  *
- * Sequential, never Promise.all: the client is `max: 1`, so concurrent queries
- * queue on one connection and a rung that hangs would be blamed on whichever
- * rung happened to sit behind it.
+ * Sequential, never Promise.all. When these were written the client was
+ * `max: 1`, so concurrent queries queued on one connection and a rung that hung
+ * would have been blamed on whichever rung sat behind it. The pool is `max: 8`
+ * now; running the rungs one at a time still keeps each rung's timing its own.
  *
  * Short rung budget on purpose. A hanging rung must not hold the response for
  * the whole function budget — four rungs at six seconds still answers inside
@@ -123,10 +124,10 @@ export async function climb(): Promise<Rung[]> {
   );
 
   /* ── The last rung, and the one every other rung was built to isolate ──
-   * Every rung above runs ALONE, which is how they were written: the client is
-   * `max: 1`, so the comment above says concurrent queries queue on one
-   * connection and a hanging rung would be blamed on whichever sat behind it.
-   * That caution is why the probes passed for hours while every real page hung.
+   * Every rung above runs ALONE, which is how they were written: the client was
+   * `max: 1` then, so concurrent queries queued on one connection and a hanging
+   * rung would have been blamed on whichever sat behind it. That caution is why
+   * the probes passed for hours while every real page hung.
    *
    * Because the pages do the opposite. `Promise.all` over three queries is in
    * the home page, /people, /play, /e/[slug], and in the stores behind /ledger
@@ -135,7 +136,12 @@ export async function climb(): Promise<Rung[]> {
    *
    * So this rung runs three at once, exactly as a page does. If it hangs where
    * the same three passed one at a time, concurrency on a single pooled
-   * connection is the whole outage. */
+   * connection is the whole outage. (It was: the pool is `max: 8` since.)
+   *
+   * Deliberately THREE and not nine. A rung wide enough to exceed the pool
+   * would reproduce the wedge — on a public route, on the instance serving the
+   * site. A health check must never be able to cause the outage it reports.
+   * The wide case is guarded statically instead, by db-fanout.test.ts. */
   rungs.push(
     await rung("concurrent", () =>
       Promise.all([
@@ -201,8 +207,9 @@ export function verdict(rungs: Rung[]): string {
   }
   if (stopped.name === "concurrent") {
     return (
-      "Every query passes ALONE and three at once hang. Concurrent queries on " +
-      "a single pooled connection are the fault — max: 1 plus Promise.all."
+      "Every query passes ALONE and three at once hang. That is the 2026-09-15 " +
+      "outage: concurrent queries pipelined onto one pooled connection. Check the " +
+      "pool in lib/db/index.ts is still max: 8 and has not been lowered."
     );
   }
   if (stopped.name === "builder" || stopped.name === "count" || stopped.name === "order") {

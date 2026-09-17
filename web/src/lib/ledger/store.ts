@@ -18,7 +18,7 @@ import "server-only";
  */
 
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import {
@@ -67,6 +67,19 @@ export async function loadBook(slug: string, meId: string | null): Promise<Loade
       .orderBy(desc(ledgerPayments.createdAt)),
   ]);
 
+  return assemble(row, members, entries, payments, meId);
+}
+
+/* Rows into the shape lib/finance takes. One place, used by the one-book page
+   and by the list, so the list can never become a second way of building a book
+   that disagrees with the book's own page. */
+function assemble(
+  row: LedgerBookRow,
+  members: LedgerMemberRow[],
+  entries: LoadedBook["entries"],
+  payments: LoadedBook["payments"],
+  meId: string | null,
+): LoadedBook {
   /* Fall back to the first member so the book always reads from somebody's
      side — a ledger with no "you" shows every number as a stranger's. */
   const me = members.find((m) => m.id === meId) ?? members[0];
@@ -101,6 +114,21 @@ export async function loadBook(slug: string, meId: string | null): Promise<Loade
   };
 }
 
+/**
+ * Every open book, with its counts and your balance.
+ *
+ * Four queries however many books there are. It used to call `loadBook` for
+ * every book with all of them fired together — about four queries per book —
+ * and on the transaction pooler anything past eight concurrent queries
+ * pipelines on one socket and wedges the whole instance, which is what took the
+ * site down on 2026-09-15. Three books would have done it again. The only
+ * reason it had not was that nobody had made a third book yet.
+ *
+ * So the rows for every book arrive in three queries, grouped in memory. The
+ * global ORDER BY carries through: grouping keeps each book's rows in the order
+ * they came, which is the same order `loadBook` asks for. The balance is still
+ * computed by lib/finance and nowhere else.
+ */
 export async function listBooks(): Promise<
   { row: LedgerBookRow; memberCount: number; entryCount: number; myBalance: number }[]
 > {
@@ -109,20 +137,45 @@ export async function listBooks(): Promise<
     .from(ledgerBooks)
     .where(isNull(ledgerBooks.archivedAt))
     .orderBy(desc(ledgerBooks.createdAt));
+  if (rows.length === 0) return [];
 
-  return Promise.all(
-    rows.map(async (row) => {
-      const loaded = await loadBook(row.slug, null);
-      const balances = loaded ? ledgerBalances(loaded.book) : {};
-      const me = loaded?.book.members.find((m) => m.me);
-      return {
-        row,
-        memberCount: loaded?.members.length ?? 0,
-        entryCount: loaded?.entries.length ?? 0,
-        myBalance: me ? balances[me.id] ?? 0 : 0,
-      };
-    }),
-  );
+  const ids = rows.map((r) => r.id);
+  const [members, entries, payments] = await Promise.all([
+    db.select().from(ledgerMembers).where(inArray(ledgerMembers.bookId, ids))
+      .orderBy(asc(ledgerMembers.position), asc(ledgerMembers.createdAt)),
+    db.select().from(ledgerEntries).where(inArray(ledgerEntries.bookId, ids))
+      .orderBy(desc(ledgerEntries.date), desc(ledgerEntries.createdAt)),
+    db.select().from(ledgerPayments).where(inArray(ledgerPayments.bookId, ids))
+      .orderBy(desc(ledgerPayments.createdAt)),
+  ]);
+
+  const membersOf = byBook(members);
+  const entriesOf = byBook(entries);
+  const paymentsOf = byBook(payments);
+
+  return rows.map((row) => {
+    const loaded = assemble(
+      row, membersOf.get(row.id) ?? [], entriesOf.get(row.id) ?? [], paymentsOf.get(row.id) ?? [], null,
+    );
+    const balances = ledgerBalances(loaded.book);
+    const me = loaded.book.members.find((m) => m.me);
+    return {
+      row,
+      memberCount: loaded.members.length,
+      entryCount: loaded.entries.length,
+      myBalance: me ? balances[me.id] ?? 0 : 0,
+    };
+  });
+}
+
+function byBook<T extends { bookId: string }>(rows: T[]): Map<string, T[]> {
+  const out = new Map<string, T[]>();
+  for (const r of rows) {
+    const list = out.get(r.bookId);
+    if (list) list.push(r);
+    else out.set(r.bookId, [r]);
+  }
+  return out;
 }
 
 /* Everything the Balances tab shows, all of it from lib/finance. */

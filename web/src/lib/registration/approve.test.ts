@@ -198,3 +198,64 @@ describe("declining and payment", () => {
     expect(back.paidAt).toBeNull();
   });
 });
+
+/* Kept LAST, with phones nothing above uses: earlier tests read "the first
+ * registration" and "every person", and would see these rows otherwise.
+ *
+ * All three were found by the concurrency audit that followed the 2026-09-15
+ * outage. Approval used to look people up with a Promise.all over the entrants,
+ * so every entrant's "is this phone known?" was asked before any of them was
+ * created — which is how one phone could become two people. */
+describe("the same phone twice, and two taps at once", () => {
+  it("links a number given twice on one entry to ONE person, and only the first player", async () => {
+    /* The same number written two ways: a pair who gave one contact phone. */
+    const id = await entryWith(
+      [{ name: "Dev", phone: "+919000000201" }, { name: "Dev's partner", phone: "09000000201" }],
+      "Same Phone",
+    );
+    const res = await approve.approveRegistration(id);
+    expect(res.ok, res.ok ? "" : res.error).toBe(true);
+    if (!res.ok) return;
+
+    const found = await db.select().from(schema.people).where(eq(schema.people.phone, "+919000000201"));
+    expect(found).toHaveLength(1);
+    expect(res.linked).toBe(1);
+
+    /* Not both. One person twice on a team gives two rating rows for the same
+       match, person and format, which the unique index refuses — and a rating
+       failure on score save is only logged, so that team's ratings would stop
+       moving with nothing on screen to say why. */
+    const squad = await db.select().from(schema.players).where(eq(schema.players.teamId, res.teamId));
+    const personOf = Object.fromEntries(squad.map((p) => [p.name, p.personId]));
+    expect(personOf["Dev"]).toBe(found[0].id);
+    expect(personOf["Dev's partner"]).toBeNull();
+  });
+
+  it("gives two simultaneous creates of one phone the same person", async () => {
+    const { findOrCreatePerson } = await import("@/lib/people");
+    const input = { name: "Esha", gender: "F" as const, phone: "+919000000202", formatKey: "pb:md" };
+
+    const [a, b] = await Promise.all([findOrCreatePerson(input), findOrCreatePerson(input)]);
+
+    expect(a.person.id).toBe(b.person.id);
+    /* Exactly one of them made it; the other found it. */
+    expect([a.created, b.created].sort()).toEqual([false, true]);
+    expect(
+      await db.select().from(schema.people).where(eq(schema.people.phone, "+919000000202")),
+    ).toHaveLength(1);
+  });
+
+  it("turns two simultaneous approvals of one entry into ONE team", async () => {
+    /* A double tap on Approve, or two organisers on two phones. */
+    const id = await entryWith([{ name: "Faiz", phone: "+919000000203" }], "Double Tap");
+
+    const results = await Promise.all([approve.approveRegistration(id), approve.approveRegistration(id)]);
+
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    const refused = results.find((r) => !r.ok);
+    expect(refused && !refused.ok && refused.error).toMatch(/already approved/i);
+    expect(
+      await db.select().from(schema.teams).where(eq(schema.teams.name, "Double Tap")),
+    ).toHaveLength(1);
+  });
+});

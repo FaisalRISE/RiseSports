@@ -56,28 +56,52 @@ export type BookingView = {
  * the list of things still to deal with, and a refused request is not one.
  */
 export async function bookingsFor(venue: Venue): Promise<BookingView[]> {
+  return (await bookingsForVenues([venue])).get(venue.id) ?? [];
+}
+
+/**
+ * Live bookings for many venues, in two queries however many venues there are.
+ *
+ * /play shows every venue with its bookings, and used to ask once per venue with
+ * all the requests fired together — a fan-out that grows with the number of
+ * venues. Past the pool of eight that pipelines on one socket and wedges the
+ * whole instance behind the transaction pooler (the 2026-09-15 outage). So it
+ * asks for everything at once and sorts it out in memory.
+ *
+ * Every venue asked about comes back with an entry, empty if nothing is booked,
+ * so a caller reading by id never needs its own fallback.
+ */
+export async function bookingsForVenues(list: Venue[]): Promise<Map<string, BookingView[]>> {
+  const out = new Map<string, BookingView[]>(list.map((v) => [v.id, []]));
+  if (list.length === 0) return out;
+
+  /* Ordered here, once, so each venue's slice comes out already soonest first
+     — grouping keeps the relative order of rows. */
   const rows = await db
-    .select({ b: venueBookings })
+    .select()
     .from(venueBookings)
-    .where(eq(venueBookings.venueId, venue.id))
+    .where(inArray(venueBookings.venueId, [...out.keys()]))
     .orderBy(asc(venueBookings.date), asc(venueBookings.slot), asc(venueBookings.createdAt));
 
-  const live = rows.map((r) => r.b).filter((b) => b.status !== "declined");
+  const live = rows.filter((b) => b.status !== "declined");
   const ids = [...new Set(live.map((b) => b.personId).filter((x): x is string => !!x))];
-  const folk: Person[] = ids.length
-    ? await db.select().from(people).where(inArray(people.id, ids))
+  const folk: Pick<Person, "id" | "name">[] = ids.length
+    ? await db.select({ id: people.id, name: people.name }).from(people).where(inArray(people.id, ids))
     : [];
   const nameOf = new Map(folk.map((p) => [p.id, p.name]));
 
-  return live.map((b) => ({
-    id: b.id,
-    date: b.date,
-    slot: b.slot,
-    /* A linked person's real name wins over whatever was typed in the box. */
-    who: (b.personId && nameOf.get(b.personId)) || b.guestName,
-    status: b.status,
-    personId: b.personId,
-  }));
+  for (const b of live) {
+    out.get(b.venueId)?.push({
+      id: b.id,
+      date: b.date,
+      slot: b.slot,
+      /* A linked person's real name wins over whatever was typed in the box. */
+      who: (b.personId && nameOf.get(b.personId)) || b.guestName,
+      status: b.status,
+      personId: b.personId,
+    });
+  }
+  return out;
 }
 
 /** How many of the venue's courts are already spoken for in one half hour. */

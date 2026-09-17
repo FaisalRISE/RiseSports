@@ -13,11 +13,12 @@ import * as schema from "./schema";
  *
  *     async transaction() { throw new Error("No transactions support in neon-http driver"); }
  *
- * The app opens transactions in four places: submitting a registration,
- * approving one into a team, and applying and reverting ratings. All four would
- * have thrown on the first real deployment — and the rating ones sit inside a
- * try/catch, so they would have failed SILENTLY, with matches finishing and
- * ratings never moving.
+ * When this was written the app opened transactions in four places:
+ * submitting a registration, approving one into a team, and applying and
+ * reverting ratings (community play, venues and the ledger have added more
+ * since). All four would have thrown on the first real deployment — and the
+ * rating ones sit inside a try/catch, so they would have failed SILENTLY, with
+ * matches finishing and ratings never moving.
  *
  * It went unnoticed for three milestones because every test and every e2e run
  * uses PGlite, which supports transactions. Nothing had ever run against the
@@ -134,9 +135,30 @@ function getDb(): Db {
      * Supavisor's per-tenant client limit is the number to check then, not
      * Postgres's 60 backends, which the pooler exists to multiplex.
      *
-     * **A `Promise.all` over a mapped list is still the hazard here.** Three
-     * sites map an unbounded array into concurrent queries; past eight they
-     * queue and pipeline again. Prefer a sequential loop for those. */
+     * **A fan-out that grows with the data is still the hazard.** Eight covers
+     * a fixed `Promise.all` of four; it does not cover `Promise.all(rows.map(…))`,
+     * which is three queries on a quiet day and thirty on a busy one. Three
+     * such sites existed (the ledger's book list, the venues on /play, and
+     * registration approval) and all three were rewritten on 2026-09-17 as
+     * sequential loops or single `inArray` queries. The ledger one would have
+     * wedged the site at its THIRD book.
+     * `src/lib/__tests__/db-fanout.test.ts` now fails the deploy on any new one:
+     * the `build` script runs it before `next build`, and Vercel's build is that
+     * script. It has to be static, because nothing else can catch this — every
+     * test runs on PGlite, which has no pool and no pooler.
+     *
+     * ── Exactly where the pipelining happens (read from postgres-js source) ──
+     * A new query goes to an OPEN connection, else opens a CLOSED one, else —
+     * with every connection already busy — is written onto a BUSY one behind
+     * whatever that connection is running. That third branch is the pipeline.
+     * A connection counts as able to take more while the number of statements
+     * waiting on it is below `max_pipeline`, which defaults to 100. So
+     * `max_pipeline: 0` would switch pipelining off altogether and make excess
+     * queries wait for a free connection instead — a structural fix for this
+     * whole class of outage, where the guard test is a disciplinary one. It is
+     * NOT set, because it has not been tried against Supavisor and the only
+     * place to try it is production. Undocumented in the types, but read as a
+     * plain option (`k in o`), so 0 is honoured rather than defaulted. */
     max: 8,
     idle_timeout: 20,
 

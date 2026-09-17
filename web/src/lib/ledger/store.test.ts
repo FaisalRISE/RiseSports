@@ -324,6 +324,89 @@ describe("the book list", () => {
     expect(card.entryCount).toBe(1);
     expect(ledgerMoney(card.myBalance)).toBe(ledgerMoney(60000));
   });
+
+  /* Several books, each different, one archived. `n` books with `n` different
+     payers and amounts, so a list that mixed up whose entries belong to which
+     book would show a wrong balance rather than a plausible one. */
+  async function books(n: number) {
+    await testDb.delete(schema.ledgerBooks);
+    const slugs: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const res = await s.createBook(`Court ${i}`, ["You", "Nadeem", "Sumit"].slice(0, 2 + (i % 2)));
+      if (!res.ok) throw new Error(res.error);
+      const loaded = (await s.loadBook(res.id!, null))!;
+      const [first, second] = loaded.members;
+      for (let k = 0; k <= i; k++) {
+        await s.saveEntry(loaded.row.id, {
+          amount: 10000 * (k + 1) + i, payerId: k % 2 ? second.id : first.id,
+          participantIds: loaded.members.map((m) => m.id), type: "COURT_BOOKING",
+          note: `Entry ${k}`, venue: "Smash Arena", date: DATE,
+        });
+      }
+      slugs.push(res.id!);
+    }
+    return slugs;
+  }
+
+  it("agrees with loading each book on its own, and leaves archived books out", async () => {
+    const slugs = await books(7);
+    await testDb
+      .update(schema.ledgerBooks)
+      .set({ archivedAt: new Date() })
+      .where(eq(schema.ledgerBooks.slug, slugs[6]));
+
+    const cards = await s.listBooks();
+    expect(cards.map((c) => c.row.slug).sort()).toEqual(slugs.slice(0, 6).sort());
+
+    /* Every figure checked against the one-book path, which reads from
+       lib/finance — the list must never become a second way to compute a
+       balance that could disagree with the book's own page. */
+    for (const card of cards) {
+      const loaded = (await s.loadBook(card.row.slug, null))!;
+      const me = loaded.book.members.find((m) => m.me)!;
+      expect(card.memberCount, card.row.slug).toBe(loaded.members.length);
+      expect(card.entryCount, card.row.slug).toBe(loaded.entries.length);
+      expect(card.myBalance, card.row.slug).toBe(ledgerBalances(loaded.book)[me.id] ?? 0);
+    }
+  });
+
+  /* The outage guard, measured rather than argued. Wrapping PGlite's query
+     counts every statement drizzle sends and how many are in flight at once.
+     The list used to make about four queries PER BOOK, all fired together —
+     three books already past the pool of eight, which pipelines on one socket
+     and wedges the instance behind Supavisor. PGlite has no pool, so nothing
+     else in the test suite can see this; the count is the only evidence. */
+  async function metered(fn: () => Promise<unknown>) {
+    let total = 0;
+    let inFlight = 0;
+    let peak = 0;
+    const original = client.query.bind(client);
+    const spy = vi.spyOn(client, "query").mockImplementation((async (...args: Parameters<typeof client.query>) => {
+      total++;
+      peak = Math.max(peak, ++inFlight);
+      try {
+        return await original(...args);
+      } finally {
+        inFlight--;
+      }
+    }) as typeof client.query);
+    try {
+      await fn();
+    } finally {
+      spy.mockRestore();
+    }
+    return { total, peak };
+  }
+
+  it("makes the same number of queries for two books as for seven", async () => {
+    await books(2);
+    const few = await metered(() => s.listBooks());
+    await books(7);
+    const many = await metered(() => s.listBooks());
+
+    expect(many.total, `2 books: ${few.total} queries, 7 books: ${many.total}`).toBe(few.total);
+    expect(many.peak, "queries in flight at once").toBeLessThanOrEqual(3);
+  });
 });
 
 describe("deleting a book", () => {

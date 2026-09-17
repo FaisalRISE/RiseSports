@@ -940,10 +940,44 @@ open on demand, so it is a ceiling and not a reservation.
 - `max: 1` was chosen because a serverless invocation handles one request and freezes, so one
   connection each is what a pooler is designed for. **That is true of CONNECTIONS and false of
   QUERIES**, and the whole outage lives in the gap between them.
-- **A `Promise.all` over a MAPPED list is the remaining hazard.** Three sites map an unbounded
-  array into concurrent queries — `lib/ledger/store.ts:113`, `app/play/page.tsx:58`,
-  `lib/registration/approve.ts:79`. Past eight they pipeline again and wedge the same way. Those
-  want a sequential loop; noted at the change in `lib/db/index.ts`.
+- **A fan-out that grows with the data is the remaining hazard, and it is now guarded.** Three
+  sites mapped an unbounded array into concurrent queries: the ledger's book list, the venues on
+  `/play`, and registration approval. **All three were rewritten on 2026-09-17**:
+  - `listBooks` made about four queries PER BOOK, all at once. Measured: 9 queries for 2 books,
+    29 for 7. Three books would have wedged the site; production simply had none yet. It is
+    four queries now, however many books.
+  - `bookingsForVenues` loads every venue's bookings in two queries.
+  - Approval looks entrants up one at a time. Its `Promise.all` asked "is this phone known?" for
+    every entrant before creating any, so a pair who gave one contact number raced into
+    `23505 people_phone_idx`. `findOrCreatePerson` is race-safe too now (`onConflictDoNothing`
+    on the unique phone, then read back the winner). Approval also claims the entry inside its
+    transaction (`status <> 'approved'`), so a double tap on Approve makes ONE team.
+  - A phone repeated within one entry links only the first player. Linking both would put one
+    person on a team twice. Every match would then write two `rating_history` rows for the same
+    (match, person, format), the unique index would refuse them, and score save only LOGS a
+    rating failure, so the team's ratings would silently stop moving.
+- **`src/lib/__tests__/db-fanout.test.ts` fails the deploy on a new one.** The `build` script is
+  `vitest run src/lib/__tests__/db-fanout.test.ts && next build`, and Vercel's build is that
+  script. It is not a `prebuild` hook because Vercel installs with pnpm, and pnpm does not run
+  pre-scripts. An adversarial review caught the first draft claiming "fails the build" while
+  nothing on the way to production ran a test at all: no CI, no hook, and `build` was a bare
+  `next build`. It parses with the TypeScript compiler, not a regex, and flags three things:
+  - a `Promise.all/allSettled/any/race` whose argument is not a literal array of at most four;
+  - an `async` callback to `map`, `flatMap` or `forEach`;
+  - any combinator inside a `.transaction(`, which holds one connection by definition.
+
+  Canaries prove it catches across line breaks and ignores comments and strings. It exists
+  because **nothing else can see this hazard: every test runs on PGlite, which has no pool.** The
+  health probe deliberately does NOT fire more than eight queries: a public route that can wedge
+  the instance serving the site would cause the outage it exists to report.
+- **Where the pipelining actually happens, read from postgres-js source.** A query goes to an
+  open connection, else opens a closed one, else is written onto a BUSY one. That last branch is
+  the pipeline. A connection keeps accepting while fewer than `max_pipeline` statements wait on
+  it, and the default is 100. **`max_pipeline: 0` would turn pipelining off entirely**, making
+  excess queries wait for a free connection instead: a structural fix, where the guard is a
+  disciplinary one. It is not set, because it has not been tried against Supavisor and the only
+  place to try it is production. The option is undocumented in the types but read as a plain
+  option, so 0 is honoured.
 - **Every property that made this hard to find follows from the mechanism**, and each one sent
   the search somewhere else:
   - It HANGS rather than erroring. No statement is executing, so no `statement_timeout` can

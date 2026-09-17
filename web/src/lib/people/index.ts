@@ -153,8 +153,18 @@ export type NewPersonInput = {
  * attributable — a rating nobody can account for is not a reference.
  */
 export async function createPerson(input: NewPersonInput): Promise<Person> {
-  const phone = normalisePhone(input.phone);
+  const [row] = await db
+    .insert(people)
+    .values(newPersonRow(input, normalisePhone(input.phone)))
+    .returning();
+  return row;
+}
 
+/* The row a new person starts as. One definition, because `createPerson` and
+   the race-safe insert in `findOrCreatePerson` must seed a rating identically —
+   two copies would drift, and a person's starting rating would then depend on
+   which path happened to create them. */
+function newPersonRow(input: NewPersonInput, phone: string | null): typeof people.$inferInsert {
   const seed =
     input.dupr != null ? seedFromDupr(input.dupr)
     : input.bandSeed != null ? input.bandSeed
@@ -163,27 +173,22 @@ export async function createPerson(input: NewPersonInput): Promise<Person> {
   const seedSource: Person["seedSource"] =
     input.dupr != null ? "dupr" : input.bandSeed != null ? "organiser" : "default";
 
-  const [row] = await db
-    .insert(people)
-    .values({
-      id: randomUUID(),
-      phone,
-      name: input.name.trim(),
-      gender: input.gender,
-      riseRatings: { [input.formatKey]: seed },
-      riseBest: seed,
-      matchCount: {},
-      /* Deliberately null, not 0: nobody has a reliability score before they
-         have played. Zero would read as "known to be unreliable". */
-      reliability: null,
-      dupr: input.dupr != null ? Math.round(input.dupr * 100) : null,
-      duprEnteredAt: input.dupr != null ? new Date() : null,
-      seedSource,
-      seededBy: input.seededBy ?? null,
-    })
-    .returning();
-
-  return row;
+  return {
+    id: randomUUID(),
+    phone,
+    name: input.name.trim(),
+    gender: input.gender,
+    riseRatings: { [input.formatKey]: seed },
+    riseBest: seed,
+    matchCount: {},
+    /* Deliberately null, not 0: nobody has a reliability score before they
+       have played. Zero would read as "known to be unreliable". */
+    reliability: null,
+    dupr: input.dupr != null ? Math.round(input.dupr * 100) : null,
+    duprEnteredAt: input.dupr != null ? new Date() : null,
+    seedSource,
+    seededBy: input.seededBy ?? null,
+  };
 }
 
 /**
@@ -194,16 +199,44 @@ export async function createPerson(input: NewPersonInput): Promise<Person> {
  * different players, and merging ratings wrongly is far harder to undo than
  * creating a duplicate — so a name collision is left for the organiser to
  * resolve by picking from `searchPeople`.
+ *
+ * ── Two callers, one phone, at the same moment ───────────────────────────
+ * "Look it up, and if nobody has it, insert" is two statements, and two
+ * requests can both finish the look-up before either inserts. The second insert
+ * then hits `people_phone_idx`, which is UNIQUE, and throws — so an approval, or
+ * an organiser adding a player, failed outright with a database error. Approval
+ * used to trigger this on its own: it looked up every entrant at once, so a pair
+ * who gave the same contact phone raced itself.
+ *
+ * The index is the arbiter rather than a lock or a retry. The insert does
+ * nothing on a phone conflict, and whoever loses reads back the row the winner
+ * wrote. On Postgres the losing insert waits for the winner's commit before
+ * deciding, so the read-back always finds it; on PGlite the two simply run one
+ * after the other. Either way there is one person and nobody sees an error.
  */
 export async function findOrCreatePerson(
   input: NewPersonInput,
 ): Promise<{ person: Person; created: boolean }> {
   const phone = normalisePhone(input.phone);
-  if (phone) {
-    const existing = await findByPhone(phone);
-    if (existing) return { person: existing, created: false };
-  }
-  return { person: await createPerson(input), created: true };
+  /* No phone means nothing to collide on: a phoneless person is always new. */
+  if (!phone) return { person: await createPerson(input), created: true };
+
+  const existing = await findByPhone(phone);
+  if (existing) return { person: existing, created: false };
+
+  const [made] = await db
+    .insert(people)
+    .values(newPersonRow(input, phone))
+    .onConflictDoNothing({ target: people.phone })
+    .returning();
+  if (made) return { person: made, created: true };
+
+  const winner = await findByPhone(phone);
+  /* A conflict means the row exists, so this cannot be null unless it was
+     deleted in the instant between — worth an error that says so, rather than
+     a person-shaped undefined further down. */
+  if (!winner) throw new Error(`The person with phone ${maskPhone(phone)} was removed while being added.`);
+  return { person: winner, created: false };
 }
 
 /** The rating this person brings INTO an event, for the format being played. */
