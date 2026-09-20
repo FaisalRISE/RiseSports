@@ -34,7 +34,7 @@
  * what they typed on screen next to the reason.
  */
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import type { FormField, Waiver } from "@/lib/db/schema";
 import type { SubmitResult } from "@/app/e/[slug]/actions";
 
@@ -66,7 +66,6 @@ const NO_NEEDS: EntryNeeds = { gender: false, dob: false, dupr: false, phone: fa
 
 export function EntryForm(props: EntryFormProps) {
   const { minTeamSize, maxTeamSize, divisions, formFields, waivers } = props;
-  const [count, setCount] = useState(Math.max(1, minTeamSize));
   const [problems, setProblems] = useState<{ field: string; message: string }[]>([]);
   const [done, setDone] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -76,18 +75,39 @@ export function EntryForm(props: EntryFormProps) {
   const division = divisions.find((d) => d.id === divisionId) ?? null;
   const needs = division?.needs ?? NO_NEEDS;
 
-  /* Man/woman per row, controlled so a category with a gender rule can start
-     every row on "Choose…" instead of a silent "M" the entrant never looked at.
-     A row the entrant has not touched follows the category; one they have set
-     keeps their choice. */
-  const [genders, setGenders] = useState<string[]>(() =>
-    Array.from({ length: 12 }, () => (needs.gender ? "" : "M")));
-  const [touched, setTouched] = useState<boolean[]>(() => Array(12).fill(false));
+  /* ── One object per player row, with an identity React can follow ────────
+     The rows used to be a COUNT, rendered `key={i}`, with name, phone, date of
+     birth and DUPR left uncontrolled in the DOM. "Remove" on player 2 of 3
+     dropped the count to 2, React unmounted the LAST child, and what vanished
+     was player THREE's typing — player 2's stayed exactly where it was. The
+     entrant deletes the wrong person and need not even notice, because a name
+     is still sitting in the row they clicked. A stable `id` as the key makes
+     React move each surviving row's own DOM node rather than renumber them, so
+     an uncontrolled value goes where its row goes.
+     `data-player` and the error keys stay POSITIONAL, because the server
+     numbers players by their position in the submitted form.
+
+     Man/woman rides on the row for the same reason — a parallel array came
+     apart from the rows it described, so a row set to F, removed and added
+     back came back showing F and still marked as chosen, which meant changing
+     category could not reset it either. It is controlled so a category with a
+     gender rule can start every row on "Choose…" rather than a silent "M" the
+     entrant never looked at; an untouched row follows the category, a chosen
+     one keeps its choice. */
+  const [rows, setRows] = useState(() =>
+    Array.from({ length: Math.max(1, minTeamSize) }, (_, id) => ({
+      id, gender: needs.gender ? "" : "M", touched: false,
+    })));
+  const nextId = useRef(rows.length);
+  const count = rows.length;
+
+  const setGenderAt = (i: number, v: string) =>
+    setRows((rs) => rs.map((r, j) => (j === i ? { ...r, gender: v, touched: true } : r)));
 
   const chooseDivision = (id: string) => {
     setDivisionId(id);
     const next = divisions.find((d) => d.id === id)?.needs ?? NO_NEEDS;
-    setGenders((gs) => gs.map((g, i) => (touched[i] ? g : next.gender ? "" : "M")));
+    setRows((rs) => rs.map((r) => (r.touched ? r : { ...r, gender: next.gender ? "" : "M" })));
   };
 
   const errorFor = (field: string) => problems.find((p) => p.field === field)?.message;
@@ -189,8 +209,8 @@ export function EntryForm(props: EntryFormProps) {
           Players {minTeamSize === maxTeamSize ? `(${minTeamSize})` : `(${minTeamSize}–${maxTeamSize})`}
         </legend>
 
-        {Array.from({ length: count }, (_, i) => (
-          <div key={i} data-player={i} className="rounded-xl border border-neutral-800 bg-neutral-900/50 p-3">
+        {rows.map((row, i) => (
+          <div key={row.id} data-player={i} className="rounded-xl border border-neutral-800 bg-neutral-900/50 p-3">
             <div className="mb-2 flex items-center gap-2">
               <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
                 Player {i + 1}
@@ -198,17 +218,8 @@ export function EntryForm(props: EntryFormProps) {
               {i >= minTeamSize && (
                 <button
                   type="button"
-                  /* The row that goes takes its state with it. Without this a
-                     row set to F, removed, and added back again came back
-                     showing F — and `touched` still said the entrant had chosen
-                     it, so switching category could not reset it either. They
-                     type a man's name under a dropdown they never looked at,
-                     and Mixed is satisfied by a woman who is not on the team. */
-                  onClick={() => {
-                    setGenders((gs) => gs.map((g, j) => (j === count - 1 ? (needs.gender ? "" : "M") : g)));
-                    setTouched((ts) => ts.map((v, j) => (j === count - 1 ? false : v)));
-                    setCount((c) => c - 1);
-                  }}
+                  /* THIS row goes — the one whose "remove" was pressed. */
+                  onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}
                   className="ml-auto text-[10px] font-bold text-neutral-500 hover:text-rose-400"
                 >
                   remove
@@ -225,13 +236,9 @@ export function EntryForm(props: EntryFormProps) {
               />
               <select
                 name="playerGender"
-                value={genders[i]}
+                value={row.gender}
                 required={needs.gender && i < minTeamSize}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setGenders((gs) => gs.map((g, j) => (j === i ? v : g)));
-                  setTouched((ts) => ts.map((t, j) => (j === i ? true : t)));
-                }}
+                onChange={(e) => setGenderAt(i, e.target.value)}
                 aria-label={`Player ${i + 1} gender`}
                 className="rounded-lg border border-neutral-700 bg-neutral-950 p-2.5 text-sm"
               >
@@ -298,7 +305,8 @@ export function EntryForm(props: EntryFormProps) {
         {count < maxTeamSize && (
           <button
             type="button"
-            onClick={() => setCount((c) => c + 1)}
+            onClick={() =>
+              setRows((rs) => [...rs, { id: nextId.current++, gender: needs.gender ? "" : "M", touched: false }])}
             className="rounded-lg border border-neutral-700 px-3 py-2 text-xs font-bold text-neutral-300 hover:border-neutral-500"
           >
             + Add player

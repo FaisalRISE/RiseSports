@@ -1162,13 +1162,22 @@ Defaults, not asked: Mixed = at least one man and one woman; no DUPR fails a DUP
 - The flags are one fixed set of five sequential queries (`divisionMisfits`), loaded AFTER the
   manage page's `Promise.all`, never inside it; the approvals list finds every waiting entrant's
   person in one `peopleByPhones` query. Query count is tested flat for 2 teams and 10.
-- **A removed player row takes its state with it.** The entry form keeps man/woman per row in a
-  fixed array of twelve and the row count separately; "remove" only shrank the count. A row set
-  to F, removed and added back came back showing F, with `touched` still saying the entrant had
-  chosen it — so switching category could not reset it either. They type a man's name under a
-  dropdown they never look at, and Mixed is satisfied by a woman who is not on the team.
-  (Separately, "remove" always drops the LAST row rather than the one clicked, which is
-  pre-existing and is being fixed on its own.)
+- **The entry form's player rows are OBJECTS WITH IDS, not a count.** They were a count
+  rendered `key={i}`, with name, phone, date of birth and DUPR left uncontrolled in the DOM —
+  so "remove" on player 2 of 3 dropped the count, React unmounted the LAST child, and what
+  disappeared was player THREE's typing while player 2's sat exactly where it was. The entrant
+  deletes the wrong person and need not even notice, because a name is still in the row they
+  clicked. A stable id as the key makes React move each surviving row's own node instead of
+  renumbering them. `data-player` and the error keys stay POSITIONAL, because the server numbers
+  players by their position in the submitted form.
+  - Man/woman moved onto the row for the same reason: as a parallel array of twelve it came
+    apart from the rows it described, so a row set to F, removed and added back came back
+    showing F and still marked as chosen — which meant changing category could not reset it
+    either. They type a man's name under a dropdown they never look at, and Mixed is satisfied
+    by a woman who is not on the team.
+  - `e2e:registration` removes the MIDDLE of three rows and checks the first and third are what
+    is left. Verified by putting `key={i}` back: it fails with "First, Second". A test that
+    removes the last row passes either way and proves nothing.
 - `npm run test:tz` runs the unit suite under UTC and Asia/Kolkata (a script, because
   `TZ=… vitest` is not valid in Windows' shell).
 - Not done, by decision: `playingSince`, `duprUpdatedAfter`, `duprId`, equal-numbers Mixed,

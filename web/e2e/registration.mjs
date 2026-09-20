@@ -91,6 +91,47 @@ ok(
   "a custom question was added",
 );
 
+/* ── "remove" takes away the player whose remove was pressed ─────────────── */
+console.log("\n== removing the middle player ==");
+
+/* Only rows PAST the minimum can be removed, so the minimum has to be low
+   enough for a middle row to have the button at all. Set wide for this check,
+   then put it back to a pair. */
+await p.goto(`${BASE}/t/${slug}/manage/registration`);
+await p.waitForTimeout(1200);
+await p.fill('input[name="minTeamSize"]', "1");
+await p.fill('input[name="maxTeamSize"]', "4");
+await p.click('button:has-text("Save")');
+await p.waitForTimeout(1500);
+
+await p.goto(`${BASE}/e/${slug}`);
+await p.waitForTimeout(1200);
+for (let i = 0; i < 2; i++) {
+  await p.click('button:has-text("Add player")');
+  await p.waitForTimeout(400);
+}
+for (const [i, who] of ["First", "Second", "Third"].entries()) {
+  await p.locator('input[name="playerName"]').nth(i).fill(`${who} ${stamp}`);
+}
+/* Row 2 of 3 — the one in the middle, which is the only way to tell "remove
+   this row" apart from "remove the last row". They looked identical until
+   somebody removed the middle one and lost the third player's details. */
+await p.locator('[data-player="1"] button:has-text("remove")').click();
+await p.waitForTimeout(500);
+const left = await p.locator('input[name="playerName"]').evaluateAll((els) => els.map((e) => e.value));
+ok(left.length === 2, `two rows left, got ${left.length}`);
+ok(
+  left[0] === `First ${stamp}` && left[1] === `Third ${stamp}`,
+  `the middle player went and the others stayed: ${JSON.stringify(left)}`,
+);
+
+await p.goto(`${BASE}/t/${slug}/manage/registration`);
+await p.waitForTimeout(1200);
+await p.fill('input[name="minTeamSize"]', "2");
+await p.fill('input[name="maxTeamSize"]', "2");
+await p.click('button:has-text("Save")');
+await p.waitForTimeout(1500);
+
 /* ── Enter, as a player ──────────────────────────────────────────────────── */
 console.log("\n== a player enters from the public page ==");
 
