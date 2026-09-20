@@ -10,8 +10,12 @@ import "server-only";
  *
  * `reason` is written to be shown to a player, not logged for a developer. */
 
-import type { FormField, Tournament, Waiver } from "@/lib/db/schema";
+import type { FormField, Person, Tournament, Waiver } from "@/lib/db/schema";
 import { acceptsEntries } from "@/lib/auth/policy";
+import {
+  duprLabel, duprToX100, needsFrom, parseDobISO, playerEvidence,
+  type Evidence, type EntryVerdict, type Rules,
+} from "@/lib/eligibility";
 
 export type EntryWindow =
   | { open: true }
@@ -56,13 +60,153 @@ const fmt = (d: Date) =>
 
 export type EntryInput = {
   teamName: string;
-  players: { name: string; phone?: string | null; gender?: "M" | "F" }[];
+  players: { name: string; phone?: string | null; gender?: "M" | "F" | null }[];
   divisionId?: string | null;
   answers: Record<string, string>;
   waiversAccepted: string[];
 };
 
 export type Problem = { field: string; message: string };
+
+/** One row of the entry form's players, as typed, with its row number kept. */
+export type TypedPlayer = {
+  /** The row on the form, so a message lands under the right player even when
+      a blank row in between was skipped. */
+  row: number;
+  name: string;
+  phone: string | null;
+  gender: "M" | "F" | null;
+  dob: string;
+  dupr: string;
+};
+
+/**
+ * What a player left out that the chosen category needs — asked BEFORE judging
+ * the rules, so the entrant hears "Enter date of birth" rather than "Age 35+
+ * only" when the real problem is an empty box.
+ *
+ * Returns one message per player at most, several reasons joined, under
+ * `player:<row>`. A category with no rules needs nothing and returns nothing,
+ * which is what keeps its form behaving exactly as it did.
+ */
+export function entryRuleProblems(rules: Rules, players: TypedPlayer[], normalisePhone: (p: string | null) => string | null): Problem[] {
+  const needs = needsFrom(rules);
+  const out: Problem[] = [];
+  /* Where the phone IS the evidence, it has to belong to one player. Two rows
+     carrying one number both read as that person, so both clear a rating limit
+     — and approval then deliberately leaves the second unlinked, because one
+     person cannot be on a team twice. The team would be created with a player
+     the rules were never really applied to, and the manage screen would flag it
+     red for a reason the entrant was never told about. Said here, where the
+     number can still be corrected. */
+  const usedPhones = new Set<string>();
+
+  for (const p of players) {
+    const says: string[] = [];
+    if (needs.gender && p.gender == null) says.push("Choose man or woman.");
+    if (needs.dob) {
+      if (!p.dob.trim()) says.push("Enter date of birth. This category has an age limit.");
+      else if (!parseDobISO(p.dob)) says.push("Enter a real date of birth.");
+    }
+    if (needs.dupr) {
+      if (!p.dupr.trim()) {
+        const bound = rules.duprMin != null
+          ? `DUPR ${duprLabel(rules.duprMin)}+`
+          : `DUPR ${duprLabel(rules.duprMax!)} and under`;
+        says.push(`Enter your DUPR. This category needs ${bound}.`);
+      } else if (duprToX100(p.dupr) == null) {
+        says.push("DUPR must be a number between 1.00 and 8.00.");
+      }
+    }
+    if (needs.phone) {
+      const key = normalisePhone(p.phone);
+      if (!key) {
+        says.push("Enter a mobile number. This category has a rating limit, and the number is how we find the player's rating.");
+      } else if (usedPhones.has(key)) {
+        says.push("Use each player's own mobile number. This category has a rating limit, and one number can only stand for one player.");
+      } else {
+        usedPhones.add(key);
+      }
+    }
+    if (says.length) out.push({ field: `player:${p.row}`, message: says.join(" ") });
+  }
+  return out;
+}
+
+/** One player of an entry as it is stored, for judging against a category. */
+export type EntrantRow = {
+  name: string;
+  gender: "M" | "F" | null;
+  dob: string | null;
+  dupr: number | null;
+  phone: string | null;
+};
+
+/**
+ * Evidence for a whole stored entry — the approvals list and approval itself,
+ * which must never reach different verdicts about the same waiting entry.
+ *
+ * ONE person per phone number, because that is how the entry will be WRITTEN:
+ * approval links the first player carrying a number and deliberately leaves any
+ * later one unlinked, since a person cannot be on a team twice. Letting both
+ * borrow that person's rating approved teams whose second player the rating
+ * limit had never really been applied to — and the manage screen then flagged
+ * them red, for a reason nobody had been given the chance to fix.
+ *
+ * `normalisePhone` arrives as an argument so this file stays out of the
+ * database layer.
+ */
+export function entrantEvidence(
+  rows: EntrantRow[],
+  known: Map<string, Person>,
+  sport: string,
+  normalisePhone: (p: string | null) => string | null,
+): Evidence[] {
+  const used = new Set<string>();
+  return rows.map((r) => {
+    const phone = normalisePhone(r.phone);
+    const own = phone && !used.has(phone) ? known.get(phone) ?? null : null;
+    if (phone) used.add(phone);
+    return playerEvidence(
+      { name: r.name, gender: r.gender, dob: r.dob, dupr: r.dupr },
+      own,
+      sport,
+      { useStored: true },
+    );
+  });
+}
+
+/**
+ * A refused verdict, as messages for the entry form.
+ *
+ * The note at the top says what happened; the reason goes under each player it
+ * is about, so the entrant can see WHO does not fit rather than reading a list.
+ * Organiser notes ("unrated") are left out — they never block, and they are for
+ * the organiser at approval, not for the entrant.
+ */
+export function verdictProblems(verdict: EntryVerdict, players: TypedPlayer[], categoryName: string): Problem[] {
+  const perPlayer = verdict.players
+    .map((fs, i) => ({ row: players[i].row, texts: fs.filter((f) => f.severity === "block").map((f) => f.text) }))
+    .filter((p) => p.texts.length > 0);
+  const team = verdict.team.filter((f) => f.severity === "block").map((f) => f.text);
+
+  /* The note at the top says what happened, and it has to match what is
+     actually written underneath. A Mixed team of two men breaks NOTHING about
+     either player — so "see the note under each player" sent the entrant
+     hunting under two names with nothing beneath them. When only the team rule
+     failed, the team rule is what the banner says. */
+  const out: Problem[] = [
+    {
+      field: "form",
+      message: perPlayer.length
+        ? `Not everyone on this entry can play in ${categoryName}. See the note under each player.`
+        : `This team cannot enter ${categoryName}: ${team.join(" ")}`,
+    },
+  ];
+  for (const p of perPlayer) out.push({ field: `player:${p.row}`, message: p.texts.join(" · ") });
+  if (team.length) out.push({ field: "division", message: team.join(" ") });
+  return out;
+}
 
 /**
  * Validate an entry against the organiser's own settings.

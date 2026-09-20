@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
+    "test:tz": "node scripts/test-tz.mjs",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
@@ -23,7 +24,8 @@
     "e2e:divisions": "node e2e/divisions.mjs",
     "e2e:schedule": "node e2e/schedule.mjs",
     "e2e:skills": "node e2e/skills.mjs",
-    "e2e:registration": "node e2e/registration.mjs"
+    "e2e:registration": "node e2e/registration.mjs",
+    "e2e:eligibility": "node e2e/eligibility.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

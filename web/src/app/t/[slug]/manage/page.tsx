@@ -14,7 +14,6 @@ import { floatingTime, floatingDay, floatingInputValue } from "@/lib/schedule";
 import { scheduleRows, scheduleText, whatsappHref } from "@/lib/schedule/share";
 import { divisionsOf } from "@/lib/divisions";
 import { SEED_BANDS } from "@/lib/rating";
-import { PersonPicker } from "@/components/PersonPicker";
 import { loadTournament, groupTables, resolverFactory, resolveSlots } from "@/lib/tournamentState";
 import { StandingsTable } from "@/components/StandingsTable";
 import { ScoringControls, type ScoringState } from "./ScoringControls";
@@ -22,6 +21,14 @@ import { maxGroupsFor } from "@/lib/formats/pickleboss";
 import { resolveRules } from "@/lib/scoring/rules";
 import { allowsDraws } from "@/lib/matchState";
 import { PersonLink } from "@/components/PersonLink";
+import { AddPlayerForm } from "./AddPlayerForm";
+import { DivisionRulesForm } from "./DivisionRulesForm";
+import { setDivisionRules, describeDivisionRules } from "./actions";
+import {
+  PRESETS, dateLabel, duprLabel, floatingDateISO, hasRules, needsFrom, ruleChips, rulesOfDivision, todayInIndia,
+} from "@/lib/eligibility";
+import { divisionMisfits } from "@/lib/eligibility/store";
+import { TIERS } from "@/lib/rating";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +52,15 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
     teamRows.filter((x) => x.divisionId === divisionId).length;
 
   const divisionName = new Map(divisionRows.map((d) => [d.id, d.name]));
+
+  /* ── Who can enter each category ──────────────────────────────────────
+     Loaded AFTER the page's fixed Promise.all, never inside it: it is a fixed
+     number of queries of its own, and folding it into the fan-out would widen
+     it past what the pool is sized for (lib/db/index.ts). */
+  const misfits = await divisionMisfits(t.id);
+  const misfitOf = new Map(misfits.map((m) => [m.teamId, m]));
+  const rulesOf = new Map(divisionRows.map((d) => [d.id, rulesOfDivision(d)]));
+  const eventDay = t.startsAt ? floatingDateISO(t.startsAt) : null;
 
   /* Bind the tournament id server-side so the client cannot aim these actions
      at a different tournament by editing the form. */
@@ -204,43 +220,54 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                     </p>
                   )}
 
+                  {/* Category rules this team no longer meets. Marked, never
+                      acted on: the draw still works, and what to do about it is
+                      the organiser's call (Faisal, 2026-09-17). */}
+                  {(() => {
+                    const m = misfitOf.get(team.id);
+                    if (!m) return null;
+                    const cat = divisionName.get(team.divisionId) ?? "this category";
+                    return (
+                      <div className="mb-2 space-y-1.5" data-misfit>
+                        {m.reasons.length > 0 && (
+                          <p className="rounded-lg border border-rose-500/50 bg-rose-500/10 p-2 text-[11px] font-semibold text-rose-300">
+                            Doesn’t meet {cat} rules: {m.reasons.join(" · ")}
+                          </p>
+                        )}
+                        {m.waived.length > 0 && (
+                          <p className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-500">
+                            <span className="rounded-full border border-neutral-800 bg-neutral-900 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest">
+                              Let in by organiser
+                            </span>
+                            {m.waived.join(" · ")}
+                          </p>
+                        )}
+                        {m.notes.length > 0 && (
+                          <p className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-2 text-[11px] text-neutral-500">
+                            {m.notes.join(" · ")}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   {/* Phone is what makes a RISE Rating follow the player. It is
                       optional and unverified — an organiser typing it is only
                       saying "same person as last week", which needs no OTP. If
                       the number already exists, that person's rating comes with
                       them; if not, DUPR or a placement band seeds a new one. */}
-                  <form action={addPlayer.bind(null, t.id, team.id)} className="space-y-2">
-                    <div className="flex gap-2">
-                      <input name="name" required placeholder="Player name"
-                        className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm" />
-                      <select name="gender" defaultValue="M"
-                        className="rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm">
-                        <option value="M">M</option>
-                        <option value="F">F</option>
-                      </select>
-                      <button className="rounded-lg border border-neutral-600 px-3 text-xs font-bold">Add</button>
-                    </div>
-                    {/* Reuse an existing player when their number is not to
-                        hand. Phone stays the only automatic match; this is the
-                        deliberate, organiser-confirmed one. */}
-                    <PersonPicker search={searchRoster} />
-                    <div className="flex flex-wrap gap-2">
-                      <input name="phone" inputMode="tel" placeholder="Phone (optional)"
-                        className="min-w-0 flex-1 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-xs" />
-                      <input name="dupr" inputMode="decimal" placeholder="DUPR"
-                        className="w-20 rounded-lg border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-xs" />
-                      <select name="band" defaultValue=""
-                        className="min-w-0 flex-1 rounded-lg border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-xs">
-                        <option value="">Starting level…</option>
-                        {SEED_BANDS.map((b) => (
-                          <option key={b.seed} value={b.seed}>{b.label}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <p className="text-[10px] leading-snug text-neutral-600">
-                      No phone: their rating works here but will not follow them to another event.
-                    </p>
-                  </form>
+                  {(() => {
+                    const need = needsFrom(rulesOf.get(team.divisionId));
+                    return (
+                      <AddPlayerForm
+                        add={addPlayer.bind(null, t.id, team.id)}
+                        search={searchRoster}
+                        needs={{ dob: need.dob, dupr: need.dupr }}
+                        hasGenderRule={need.gender}
+                        seedBands={SEED_BANDS}
+                      />
+                    );
+                  })()}
                 </div>
               );
             })}
@@ -306,10 +333,49 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                   className="space-y-3 rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <h3 className="text-sm font-black">{d.name}</h3>
-                    <span className="text-[11px] text-neutral-500">
+                    <span className="flex items-baseline gap-2 text-[11px] text-neutral-500">
+                      {(() => {
+                        const n = misfits.filter((m) => m.divisionId === d.id && m.reasons.length > 0).length;
+                        return n > 0 ? (
+                          <span className="rounded-full border border-rose-500/50 bg-rose-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-rose-300">
+                            {n} {n === 1 ? "doesn’t" : "don’t"} fit
+                          </span>
+                        ) : null;
+                      })()}
                       {entered} {entered === 1 ? "team" : "teams"}
                     </span>
                   </div>
+
+                  {/* Who can enter. Closed, it is one line; open, the controls
+                      with the rules said back in words underneath. */}
+                  {(() => {
+                    const r = rulesOf.get(d.id)!;
+                    const chips = ruleChips(r);
+                    const str = (n: number | null) => (n == null ? "" : String(n));
+                    return (
+                      <DivisionRulesForm
+                        tournamentId={t.id}
+                        divisionId={d.id}
+                        summary={hasRules(r) ? chips.join(" · ") : "Anyone"}
+                        initial={{
+                          gender: r.gender ?? "",
+                          ageMin: str(r.ageMin),
+                          ageMax: str(r.ageMax),
+                          ageOn: r.ageOn ?? eventDay ?? todayInIndia(),
+                          ratingMin: str(r.ratingMin),
+                          ratingMax: str(r.ratingMax),
+                          duprMin: r.duprMin == null ? "" : duprLabel(r.duprMin),
+                          duprMax: r.duprMax == null ? "" : duprLabel(r.duprMax),
+                        }}
+                        eventDay={eventDay}
+                        eventDayLabel={eventDay ? dateLabel(eventDay) : null}
+                        tiers={TIERS.map((x) => ({ name: x.name, min: x.min, max: x.max }))}
+                        allowMixed={t.maxTeamSize >= 2}
+                        save={setDivisionRules}
+                        describe={describeDivisionRules}
+                      />
+                    );
+                  })()}
 
                   {/* How this category is run. Saving the shape does NOT redraw —
                       choosing a format is not the same as asking for the
@@ -413,6 +479,17 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
             <form action={addDivision.bind(null, t.id)} className="flex flex-wrap items-center gap-2">
               <input name="name" placeholder="Add a category — Men’s Doubles, Mixed, U-17…"
                 className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm" />
+              {/* A starting point fills the rules in; a blank name takes its
+                  label. Mixed is not offered for a singles event. */}
+              <label className="flex items-center gap-1.5 text-[11px] text-neutral-400">
+                <span className="font-bold uppercase tracking-widest">Starting point</span>
+                <select name="preset" defaultValue="open"
+                  className="rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm text-neutral-200">
+                  {PRESETS.filter((p) => p.id !== "mixed" || t.maxTeamSize >= 2).map((p) => (
+                    <option key={p.id} value={p.id}>{p.label}{p.hint ? ` (${p.hint})` : ""}</option>
+                  ))}
+                </select>
+              </label>
               <button className="rounded-lg border border-neutral-600 px-3 py-1.5 text-xs font-bold">
                 Add category
               </button>

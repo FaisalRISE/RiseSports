@@ -7,6 +7,7 @@ import { sportOf } from "@/lib/sports/registry";
 import { entryWindow, formatFee } from "@/lib/registration";
 import { rulesFor } from "@/lib/matchState";
 import { EntryForm } from "@/components/EntryForm";
+import { hasRules, needsFrom, ruleChips, rulesOfDivision, rulesSentence } from "@/lib/eligibility";
 import { submitEntry } from "./actions";
 
 /* The public event page — the one surface built for people who are not the
@@ -80,7 +81,20 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
               slug={slug}
               minTeamSize={t.minTeamSize}
               maxTeamSize={t.maxTeamSize}
-              divisions={divs.map((d) => ({ id: d.id, name: d.name, description: d.description }))}
+              /* Each category's rules as plain words and flags, computed here:
+                 the rules engine stays on the server, and the form only needs
+                 to know what to show and what to ask for. */
+              divisions={divs.map((d) => {
+                const r = rulesOfDivision(d);
+                return {
+                  id: d.id,
+                  name: d.name,
+                  description: d.description,
+                  summary: hasRules(r) ? rulesSentence(r) : null,
+                  chips: ruleChips(r),
+                  needs: needsFrom(r),
+                };
+              })}
               formFields={t.formFields ?? []}
               waivers={t.waivers ?? []}
               feeLabel={fee}

@@ -10,20 +10,51 @@
  *
  * So the field says what it is for rather than just demanding it. It is
  * optional — a player who will not give one still gets in — and the form says
- * what that costs instead of nagging.
+ * what that costs instead of nagging. The one exception is a category with a
+ * RATING limit, where the number is how the player's level is found; there it
+ * is required, and the form says why.
  *
- * No engine imports: this is a client component, and the validation it mirrors
- * runs again on the server, which is what actually decides. */
+ * ── Category rules (2026-09-17) ──────────────────────────────────────────
+ * A category may limit who enters: men, women or mixed, an age range, a rating
+ * level, a DUPR range. The limits show as short tags on the category and one
+ * plain sentence under the picker, BEFORE anything is typed. Date of birth,
+ * DUPR and a required man/woman choice appear only when the chosen category
+ * needs them — a category with no rules looks exactly as it always did.
+ *
+ * Everything shown here — the tags, the sentence, what each category needs — is
+ * computed on the server and handed down as plain strings and flags. The rules
+ * themselves never reach the browser, and the server checks every entry again,
+ * which is what actually decides.
+ *
+ * ── Submitted with onSubmit, not `action` ────────────────────────────────
+ * A function passed as a form's `action` makes React reset every field once it
+ * finishes. For an accepted entry that is invisible — the form is replaced by a
+ * receipt. For a REFUSED one it wiped out everything the player had typed, in
+ * the very moment they were told what to fix. Submitting from onSubmit keeps
+ * what they typed on screen next to the reason.
+ */
 
 import { useState, useTransition } from "react";
 import type { FormField, Waiver } from "@/lib/db/schema";
 import type { SubmitResult } from "@/app/e/[slug]/actions";
 
+export type EntryNeeds = { gender: boolean; dob: boolean; dupr: boolean; phone: boolean };
+
+export type EntryDivision = {
+  id: string;
+  name: string;
+  description: string | null;
+  /** The rules in one sentence, or null for a category with none. */
+  summary: string | null;
+  chips: string[];
+  needs: EntryNeeds;
+};
+
 export type EntryFormProps = {
   slug: string;
   minTeamSize: number;
   maxTeamSize: number;
-  divisions: { id: string; name: string; description: string | null }[];
+  divisions: EntryDivision[];
   formFields: FormField[];
   waivers: Waiver[];
   feeLabel: string;
@@ -31,12 +62,33 @@ export type EntryFormProps = {
   submit: (slug: string, formData: FormData) => Promise<SubmitResult>;
 };
 
+const NO_NEEDS: EntryNeeds = { gender: false, dob: false, dupr: false, phone: false };
+
 export function EntryForm(props: EntryFormProps) {
   const { minTeamSize, maxTeamSize, divisions, formFields, waivers } = props;
   const [count, setCount] = useState(Math.max(1, minTeamSize));
   const [problems, setProblems] = useState<{ field: string; message: string }[]>([]);
   const [done, setDone] = useState<string | null>(null);
   const [pending, start] = useTransition();
+
+  /* With one category there is no picker, and that category's rules apply. */
+  const [divisionId, setDivisionId] = useState(divisions.length === 1 ? divisions[0].id : "");
+  const division = divisions.find((d) => d.id === divisionId) ?? null;
+  const needs = division?.needs ?? NO_NEEDS;
+
+  /* Man/woman per row, controlled so a category with a gender rule can start
+     every row on "Choose…" instead of a silent "M" the entrant never looked at.
+     A row the entrant has not touched follows the category; one they have set
+     keeps their choice. */
+  const [genders, setGenders] = useState<string[]>(() =>
+    Array.from({ length: 12 }, () => (needs.gender ? "" : "M")));
+  const [touched, setTouched] = useState<boolean[]>(() => Array(12).fill(false));
+
+  const chooseDivision = (id: string) => {
+    setDivisionId(id);
+    const next = divisions.find((d) => d.id === id)?.needs ?? NO_NEEDS;
+    setGenders((gs) => gs.map((g, i) => (touched[i] ? g : next.gender ? "" : "M")));
+  };
 
   const errorFor = (field: string) => problems.find((p) => p.field === field)?.message;
 
@@ -56,17 +108,20 @@ export function EntryForm(props: EntryFormProps) {
 
   return (
     <form
-      action={(fd) =>
+      onSubmit={(e) => {
+        e.preventDefault();
+        const fd = new FormData(e.currentTarget);
         start(async () => {
           const res = await props.submit(props.slug, fd);
           if (res.ok) setDone(res.reference);
           else setProblems(res.problems);
-        })
-      }
+        });
+      }}
       className="space-y-5"
     >
       {/* Anything not attached to a specific field — a closed window, a
-          duplicate entry — belongs at the top where it will be read. */}
+          duplicate entry, a category someone does not fit — belongs at the top
+          where it will be read. */}
       {errorFor("form") && (
         <p role="alert" className="rounded-xl border border-rose-500 bg-rose-500/10 p-3 text-sm font-bold text-rose-300">
           {errorFor("form")}
@@ -93,17 +148,39 @@ export function EntryForm(props: EntryFormProps) {
           <label className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Division</label>
           <select
             name="divisionId"
-            defaultValue=""
+            value={divisionId}
+            onChange={(e) => chooseDivision(e.target.value)}
             className="mt-1 w-full rounded-xl border border-neutral-700 bg-neutral-950 p-3 text-sm"
           >
             <option value="">Choose a division…</option>
             {divisions.map((d) => (
               <option key={d.id} value={d.id}>
-                {d.name}{d.description ? ` — ${d.description}` : ""}
+                {d.name}
+                {d.chips.length ? ` · ${d.chips.join(" · ")}` : ""}
+                {d.description ? ` — ${d.description}` : ""}
               </option>
             ))}
           </select>
           <FieldError message={errorFor("division")} />
+        </div>
+      )}
+
+      {/* The rules, said before anybody types a thing. */}
+      {division?.summary && (
+        <div data-rules className="space-y-2">
+          {divisions.length === 1 && division.chips.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {division.chips.map((c) => (
+                <span key={c} className="rounded-full border border-neutral-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-neutral-300">
+                  {c}
+                </span>
+              ))}
+            </div>
+          )}
+          <p className="rounded-lg bg-amber-400/10 px-3 py-2 text-xs font-semibold leading-relaxed text-amber-300">
+            {division.summary}
+          </p>
+          {divisions.length === 1 && <FieldError message={errorFor("division")} />}
         </div>
       )}
 
@@ -113,7 +190,7 @@ export function EntryForm(props: EntryFormProps) {
         </legend>
 
         {Array.from({ length: count }, (_, i) => (
-          <div key={i} className="rounded-xl border border-neutral-800 bg-neutral-900/50 p-3">
+          <div key={i} data-player={i} className="rounded-xl border border-neutral-800 bg-neutral-900/50 p-3">
             <div className="mb-2 flex items-center gap-2">
               <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
                 Player {i + 1}
@@ -121,7 +198,17 @@ export function EntryForm(props: EntryFormProps) {
               {i >= minTeamSize && (
                 <button
                   type="button"
-                  onClick={() => setCount((c) => c - 1)}
+                  /* The row that goes takes its state with it. Without this a
+                     row set to F, removed, and added back again came back
+                     showing F — and `touched` still said the entrant had chosen
+                     it, so switching category could not reset it either. They
+                     type a man's name under a dropdown they never looked at,
+                     and Mixed is satisfied by a woman who is not on the team. */
+                  onClick={() => {
+                    setGenders((gs) => gs.map((g, j) => (j === count - 1 ? (needs.gender ? "" : "M") : g)));
+                    setTouched((ts) => ts.map((v, j) => (j === count - 1 ? false : v)));
+                    setCount((c) => c - 1);
+                  }}
                   className="ml-auto text-[10px] font-bold text-neutral-500 hover:text-rose-400"
                 >
                   remove
@@ -138,21 +225,71 @@ export function EntryForm(props: EntryFormProps) {
               />
               <select
                 name="playerGender"
-                defaultValue="M"
+                value={genders[i]}
+                required={needs.gender && i < minTeamSize}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setGenders((gs) => gs.map((g, j) => (j === i ? v : g)));
+                  setTouched((ts) => ts.map((t, j) => (j === i ? true : t)));
+                }}
                 aria-label={`Player ${i + 1} gender`}
                 className="rounded-lg border border-neutral-700 bg-neutral-950 p-2.5 text-sm"
               >
+                {needs.gender && <option value="">Man or woman…</option>}
                 <option value="M">M</option>
                 <option value="F">F</option>
               </select>
             </div>
+
+            {/* Only what this category needs. */}
+            {(needs.dob || needs.dupr) && (
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                {needs.dob && (
+                  <label className="block">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Date of birth</span>
+                    <input
+                      name="playerDob"
+                      type="date"
+                      /* The floor the database keeps: a browser hands over
+                         "0019-05-17" when two digits are typed into the year. */
+                      min="1900-01-01"
+                      required={i < minTeamSize}
+                      className="mt-1 w-full rounded-lg border border-neutral-700 bg-neutral-950 p-2.5 text-sm"
+                    />
+                  </label>
+                )}
+                {needs.dupr && (
+                  <label className="block">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">DUPR</span>
+                    <input
+                      name="playerDupr"
+                      inputMode="decimal"
+                      placeholder="e.g. 3.75"
+                      required={i < minTeamSize}
+                      maxLength={5}
+                      className="mt-1 w-full rounded-lg border border-neutral-700 bg-neutral-950 p-2.5 text-sm"
+                    />
+                  </label>
+                )}
+              </div>
+            )}
+
             <input
               name="playerPhone"
               inputMode="tel"
               maxLength={32}
-              placeholder="Mobile number"
+              required={needs.phone && i < minTeamSize}
+              placeholder={needs.phone ? "Mobile number (needed)" : "Mobile number"}
               className="mt-2 w-full rounded-lg border border-neutral-800 bg-neutral-950 p-2.5 text-xs"
             />
+            {needs.phone && i === 0 && (
+              <p className="mt-1 text-[10px] leading-snug text-neutral-500">
+                Needed for this category: it’s how we find each player’s rating.
+              </p>
+            )}
+
+            {/* The reason for THIS player, under their name. */}
+            <FieldError message={errorFor(`player:${i}`)} />
           </div>
         ))}
 
@@ -170,10 +307,12 @@ export function EntryForm(props: EntryFormProps) {
 
         {/* Says what the number is for and what skipping it costs, rather than
             demanding it. */}
-        <p className="text-[11px] leading-relaxed text-neutral-500">
-          A mobile number links each player to their RISE Rating, so it follows them from event to
-          event. Leave it blank and the rating still works here — it just will not travel.
-        </p>
+        {!needs.phone && (
+          <p className="text-[11px] leading-relaxed text-neutral-500">
+            A mobile number links each player to their RISE Rating, so it follows them from event to
+            event. Leave it blank and the rating still works here — it just will not travel.
+          </p>
+        )}
       </fieldset>
 
       {formFields.length > 0 && (

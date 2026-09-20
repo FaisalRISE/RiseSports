@@ -439,6 +439,103 @@ describe("peer ratings, enforced by the database", () => {
   });
 });
 
+describe("category rules, enforced by the database", () => {
+  /* lib/eligibility checks every rule on every way into a category, but a
+     Server Action is a public endpoint. These CHECKs refuse rules that cannot
+     mean anything, however the row arrives.
+
+     Each refusal is matched to the CONSTRAINT that should have fired, not just
+     to "it threw" — a missing foreign key or a typo in the test would also
+     throw, and a test that passes for the wrong reason proves nothing. */
+  async function refusedBy(write: Promise<unknown>, constraint: string) {
+    let caught: unknown = null;
+    try {
+      await write;
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught, `expected ${constraint} to refuse this row`).not.toBeNull();
+    const err = caught as { constraint?: string; cause?: { constraint?: string } };
+    expect(err.cause?.constraint ?? err.constraint).toBe(constraint);
+  }
+
+  let n = 0;
+  const division = (over: Record<string, unknown>) =>
+    db.insert(schema.divisions).values({
+      id: `rules-${++n}`, tournamentId: seeded.oslId, name: `Rules ${n}`, ...over,
+    } as never);
+
+  it("accepts a category with no rules at all, which is every category until now", async () => {
+    await expect(division({})).resolves.toBeDefined();
+  });
+
+  it("accepts a fully ruled one", async () => {
+    await expect(
+      division({
+        genderRule: "MX", ageMin: 35, ageMax: 49, ageOn: "2026-10-12",
+        ratingMin: 750, ratingMax: 1049, duprMin: 300, duprMax: 400,
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it("refuses a gender rule that is not men, women or mixed", async () => {
+    await refusedBy(division({ genderRule: "X" }), "divisions_gender_rule_valid");
+  });
+
+  it("refuses an impossible age, and a youngest above the oldest", async () => {
+    await refusedBy(division({ ageMin: 130, ageOn: "2026-10-12" }), "divisions_age_range");
+    await refusedBy(division({ ageMin: 40, ageMax: 30, ageOn: "2026-10-12" }), "divisions_age_range");
+  });
+
+  it("refuses an age limit with no day to count ages on", async () => {
+    /* "35+" means nothing without a date: a player is 34 on one day and 35 on
+       the next. */
+    await refusedBy(division({ ageMin: 35 }), "divisions_age_needs_date");
+  });
+
+  it("refuses a date that does not exist", async () => {
+    /* The column is a real `date`, so the database itself rejects 30 February
+       rather than storing text that no calendar has. */
+    await expect(division({ ageMin: 18, ageOn: "2026-02-30" })).rejects.toThrow();
+  });
+
+  it("refuses a rating range upside down", async () => {
+    await refusedBy(division({ ratingMin: 1200, ratingMax: 900 }), "divisions_rating_range");
+  });
+
+  it("refuses a DUPR outside the scale, stored in hundredths", async () => {
+    await refusedBy(division({ duprMin: 50 }), "divisions_dupr_range");
+    await refusedBy(division({ duprMax: 900 }), "divisions_dupr_range");
+    await refusedBy(division({ duprMin: 450, duprMax: 350 }), "divisions_dupr_range");
+  });
+
+  it("refuses a nonsense date of birth or DUPR typed on an entry or a player", async () => {
+    await db.insert(schema.registrations).values({
+      id: "rules-reg", tournamentId: seeded.oslId, teamName: "Checks", contactName: "C",
+    } as never);
+    const entrant = (over: Record<string, unknown>) =>
+      db.insert(schema.registrationPlayers).values({
+        id: `rules-rp-${++n}`, registrationId: "rules-reg", name: "E", ...over,
+      } as never);
+    await refusedBy(entrant({ dob: "1850-01-01" }), "registration_players_dob_sane");
+    await refusedBy(entrant({ dupr: 900 }), "registration_players_dupr_range");
+    await expect(entrant({ dob: "1990-05-17", dupr: 375 })).resolves.toBeDefined();
+
+    const player = (over: Record<string, unknown>) =>
+      db.insert(schema.players).values({
+        id: `rules-p-${++n}`, tournamentId: seeded.oslId, name: "P", ...over,
+      } as never);
+    await refusedBy(player({ dob: "1850-01-01" }), "players_dob_sane");
+    await refusedBy(player({ dupr: 50 }), "players_dupr_range");
+    await expect(player({ dob: "1990-05-17", dupr: 375 })).resolves.toBeDefined();
+  });
+
+  it("reads a date back as the same Y-M-D it was written, with no timezone in between", async () => {
+    const [row] = await db.select().from(schema.divisions).where(eq(schema.divisions.id, "rules-2"));
+    expect(row.ageOn).toBe("2026-10-12");
+  });
+});
+
 describe("buildLog", () => {
   it("produces exactly the requested score", () => {
     for (const [a, b] of [[11, 7], [25, 0], [24, 24], [0, 3], [0, 0]]) {

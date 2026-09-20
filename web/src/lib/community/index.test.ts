@@ -173,6 +173,21 @@ describe("eligibilityFailures", () => {
     expect(eligibilityFailures(player({ riseBest: 600 }), restrict({ gsrMin: 600, gsrMax: 600 }), on))
       .toEqual([]);
   });
+
+  /* The two behaviours that changed when community play moved onto the shared
+     checker in lib/eligibility (2026-09-17). Both used to let the wrong person
+     in; both are pinned so neither comes back. */
+  it("fails an age rule for a date of birth that is not a real date", () => {
+    /* `fromISO` used to roll 1994-13-45 over into a real date in 1995. */
+    expect(eligibilityFailures(player({ dob: "1994-13-45" }), restrict({ ageMin: 18 }), on))
+      .toEqual(["Age 18+ only"]);
+  });
+
+  it("fails an 'and under' rule for a date of birth after the day of play", () => {
+    /* That used to give a negative age, and -1 is "16 and under". */
+    expect(eligibilityFailures(player({ dob: "2027-01-01" }), restrict({ ageMax: 16 }), on))
+      .toEqual(["Age 16 and under only"]);
+  });
 });
 
 describe("restrictionChips", () => {

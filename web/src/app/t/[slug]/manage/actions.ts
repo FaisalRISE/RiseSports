@@ -2,11 +2,16 @@
 
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/lib/db";
 import { divisions, groups, matches, people, players, ratingHistory, teams, tournaments } from "@/lib/db/schema";
+import {
+  NO_RULES, PRESETS, duprToX100, entryFailures, floatingDateISO, hasRules, needsFrom, parseDobISO, parseRules,
+  playerEvidence, rulesOfDivision, rulesSentence, squadIsComplete, todayInIndia, waiverLine,
+  type PresetId, type RulesProblem,
+} from "@/lib/eligibility";
 import { principalFor } from "@/lib/auth/guard";
 import { canManage, assert } from "@/lib/auth/policy";
 import { divisionsOf, resolveDivisionId } from "@/lib/divisions";
@@ -14,10 +19,11 @@ import { planGroups, knockoutRefsFromGroups } from "@/lib/formats/pickleboss";
 import { singleElimMatches, thirdPlaceMatch } from "@/lib/formats/singleElim";
 import { resolveRef } from "@/lib/brackets";
 import { loadTournament, groupTables, resolverFactory } from "@/lib/tournamentState";
-import { findOrCreatePerson, carriedRating, peopleForTournament, searchPeople } from "@/lib/people";
+import { findOrCreatePerson, findByPhone, carriedRating, peopleForTournament, searchPeople } from "@/lib/people";
 import { reliabilityForPerson } from "@/lib/rating/reliability";
 import type { PickerResult } from "@/components/PersonPicker";
 import { ratingFormatFor } from "@/lib/rating/tournament";
+import { seedFromDupr } from "@/lib/rating";
 import { ratingKey } from "@/lib/sports/registry";
 
 /* Same discipline as the scoring actions: load, authorize server-side, write.
@@ -43,6 +49,13 @@ export async function addTeam(tournamentId: string, formData: FormData) {
   const t = await requireManager(tournamentId);
   const parsed = name.safeParse(formData.get("name"));
   if (!parsed.success) return;
+
+  /* A category id that is not one of THIS event's is refused rather than
+     quietly swapped for the default: that swap would file the team in a
+     category the organiser did not pick, with rules they did not choose. Only a
+     form that sends no category at all gets the default. */
+  const wanted = String(formData.get("divisionId") ?? "").trim();
+  if (wanted && !(await divisionsOf(t.id)).some((d) => d.id === wanted)) return;
 
   const divisionId = await divisionFrom(t.id, formData);
   /* Seed and colour run per CATEGORY, not per event: Mixed starting at seed 9
@@ -76,37 +89,163 @@ export async function addTeam(tournamentId: string, formData: FormData) {
  * No phone and no pick still works: the player exists, gets a rating inside
  * this event, and simply has nothing to carry it elsewhere.
  */
-export async function addPlayer(tournamentId: string, teamId: string, formData: FormData) {
+export type AddPlayerResult =
+  | { ok: true; notes: string[] }
+  /* `reasons` are the category rules this player breaks. The organiser may add
+     them anyway (Faisal, 2026-09-17) by sending the same form with `waive`. */
+  | { ok: false; message?: string; reasons?: string[]; canWaive?: boolean };
+
+export async function addPlayer(tournamentId: string, teamId: string, formData: FormData): Promise<AddPlayerResult> {
   const t = await requireManager(tournamentId);
   const parsed = name.safeParse(formData.get("name"));
-  const gender = formData.get("gender") === "F" ? "F" : "M";
-  if (!parsed.success) return;
+  if (!parsed.success) return { ok: false, message: "Give the player a name." };
+
+  /* The team, from THIS event. The id arrives bound into the form, and binding
+     is not authorisation: without the tournament in the WHERE a manager of one
+     event could add players to another's team. */
+  const [team] = await db
+    .select()
+    .from(teams)
+    .where(and(eq(teams.id, teamId), eq(teams.tournamentId, t.id)))
+    .limit(1);
+  if (!team) return { ok: false, message: "That team is not part of this event." };
+
+  const [division] = await db.select().from(divisions).where(eq(divisions.id, team.divisionId)).limit(1);
+  const rules = division ? rulesOfDivision(division) : NO_RULES;
+
+  /* A blank gender means "not chosen" only where the category has a gender
+     rule and so offers "Choose…". Everywhere else the form preselects M, and a
+     blank is read as M exactly as it always was. */
+  const g = String(formData.get("gender") ?? "");
+  const gender: "M" | "F" | null = g === "F" ? "F" : g === "M" ? "M" : rules.gender ? null : "M";
 
   const pickedId = String(formData.get("personId") ?? "").trim();
   const phone = String(formData.get("phone") ?? "").trim();
   const duprRaw = String(formData.get("dupr") ?? "").trim();
   const bandRaw = String(formData.get("band") ?? "").trim();
+  const dobRaw = String(formData.get("dob") ?? "").trim();
 
+  if (gender == null) return { ok: false, message: "Choose man or woman." };
+  /* The same floor the database keeps, so a mistyped year is a sentence here
+     rather than a CHECK violation thrown out of the insert. */
+  if (dobRaw && !parseDobISO(dobRaw)) return { ok: false, message: "Enter a real date of birth." };
+  /* Kept only where the category asks for it, exactly as the public form does:
+     a date of birth nothing is going to read is personal data held for nothing.
+     The field is only rendered when it is needed; this is for a crafted post. */
+  const dob = needsFrom(rules).dob ? dobRaw || null : null;
+  const duprX100 = duprRaw ? duprToX100(duprRaw) : null;
+
+  /* The rating this add is ABOUT to place, when it is placing one.
+     `insertPlayer` creates the person a moment later and seeds them from the
+     DUPR or the starting level on this very form, and `sportRating` counts a
+     deliberate seed — so judging a rating limit against "nobody by that phone
+     number yet" answers a question about a person who is one statement from
+     existing. It got "unrated": the organiser was waved through, and the card
+     went red the instant the page re-rendered. A DEFAULT seed stays null
+     because it is not evidence of anything, and a picked person is judged on
+     their own record, which this write does not touch. */
+  const bandSeed = Number(bandRaw);
+  const placing = pickedId
+    ? null
+    : duprX100 != null ? seedFromDupr(duprX100 / 100)
+    : Number.isFinite(bandSeed) && bandSeed > 0 ? bandSeed
+    : null;
+
+  /* ── The category's rules, BEFORE anybody is created ──────────────────
+     The candidate is looked up without creating them, so a refusal leaves no
+     orphan person behind. The team's existing players count too, because
+     Mixed is a rule about the team: the second man on a Mixed pair is refused
+     even though nothing is wrong with him on his own. */
+  if (hasRules(rules)) {
+    const candidate = pickedId
+      ? (await db.select().from(people).where(eq(people.id, pickedId)).limit(1))[0] ?? null
+      : phone ? await findByPhone(phone) : null;
+
+    const squadRows = await db.select().from(players).where(eq(players.teamId, team.id));
+    const ids = squadRows.map((p) => p.personId).filter((x): x is string => !!x);
+    const squadPeople = ids.length ? await db.select().from(people).where(inArray(people.id, ids)) : [];
+    const personOf = new Map(squadPeople.map((p) => [p.id, p]));
+
+    const squad = [
+      ...squadRows.map((p) => playerEvidence(
+        { name: p.name, gender: p.gender, dob: p.dob, dupr: p.dupr },
+        p.personId ? personOf.get(p.personId) : null,
+        t.sport,
+        { useStored: true },
+      )),
+      playerEvidence({ name: parsed.data, gender, dob, dupr: duprX100, rating: placing }, candidate, t.sport, { useStored: true }),
+    ];
+    /* `squadIsComplete` decides when a Mixed team counts as a team, and the
+       flags on the manage screen use the same line — so the organiser is
+       stopped on exactly the squad that would otherwise go red without them
+       ever having been asked. */
+    const verdict = entryFailures(squad, rules, {
+      complete: squadIsComplete(squad.length, t.minTeamSize), minTeamSize: t.minTeamSize, dated: true,
+    });
+    const mine = verdict.players[verdict.players.length - 1];
+    const blocking = [
+      ...mine.filter((f) => f.severity === "block").map((f) => ({ f, text: `${parsed.data} (${f.text})`, mine: true })),
+      ...verdict.team.filter((f) => f.severity === "block").map((f) => ({ f, text: f.text, mine: false })),
+    ];
+
+    if (blocking.length && formData.get("waive") !== "on") {
+      return { ok: false, reasons: blocking.map((b) => b.text), canWaive: true };
+    }
+
+    const added = await insertPlayer(t, team.id, parsed.data, gender, { pickedId, phone, duprRaw, bandRaw, dob, duprX100 });
+
+    /* Let in anyway: what was waived is recorded on the team, so the card can
+       say so — and a rule tightened later, which is a different rule, still
+       flags it. Stored as `waiverLine` keys rather than as the sentences,
+       because the sentence changes with the evidence and the decision did not:
+       see the note on `waiverLine`. */
+    if (blocking.length) {
+      const before = (team.rulesWaived ?? "").split("\n").filter(Boolean);
+      const now = blocking.map((b) => waiverLine(b.f, b.mine ? added : null));
+      const merged = [...new Set([...before, ...now])].join("\n");
+      await db.update(teams).set({ rulesWaived: merged }).where(eq(teams.id, team.id));
+    }
+    revalidatePath(`/t/${t.slug}/manage`);
+    return { ok: true, notes: mine.filter((f) => f.severity === "note").map((f) => `${parsed.data}: ${f.text}`) };
+  }
+
+  await insertPlayer(t, team.id, parsed.data, gender, { pickedId, phone, duprRaw, bandRaw, dob, duprX100 });
+  revalidatePath(`/t/${t.slug}/manage`);
+  return { ok: true, notes: [] };
+}
+
+/* The write half of adding a player, unchanged in what it does for a category
+   with no rules: link or create the person by phone, carry their rating in. */
+async function insertPlayer(
+  t: typeof tournaments.$inferSelect,
+  teamId: string,
+  playerName: string,
+  gender: "M" | "F",
+  form: { pickedId: string; phone: string; duprRaw: string; bandRaw: string; dob: string | null; duprX100: number | null },
+): Promise<string> {
   const roster = await db.select().from(players).where(eq(players.tournamentId, t.id));
   const formatKey = ratingKey(t.sport, ratingFormatFor([...roster, { gender, teamId } as never]));
 
   let personId: string | null = null;
   let carried: number | null = null;
 
-  if (pickedId) {
-    const [existing] = await db.select().from(people).where(eq(people.id, pickedId)).limit(1);
+  if (form.pickedId) {
+    const [existing] = await db.select().from(people).where(eq(people.id, form.pickedId)).limit(1);
     if (existing) {
       personId = existing.id;
       carried = carriedRating(existing, t.sport, ratingFormatFor(roster));
     }
-  } else if (phone || duprRaw || bandRaw) {
-    const dupr = duprRaw ? Number(duprRaw) : null;
-    const band = bandRaw ? Number(bandRaw) : null;
+  } else if (form.phone || form.duprRaw || form.bandRaw) {
+    /* The validated DUPR, not the raw text: "9" is not a DUPR, and seeding a
+       rating from it — while `players.dupr` refused to store it — put a number
+       on the person that the rules check had already discounted. */
+    const dupr = form.duprX100 != null ? form.duprX100 / 100 : null;
+    const band = form.bandRaw ? Number(form.bandRaw) : null;
     const { person } = await findOrCreatePerson({
-      name: parsed.data,
+      name: playerName,
       gender,
-      phone: phone || null,
-      dupr: Number.isFinite(dupr) && dupr! > 0 ? dupr : null,
+      phone: form.phone || null,
+      dupr,
       bandSeed: Number.isFinite(band) && band! > 0 ? band : null,
       formatKey,
       seededBy: t.ownerId,
@@ -115,18 +254,29 @@ export async function addPlayer(tournamentId: string, teamId: string, formData: 
     carried = carriedRating(person, t.sport, ratingFormatFor(roster));
   }
 
+  const id = randomUUID();
   await db.insert(players).values({
-    id: randomUUID(),
+    id,
     tournamentId: t.id,
     teamId,
     personId,
-    name: parsed.data,
+    name: playerName,
     gender,
     /* The rating they bring IN. The per-event view starts here; the person's
        own record is what actually moves. */
     ratings: carried == null ? {} : { [formatKey]: carried },
+    /* What the organiser declared for this player on this team — the evidence
+       the category's rules and the "doesn't fit" flags read first. */
+    dob: form.dob,
+    dupr: form.duprX100,
   });
-  revalidatePath(`/t/${t.slug}/manage`);
+
+  /* A typed date of birth also fills the person's record, but only where it is
+     empty — never overwriting one that is already there. */
+  if (personId && form.dob) {
+    await db.update(people).set({ dob: form.dob }).where(and(eq(people.id, personId), isNull(people.dob)));
+  }
+  return id;
 }
 
 /**
@@ -175,7 +325,9 @@ export async function seedByRating(tournamentId: string) {
 
 export async function removePlayer(tournamentId: string, playerId: string) {
   const t = await requireManager(tournamentId);
-  await db.delete(players).where(eq(players.id, playerId));
+  /* Only a player of THIS event — deleting by id alone let a manager of one
+     event remove players from another. */
+  await db.delete(players).where(and(eq(players.id, playerId), eq(players.tournamentId, t.id)));
   revalidatePath(`/t/${t.slug}/manage`);
 }
 
@@ -258,7 +410,14 @@ export async function setLineup(tournamentId: string, matchId: string, side: "a"
  */
 export async function addDivision(tournamentId: string, formData: FormData) {
   const t = await requireManager(tournamentId);
-  const parsed = name.safeParse(formData.get("name"));
+
+  /* A starting point fills the rules in, so Women's Doubles or 35+ needs no
+     further typing (Faisal, 2026-09-17). A blank name takes the starting
+     point's own label — "Women’s" is a perfectly good category name. */
+  const presetId = String(formData.get("preset") ?? "open") as PresetId;
+  const preset = PRESETS.find((p) => p.id === presetId) ?? PRESETS[0];
+  const typedName = String(formData.get("name") ?? "").trim();
+  const parsed = name.safeParse(typedName || (preset.id === "open" ? "" : preset.label));
   if (!parsed.success) return;
 
   const existing = await divisionsOf(t.id);
@@ -266,15 +425,111 @@ export async function addDivision(tournamentId: string, formData: FormData) {
      "Mixed" are indistinguishable everywhere they appear. */
   if (existing.some((d) => d.name.toLowerCase() === parsed.data.toLowerCase())) return;
 
+  const rules = { ...preset.rules };
+  /* Mixed cannot exist in a singles event; the screen hides it, and a crafted
+     post gets a category with no gender rule rather than an impossible one. */
+  if (rules.gender === "MX" && t.maxTeamSize < 2) delete rules.gender;
+
   await db.insert(divisions).values({
     id: randomUUID(),
     tournamentId: t.id,
     name: parsed.data,
     position: existing.length,
+    genderRule: rules.gender ?? null,
+    ageMin: rules.ageMin ?? null,
+    ageMax: rules.ageMax ?? null,
+    /* An age preset counts ages on the event day. An event with no date yet
+       counts on today in India — and the rules panel says so prominently,
+       because that date will not follow the event if one is set later. */
+    ageOn: rules.ageMin != null || rules.ageMax != null
+      ? (t.startsAt ? floatingDateISO(t.startsAt) : todayInIndia())
+      : null,
   });
 
   revalidatePath(`/t/${t.slug}/manage`);
   revalidatePath(`/t/${t.slug}`);
+  revalidatePath(`/e/${t.slug}`);
+}
+
+/* ---------- who can enter a category ---------- */
+
+export type RulesSaveResult =
+  | { ok: true; message: string }
+  | { ok: false; problems: RulesProblem[] };
+
+const rulesInputFrom = (formData: FormData) => ({
+  gender: formData.get("gender") as string | null,
+  ageMin: formData.get("ageMin") as string | null,
+  ageMax: formData.get("ageMax") as string | null,
+  ageOn: formData.get("ageOn") as string | null,
+  ratingMin: formData.get("ratingMin") as string | null,
+  ratingMax: formData.get("ratingMax") as string | null,
+  duprMin: formData.get("duprMin") as string | null,
+  duprMax: formData.get("duprMax") as string | null,
+});
+
+/**
+ * Save who can enter one category.
+ *
+ * Changing the rules NEVER removes anybody. Teams already in the category that
+ * no longer fit are counted and reported — "2 teams already entered don't meet
+ * these rules" — and marked on the manage screen, and the organiser decides
+ * what to do about them. A rules form that silently deleted entries would be
+ * the most destructive button in the app.
+ */
+export async function setDivisionRules(tournamentId: string, formData: FormData): Promise<RulesSaveResult> {
+  const t = await requireManager(tournamentId);
+  const divisionId = String(formData.get("divisionId") ?? "");
+
+  const parsed = parseRules(rulesInputFrom(formData), { maxTeamSize: t.maxTeamSize });
+  if (!parsed.ok) return parsed;
+  const r = parsed.rules;
+
+  const saved = await db
+    .update(divisions)
+    .set({
+      genderRule: r.gender, ageMin: r.ageMin, ageMax: r.ageMax, ageOn: r.ageOn,
+      ratingMin: r.ratingMin, ratingMax: r.ratingMax, duprMin: r.duprMin, duprMax: r.duprMax,
+    })
+    /* Scoped to this event, so a division id from another cannot be edited. */
+    .where(and(eq(divisions.id, divisionId), eq(divisions.tournamentId, t.id)))
+    .returning({ id: divisions.id });
+  if (saved.length === 0) return { ok: false, problems: [{ field: "gender", message: "That category is not part of this event." }] };
+
+  const { divisionMisfits } = await import("@/lib/eligibility/store");
+  const flagged = (await divisionMisfits(t.id)).filter((m) => m.divisionId === divisionId && m.reasons.length > 0).length;
+
+  revalidatePath(`/t/${t.slug}/manage`);
+  revalidatePath(`/e/${t.slug}`);
+  return {
+    ok: true,
+    message: flagged === 0
+      ? "Saved."
+      : `Saved. ${flagged} ${flagged === 1 ? "team" : "teams"} already entered ${flagged === 1 ? "doesn’t" : "don’t"} meet these rules. ${flagged === 1 ? "It’s" : "They’re"} marked below. Nobody was removed.`,
+  };
+}
+
+/**
+ * The rules in plain words, as the controls move.
+ *
+ * On the server for the same reason as `describeScoring`: the rules live behind
+ * `import "server-only"`, and restating them is one round trip. Problems come
+ * back too, so a youngest age above the oldest is said before Save is pressed.
+ */
+export async function describeDivisionRules(
+  tournamentId: string,
+  input: Record<string, string>,
+): Promise<{ sentence: string; problems: RulesProblem[] }> {
+  /* A Server Action is a public endpoint, and this one reads the database:
+     without the guard anyone could point it at any event id, as fast as they
+     liked. The precedent it was written from, `describeScoring`, is pure and
+     touches nothing — this is not, so it authorises like every other action in
+     this file. The form also asks once the typing stops, not once per key. */
+  const t = await requireManager(tournamentId);
+  const parsed = parseRules(input, { maxTeamSize: t.maxTeamSize });
+  return parsed.ok
+    ? { sentence: rulesSentence(parsed.rules), problems: [] }
+    : { sentence: "", problems: parsed.problems };
 }
 
 /* ---------- how a category is run ---------- */

@@ -11,6 +11,7 @@ import "server-only";
  */
 
 import type { CommunityGame, Person, Restrictions } from "@/lib/db/schema";
+import { ageOnISO, personFailures, rulesOfRestrictions } from "@/lib/eligibility";
 
 /* ── Dates ────────────────────────────────────────────────────────────────
  *
@@ -86,15 +87,15 @@ export const capacityOf = (game: Pick<CommunityGame, "courts" | "perCourt">): nu
 
 /* ── Who is allowed in ────────────────────────────────────────────────────*/
 
-/** Whole years old on `on`, or null when the date of birth is unknown. */
+/**
+ * Whole years old on `on`, or null when it cannot be known.
+ *
+ * A thin wrapper since 2026-09-17: the arithmetic is `ageOnISO` in
+ * lib/eligibility, which tournament categories use too. `on` is turned into the
+ * LOCAL calendar day first, the same way session dates are keyed.
+ */
 export function ageOn(dob: string | null, on: Date): number | null {
-  if (!dob) return null;
-  const b = fromISO(dob);
-  if (Number.isNaN(b.getTime())) return null;
-  let age = on.getFullYear() - b.getFullYear();
-  const months = on.getMonth() - b.getMonth();
-  if (months < 0 || (months === 0 && on.getDate() < b.getDate())) age--;
-  return age;
+  return ageOnISO(dob, localISO(on));
 }
 
 type Entrant = Pick<Person, "gender" | "dob" | "riseBest" | "dupr">;
@@ -110,6 +111,22 @@ type Entrant = Pick<Person, "gender" | "dob" | "riseBest" | "dupr">;
  * matches the legacy app: the organiser set an age rule, and an unknown age
  * cannot satisfy it. Failing open would quietly admit exactly the people the
  * rule exists to exclude.
+ *
+ * ── One checker, not two ─────────────────────────────────────────────────
+ * The rules live in lib/eligibility, which tournament categories use as well,
+ * so "who may play" cannot be written twice and drift. Community keeps its own
+ * EVIDENCE, and deliberately:
+ *   - the rating is `riseBest`, the max across formats — the number a game's
+ *     "Rating 600+" is written in terms of — and a player with none reads as 0,
+ *     so a minimum excludes them and a maximum does not (the legacy behaviour);
+ *   - a missing DUPR reads as 0 in the same way;
+ *   - ages are counted on the day of play.
+ *
+ * Two behaviours changed with the move, both deliberately, both tested:
+ *   - an invalid date of birth ("1994-13-45") used to roll over into a real
+ *     date via `fromISO`; it now counts as unknown and fails an age rule;
+ *   - a date of birth AFTER the day of play used to give a negative age, which
+ *     passed any "N and under" limit; it now fails both bounds.
  */
 export function eligibilityFailures(
   person: Entrant,
@@ -117,28 +134,19 @@ export function eligibilityFailures(
   on = new Date(),
 ): string[] {
   if (!r) return [];
-  const out: string[] = [];
-
-  /* The rating here is `riseBest`, the max across formats — the same number the
-     restriction is written in terms of ("GSR 600+"). A player with no rating at
-     all reads as 0 and so fails a minimum, which is the legacy behaviour. */
-  const rating = person.riseBest ?? 0;
-  if (r.gsrMin != null && rating < r.gsrMin) out.push(`Rating ${r.gsrMin}+ only`);
-  if (r.gsrMax != null && rating > r.gsrMax) out.push(`Rating ${r.gsrMax} and under only`);
-
-  /* DUPR is stored ×100 (3.75 → 375) so it stays an integer; the restriction is
-     entered in the same units by the form. */
-  const dupr = person.dupr ?? 0;
-  if (r.duprMin != null && dupr < r.duprMin) out.push(`DUPR ${(r.duprMin / 100).toFixed(2)}+ only`);
-  if (r.duprMax != null && dupr > r.duprMax) out.push(`DUPR ${(r.duprMax / 100).toFixed(2)} and under only`);
-
-  if (r.gender && person.gender !== r.gender) out.push(r.gender === "M" ? "Men only" : "Women only");
-
-  const age = ageOn(person.dob, on);
-  if (r.ageMin != null && (age == null || age < r.ageMin)) out.push(`Age ${r.ageMin}+ only`);
-  if (r.ageMax != null && (age == null || age > r.ageMax)) out.push(`Age ${r.ageMax} and under only`);
-
-  return out;
+  return personFailures(
+    {
+      name: "",
+      gender: person.gender,
+      dob: person.dob,
+      rating: person.riseBest ?? 0,
+      dupr: person.dupr ?? 0,
+    },
+    rulesOfRestrictions(r),
+    { fallbackOn: localISO(on) },
+  )
+    .filter((f) => f.severity === "block")
+    .map((f) => f.text);
 }
 
 /** The short red chips on a game's header. Same rules, stated as limits. */

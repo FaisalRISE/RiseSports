@@ -11,7 +11,7 @@
  * server-side in every Server Action — the client is never trusted. */
 
 import {
-  pgTable, text, integer, boolean, timestamp, jsonb, uniqueIndex, index, primaryKey,
+  pgTable, text, integer, boolean, timestamp, jsonb, uniqueIndex, index, primaryKey, date,
 } from "drizzle-orm/pg-core";
 import type { Side } from "@/lib/scoring/replay";
 import type { SportId } from "@/lib/sports/registry";
@@ -96,9 +96,21 @@ export const teams = pgTable(
     /* Which category this team entered. A person may appear in two divisions
        with different partners — that is two teams, one person. */
     divisionId: text("division_id").notNull().references(() => divisions.id, { onDelete: "cascade" }),
+    /* ANY future path that moves a team into a different category must run the
+       category's rules (lib/eligibility `entryFailures`) the way entry, approval
+       and addPlayer do. None exists today — which is exactly when a new one gets
+       written without it. */
     name: text("name").notNull(),
     seed: integer("seed").notNull().default(0),
     colour: text("colour"),
+    /* The category limits the ORGANISER chose to waive for this team, one
+       reason per line ("Imran Khan (Age 35+ only)"). Faisal, 2026-09-17: when
+       he adds a player who does not fit he wants to be stopped with the reason
+       and still be able to let them in — and the team to show that he did.
+       Recorded as the reasons themselves rather than a flag, so a NEW reason
+       (a rule tightened later) still flags the team: a waiver covers what was
+       waived, not whatever comes next. */
+    rulesWaived: text("rules_waived"),
     createdAt: created(),
   },
   (t) => [
@@ -122,6 +134,18 @@ export const players = pgTable(
     gender: text("gender").$type<"M" | "F">().notNull().default("M"),
     /** Sport-namespaced ratings, e.g. { "pb:md": 1020 }. */
     ratings: jsonb("ratings").$type<Record<string, number>>().notNull().default({}),
+    /* What was DECLARED for this player on this team: copied from the entry
+       form at approval, or typed by the organiser when adding them. The
+       category-rules check reads these first and the person's stored values
+       second (lib/eligibility `playerEvidence`), so approval and the "doesn't
+       fit" flags on the manage screen judge the same evidence and cannot
+       disagree. Kept on the ROW rather than matched back to the entry by name,
+       which breaks the moment two players on one team share a name — and an
+       organiser-added player with no linked person has nowhere else to keep a
+       date of birth at all. */
+    dob: date("dob", { mode: "string" }),
+    /** DUPR ×100 (3.75 → 375), same units as `people.dupr`. */
+    dupr: integer("dupr_x100"),
     createdAt: created(),
   },
   (t) => [index("players_tournament_idx").on(t.tournamentId), index("players_team_idx").on(t.teamId)],
@@ -303,10 +327,40 @@ export const divisions = pgTable(
     /** Losing semi-finalists play off for third. Costs one match row — the
      *  `L:` seed reference that fills it already resolves (lib/brackets). */
     thirdPlace: boolean("third_place").notNull().default(false),
+
+    /* ── Who can enter (2026-09-17) ───────────────────────────────────────
+     * Until this, a category was a NAME and nothing else: nothing stopped a man
+     * entering Women's Doubles or a 40-year-old entering Under-17. The legacy
+     * app checked all four of these (`checkEligibility`, app.source.js:573).
+     *
+     * Every column is nullable with no default, and NULL means "no limit".
+     * That is what keeps every category created before this — and every one
+     * created without touching the rules — behaving exactly as it did.
+     *
+     * The shape of each rule, and why, lives with the engine in
+     * lib/eligibility. The database refuses nonsense (a minimum above its
+     * maximum, an age bound with no date to count it on) through hand-written
+     * CHECKs in migration 0018, because a Server Action is a public endpoint
+     * and a form is only one of its callers. */
+    /** M: every player a man · F: every player a woman · MX: at least one of each. */
+    genderRule: text("gender_rule").$type<GenderRule>(),
+    /** Whole years, both INCLUSIVE. "Under-17" is stored as ageMax 16. */
+    ageMin: integer("age_min"),
+    ageMax: integer("age_max"),
+    /** The day ages are counted on. Required whenever an age bound is set. */
+    ageOn: date("age_on", { mode: "string" }),
+    /** RISE Rating, inclusive. The screen offers tier names and stores numbers. */
+    ratingMin: integer("rating_min"),
+    ratingMax: integer("rating_max"),
+    /** DUPR ×100, inclusive — the units of `people.dupr`. */
+    duprMin: integer("dupr_min_x100"),
+    duprMax: integer("dupr_max_x100"),
     createdAt: created(),
   },
   (t) => [index("divisions_tournament_idx").on(t.tournamentId)],
 );
+
+export type GenderRule = "M" | "F" | "MX";
 
 /** Who a person is willing to be rated and endorsed by. */
 export type EndorsementPolicy = "network" | "played" | "anyone";
@@ -361,6 +415,12 @@ export const registrationPlayers = pgTable(
     phone: text("phone"),
     gender: text("gender").$type<"M" | "F">().notNull().default("M"),
     position: integer("position").notNull().default(0),
+    /* Asked for only when the chosen category has a limit that needs them, and
+       NULL otherwise. Typed by the entrant, so never written into `people` from
+       the public page — approval copies them onto the player row. */
+    dob: date("dob", { mode: "string" }),
+    /** DUPR ×100, as typed. */
+    dupr: integer("dupr_x100"),
     /** Filled in on approval, once matched or created in the roster. */
     personId: text("person_id").references(() => people.id, { onDelete: "set null" }),
     createdAt: created(),

@@ -40,10 +40,16 @@ export default async function ScorePage({
   const byTeam = new Map(teamRows.map((t) => [t.id, t]));
   const nameOf = new Map(playerRows.map((p) => [p.id, p.name]));
 
-  const consoleTeam = (teamId: string | null, lineup: string[]): ConsoleTeam => {
+  const consoleTeam = (teamId: string | null, lineup: string[], side: "a" | "b"): ConsoleTeam => {
     const t = teamId ? byTeam.get(teamId) : null;
     return {
-      id: t?.id ?? "tbd",
+      /* Distinct even when NEITHER slot is filled yet. The console tells the
+         two sides apart by this id — `sideOf` is `t.id === teamA.id ? "a" : "b"`
+         — so one shared "tbd" made side B answer as side A, and React warned
+         that two children shared a key, which it may duplicate or drop. A
+         knockout match drawn before its feeders have played has exactly that
+         shape. */
+      id: t?.id ?? `tbd:${side}`,
       name: t?.name ?? "TBD",
       colour: t?.colour ?? null,
       players: lineup.map((id) => nameOf.get(id) ?? "—"),
@@ -81,8 +87,8 @@ export default async function ScorePage({
 
       <RefConsole
         view={view}
-        teamA={consoleTeam(row.match.teamAId, row.match.lineupA)}
-        teamB={consoleTeam(row.match.teamBId, row.match.lineupB)}
+        teamA={consoleTeam(row.match.teamAId, row.match.lineupA, "a")}
+        teamB={consoleTeam(row.match.teamBId, row.match.lineupB, "b")}
         canScore={canScore(principal)}
         notes={describeCourt(row.tournament)}
         actions={{

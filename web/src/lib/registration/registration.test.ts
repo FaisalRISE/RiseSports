@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { entryWindow, validateEntry, formatFee, feeToPaise, type EntryInput } from "./index";
+import { entryWindow, entryRuleProblems, validateEntry, verdictProblems, formatFee, feeToPaise, type EntryInput, type Problem, type TypedPlayer } from "./index";
+import { NO_RULES, entryFailures, type Rules } from "@/lib/eligibility";
+import { vi } from "vitest";
+vi.mock("server-only", () => ({}));
 import type { Tournament } from "@/lib/db/schema";
 
 /* These rules run in two places that must never disagree: the public page uses
@@ -197,5 +200,79 @@ describe("fees", () => {
 
   it("round-trips", () => {
     expect(formatFee(feeToPaise("1250"))).toBe("₹1,250");
+  });
+});
+
+describe("what the category still needs from each player", () => {
+  const rows = (...ps: Partial<TypedPlayer>[]): TypedPlayer[] =>
+    ps.map((p, i) => ({ row: i, name: `P${i}`, phone: null, gender: "M", dob: "", dupr: "", ...p }));
+  /* The real one is `normalisePhone`; digits only is enough to prove the rule
+     is applied to the NORMALISED number and not to what was typed. */
+  const norm = (p: string | null) => (p ? p.replace(/\D/g, "") || null : null);
+  const rules = (over: Partial<Rules>): Rules => ({ ...NO_RULES, ...over });
+  const says = (ps: Problem[], row: number) => ps.find((p) => p.field === `player:${row}`)?.message ?? "";
+
+  it("asks for nothing at all in a category with no rules", () => {
+    expect(entryRuleProblems(NO_RULES, rows({}, {}), norm)).toEqual([]);
+  });
+
+  it("refuses a date of birth the database would refuse", () => {
+    const r = rules({ ageMin: 35, ageOn: "2026-10-12" });
+    expect(says(entryRuleProblems(r, rows({ dob: "1989-05-17" }), norm), 0)).toBe("");
+    /* A year typed as "1089", or as two digits — both parse, both would then
+       break `registration_players_dob_sane` inside the insert. */
+    expect(says(entryRuleProblems(r, rows({ dob: "1089-05-17" }), norm), 0)).toBe("Enter a real date of birth.");
+    expect(says(entryRuleProblems(r, rows({ dob: "0019-05-17" }), norm), 0)).toBe("Enter a real date of birth.");
+  });
+
+  it("makes each player use their own number where the number IS the evidence", () => {
+    const capped = rules({ ratingMax: 1049 });
+    const shared = rows({ phone: "98200 11111" }, { phone: "9820011111" });
+    expect(says(entryRuleProblems(capped, shared, norm), 0)).toBe("");
+    expect(says(entryRuleProblems(capped, shared, norm), 1)).toContain("own mobile number");
+    /* Two different numbers are fine, and so is one number where no rating
+       limit makes the phone stand for a person. */
+    expect(entryRuleProblems(capped, rows({ phone: "9820011111" }, { phone: "9820022222" }), norm)).toEqual([]);
+    expect(entryRuleProblems(rules({ gender: "M" }), shared, norm)).toEqual([]);
+  });
+});
+
+describe("telling the entrant what went wrong", () => {
+  const typed: TypedPlayer[] = [
+    { row: 0, name: "Ravi", phone: null, gender: "M", dob: "", dupr: "" },
+    { row: 1, name: "Imran", phone: null, gender: "M", dob: "", dupr: "" },
+  ];
+
+  it("points at the players when it is the players", () => {
+    const v = entryFailures(
+      [
+        { name: "Ravi", gender: "M", dob: null, rating: null, dupr: null },
+        { name: "Imran", gender: "F", dob: null, rating: null, dupr: null },
+      ],
+      { ...NO_RULES, gender: "F" },
+      { complete: true, minTeamSize: 2 },
+    );
+    const ps = verdictProblems(v, typed, "Women's Doubles");
+    expect(ps[0]).toEqual({ field: "form", message: "Not everyone on this entry can play in Women's Doubles. See the note under each player." });
+    expect(ps.find((p) => p.field === "player:0")?.message).toBe("Women only");
+    expect(ps.some((p) => p.field === "player:1")).toBe(false);
+  });
+
+  it("says the team rule when nothing is wrong with anybody on the team", () => {
+    /* Two men in Mixed break no rule as individuals, so "see the note under
+       each player" sent the entrant hunting under two names with nothing
+       written beneath either of them. */
+    const v = entryFailures(
+      [
+        { name: "Ravi", gender: "M", dob: null, rating: null, dupr: null },
+        { name: "Imran", gender: "M", dob: null, rating: null, dupr: null },
+      ],
+      { ...NO_RULES, gender: "MX" },
+      { complete: true, minTeamSize: 2 },
+    );
+    const ps = verdictProblems(v, typed, "Mixed");
+    expect(ps[0].message).toBe("This team cannot enter Mixed: Mixed needs at least one man and one woman.");
+    expect(ps.some((p) => p.field.startsWith("player:"))).toBe(false);
+    expect(ps.find((p) => p.field === "division")?.message).toBe("Mixed needs at least one man and one woman.");
   });
 });

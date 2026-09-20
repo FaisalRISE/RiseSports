@@ -18,8 +18,13 @@ import { z } from "zod";
 
 import { db } from "@/lib/db";
 import { divisions, registrations, registrationPlayers, tournaments } from "@/lib/db/schema";
-import { entryWindow, validateEntry, type Problem } from "@/lib/registration";
-import { normalisePhone } from "@/lib/people";
+import {
+  entryRuleProblems, entryWindow, validateEntry, verdictProblems, type Problem, type TypedPlayer,
+} from "@/lib/registration";
+import { normalisePhone, peopleByPhones } from "@/lib/people";
+import {
+  NO_RULES, duprToX100, entryFailures, hasRules, needsFrom, playerEvidence, rulesOfDivision,
+} from "@/lib/eligibility";
 
 export type SubmitResult =
   | { ok: true; reference: string }
@@ -40,11 +45,33 @@ export async function submitEntry(slug: string, formData: FormData): Promise<Sub
 
   const divs = await db.select().from(divisions).where(eq(divisions.tournamentId, t.id));
 
+  /* With one category the form shows no picker, so nothing comes back — record
+     the category anyway rather than leaving it null, or approval would have to
+     guess later what the entry already implied. */
+  const chosen = str(formData.get("divisionId"), 64) || null;
+  const divisionId = chosen ?? (divs.length === 1 ? divs[0].id : null);
+  const division = divs.find((d) => d.id === divisionId) ?? null;
+  const rules = division ? rulesOfDivision(division) : NO_RULES;
+  const needs = needsFrom(rules);
+
   /* Players arrive as parallel arrays from the form. Capped well above any
-     real squad so a crafted post cannot make us build a huge insert. */
+     real squad so a crafted post cannot make us build a huge insert.
+
+     Every row sends every field, so the arrays line up by position. Date of
+     birth and DUPR only appear on the form when the category needs them; they
+     are read regardless and simply ignored when it does not. */
   const names = formData.getAll("playerName").slice(0, 12).map((v) => str(v, 80));
   const phones = formData.getAll("playerPhone").slice(0, 12).map((v) => str(v, 32));
-  const genders = formData.getAll("playerGender").slice(0, 12).map((v) => (String(v) === "F" ? "F" : "M") as "M" | "F");
+  const dobs = formData.getAll("playerDob").slice(0, 12).map((v) => str(v, 10));
+  const duprs = formData.getAll("playerDupr").slice(0, 12).map((v) => str(v, 8));
+  /* An unchosen gender is kept as unknown ONLY where the category has a gender
+     rule, so "Choose man or woman" can be said. Everywhere else it becomes "M"
+     exactly as it always has — a category with no rules must submit as before. */
+  const genders = formData.getAll("playerGender").slice(0, 12).map((v) => {
+    const g = String(v);
+    if (g === "F" || g === "M") return g as "M" | "F";
+    return needs.gender ? null : ("M" as const);
+  });
 
   const answers: Record<string, string> = {};
   for (const f of t.formFields ?? []) {
@@ -55,15 +82,9 @@ export async function submitEntry(slug: string, formData: FormData): Promise<Sub
     .filter((w) => formData.get(`waiver:${w.id}`) === "on")
     .map((w) => w.id);
 
-  /* With one category the form shows no picker, so nothing comes back — record
-     the category anyway rather than leaving it null, or approval would have to
-     guess later what the entry already implied. */
-  const chosen = str(formData.get("divisionId"), 64) || null;
-  const divisionId = chosen ?? (divs.length === 1 ? divs[0].id : null);
-
   const entry = {
     teamName: str(formData.get("teamName"), 60),
-    players: names.map((name, i) => ({ name, phone: phones[i] ?? null, gender: genders[i] ?? "M" })),
+    players: names.map((name, i) => ({ name, phone: phones[i] ?? null, gender: genders[i] ?? null })),
     divisionId,
     answers,
     waiversAccepted,
@@ -72,7 +93,52 @@ export async function submitEntry(slug: string, formData: FormData): Promise<Sub
   const problems = validateEntry(t, entry, divs.map((d) => d.id));
   if (problems.length > 0) return { ok: false, problems };
 
-  const named = entry.players.filter((p) => p.name.trim());
+  /* Blank rows are skipped, but each kept player remembers its ROW, so a reason
+     lands under the right name even with an empty row in between. */
+  const typed: TypedPlayer[] = names
+    .map((name, row) => ({
+      row, name, phone: phones[row] || null, gender: genders[row] ?? null,
+      dob: dobs[row] ?? "", dupr: duprs[row] ?? "",
+    }))
+    .filter((p) => p.name.trim());
+
+  /* ── The category's rules ─────────────────────────────────────────────
+     Checked here, on the server, because the form that produced this post is
+     under the sender's control: a hidden `required` or a removed field is one
+     edit away. Nothing is written for an entry that does not fit.
+
+     First what is MISSING — an empty box is a different problem from a limit
+     not met, and saying "Age 35+ only" to someone who left the date blank tells
+     them the wrong thing. Then the rules themselves. */
+  if (hasRules(rules)) {
+    const missing = entryRuleProblems(rules, typed, normalisePhone);
+    if (missing.length) return { ok: false, problems: missing };
+
+    const known = await peopleByPhones(typed.map((p) => p.phone));
+    const squad = typed.map((p) => {
+      const phone = normalisePhone(p.phone);
+      return playerEvidence(
+        {
+          name: p.name,
+          gender: p.gender,
+          dob: needs.dob ? p.dob : null,
+          dupr: needs.dupr ? duprToX100(p.dupr) : null,
+        },
+        phone ? known.get(phone) : null,
+        t.sport,
+        /* Never the stored record from a public form — see playerEvidence. */
+        { useStored: false },
+      );
+    });
+    const verdict = entryFailures(squad, rules, {
+      complete: true, minTeamSize: t.minTeamSize, dated: true,
+    });
+    if (!verdict.ok) {
+      return { ok: false, problems: verdictProblems(verdict, typed, division?.name ?? "this category") };
+    }
+  }
+
+  const named = typed;
 
   /* One entry per phone per event. Without this a double-tapped submit button
      puts the same pair in the draw twice, and an organiser has to spot it. */
@@ -116,8 +182,15 @@ export async function submitEntry(slug: string, formData: FormData): Promise<Sub
         name: p.name,
         /* Normalised here so the roster can match it later without guessing. */
         phone: normalisePhone(p.phone),
-        gender: p.gender,
+        /* Past the rules check, a gender rule has already refused a blank; a
+           category without one never produced one. */
+        gender: p.gender ?? "M",
         position: i,
+        /* Only what the category asked for. A date of birth typed into a form
+           that did not need it is not kept — the less personal data held, the
+           less there is to hold carefully. */
+        dob: needs.dob ? p.dob || null : null,
+        dupr: needs.dupr ? duprToX100(p.dupr) : null,
       })),
     );
   });

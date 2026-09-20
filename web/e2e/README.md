@@ -1,6 +1,7 @@
 # End-to-end tests
 
-Eight scripts, all driving the real app in a real browser:
+Ten scripts, all driving the real app in a real browser (`npm run …` works the same as
+`pnpm …` — this machine has npm):
 
 | Script | What it covers |
 |---|---|
@@ -9,6 +10,11 @@ Eight scripts, all driving the real app in a real browser:
 | `pnpm e2e:offline` | scoring with no network, the queue, the service worker, reconnection |
 | `pnpm e2e:divergence` | two devices scoring one match, and the conflict prompt |
 | `pnpm e2e:schedule` | the order of play: one person entered in two categories is never drawn to play twice at once |
+| `pnpm e2e:divisions` | categories: each has its own Group A and Semi-Final 1, and nothing resolves across them |
+| `pnpm e2e:carryover` | a rating follows a player into a second event by phone, and seeds the draw |
+| `pnpm e2e:registration` | players entering from the public page, approval turning an entry into a team and people |
+| `pnpm e2e:skills` | peer ratings: who may rate whom, and rating twice replaces rather than stacks |
+| `pnpm e2e:eligibility` | category rules: every refusal has an accepted twin — gender, Mixed, age on the day, DUPR, a capped rating by phone, approval re-checking, "add anyway", flags that remove nobody, and a category with no rules unchanged |
 
 Playwright is a devDependency. Once per machine:
 

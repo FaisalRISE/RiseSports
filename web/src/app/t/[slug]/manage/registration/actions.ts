@@ -7,8 +7,9 @@
  * registration URL and someone editing the event it belongs to. */
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/lib/db";
@@ -53,6 +54,22 @@ export async function saveRegistrationSettings(tournamentId: string, formData: F
   const min = Math.max(1, Number(formData.get("minTeamSize") ?? 1) || 1);
   const max = Math.max(min, Number(formData.get("maxTeamSize") ?? min) || min);
 
+  /* A Mixed category needs a man AND a woman on every team, which a team of
+     one can never have. Saving team size 1 underneath one would make every
+     entry to it impossible and say nothing about why. Refused with the name of
+     the category, before anything is written. */
+  if (max < 2) {
+    const [mixed] = await db
+      .select({ name: divisions.name })
+      .from(divisions)
+      .where(and(eq(divisions.tournamentId, t.id), eq(divisions.genderRule, "MX")))
+      .limit(1);
+    /* A CODE in the URL, never the sentence: the page builds the message from
+       the database, so a crafted link cannot put words on an organiser's
+       screen. */
+    if (mixed) redirect(`/t/${t.slug}/manage/registration?problem=mixed-team-size`);
+  }
+
   await db
     .update(tournaments)
     .set({
@@ -90,7 +107,9 @@ export async function addDivision(tournamentId: string, formData: FormData) {
 
 export async function removeDivision(tournamentId: string, divisionId: string) {
   const t = await requireManager(tournamentId);
-  await db.delete(divisions).where(eq(divisions.id, divisionId));
+  /* Only a category of THIS event. Deleting by id alone let a manager of one
+     event remove another event's category — and with it, by cascade, its teams. */
+  await db.delete(divisions).where(and(eq(divisions.id, divisionId), eq(divisions.tournamentId, t.id)));
   refresh(t.slug);
 }
 
@@ -165,7 +184,9 @@ export type DecisionResult = { ok: true; message?: string } | { ok: false; error
 
 export async function approveEntry(tournamentId: string, registrationId: string): Promise<DecisionResult> {
   const t = await requireManager(tournamentId);
-  const res = await approveRegistration(registrationId, t.ownerId);
+  /* Scoped to THIS event: `requireManager` proved the caller manages the
+     tournament in the URL, which says nothing about an entry id sent with it. */
+  const res = await approveRegistration(registrationId, t.ownerId, { tournamentId: t.id });
   refresh(t.slug);
   if (!res.ok) return res;
   return {
@@ -179,7 +200,7 @@ export async function approveEntry(tournamentId: string, registrationId: string)
 
 export async function declineEntry(tournamentId: string, registrationId: string, note?: string): Promise<DecisionResult> {
   const t = await requireManager(tournamentId);
-  const res = await setRegistrationStatus(registrationId, "declined", note);
+  const res = await setRegistrationStatus(registrationId, "declined", note, { tournamentId: t.id });
   refresh(t.slug);
   return res.ok ? { ok: true } : res;
 }
@@ -190,7 +211,7 @@ export async function markPayment(
   state: "unpaid" | "paid" | "waived",
 ): Promise<DecisionResult> {
   const t = await requireManager(tournamentId);
-  const res = await setPaymentState(registrationId, state);
+  const res = await setPaymentState(registrationId, state, { tournamentId: t.id });
   refresh(t.slug);
   return res.ok ? { ok: true } : res;
 }

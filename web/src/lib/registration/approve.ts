@@ -13,14 +13,16 @@ import "server-only";
  * the kind of mess that is easier to prevent than to find. */
 
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, ne } from "drizzle-orm";
+import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
-  players, registrationPlayers, registrations, teams, tournaments,
+  divisions, people, players, registrationPlayers, registrations, teams, tournaments,
   type Registration,
 } from "@/lib/db/schema";
-import { resolveDivisionId } from "@/lib/divisions";
-import { findOrCreatePerson, carriedRating, normalisePhone } from "@/lib/people";
+import { divisionsOf, resolveDivisionId } from "@/lib/divisions";
+import { findOrCreatePerson, carriedRating, normalisePhone, peopleByPhones } from "@/lib/people";
+import { entryFailures, hasRules, rulesOfDivision } from "@/lib/eligibility";
+import { entrantEvidence } from "@/lib/registration";
 import { ratingFormatFor } from "@/lib/rating/tournament";
 import { ratingKey } from "@/lib/sports/registry";
 
@@ -42,9 +44,15 @@ export type ApproveResult =
 export async function approveRegistration(
   registrationId: string,
   decidedBy?: string | null,
+  opts: { tournamentId?: string } = {},
 ): Promise<ApproveResult> {
   const [reg] = await db.select().from(registrations).where(eq(registrations.id, registrationId)).limit(1);
   if (!reg) return { ok: false, error: "That entry no longer exists." };
+  /* The organiser's action names the event it was pressed in. An entry id from
+     another event must not be approvable from this one's screen. */
+  if (opts.tournamentId && reg.tournamentId !== opts.tournamentId) {
+    return { ok: false, error: "That entry is not part of this event." };
+  }
   if (reg.status === "approved") return { ok: false, error: "That entry is already approved." };
 
   const [t] = await db.select().from(tournaments).where(eq(tournaments.id, reg.tournamentId)).limit(1);
@@ -58,6 +66,53 @@ export async function approveRegistration(
     .where(eq(registrationPlayers.registrationId, reg.id))
     .orderBy(asc(registrationPlayers.position));
   if (entrants.length === 0) return { ok: false, error: "That entry has no players." };
+
+  /* ── Which category, and does the entry still fit it? ─────────────────
+     An entry whose category has since been removed (the link is set null on
+     delete) used to fall back silently to the event's first category — so a
+     Women's Doubles pair could land in Men's Doubles because somebody tidied
+     up the list. With more than one category left that is a guess, and the
+     organiser is the one who should make it. */
+  if (!reg.divisionId && (await divisionsOf(t.id)).length > 1) {
+    return {
+      ok: false,
+      error: "This entry's category was removed. Decline it, or ask them to enter again.",
+    };
+  }
+  const divisionId = await resolveDivisionId(t.id, reg.divisionId);
+  const [division] = await db.select().from(divisions).where(eq(divisions.id, divisionId)).limit(1);
+  const rules = division ? rulesOfDivision(division) : null;
+
+  /* The rules are checked AGAIN here, and before anybody is created. The entry
+     fitted when it was submitted, but the organiser may have tightened the
+     category since — and approval is the last moment to say so rather than
+     flagging a team that already exists.
+     Stored records count here, unlike on the public form: this is the organiser
+     acting, and a returning player's known rating is exactly what a rating
+     limit is about. For a date of birth or a DUPR the DECLARED value still
+     wins (`playerEvidence`) — neither is proof, and the later one is usually
+     the correction — but where the two disagree the organiser is told, so a
+     rule is never judged on a date the app itself contradicts. */
+  if (rules && hasRules(rules)) {
+    const known = await peopleByPhones(entrants.map((e) => e.phone));
+    /* Judged the way it will be STORED — one person per phone number. See
+       `entrantEvidence`; the approvals list builds it with the same call. */
+    const squad = entrantEvidence(entrants, known, t.sport, normalisePhone);
+    const verdict = entryFailures(squad, rules, { complete: true, minTeamSize: t.minTeamSize, dated: true });
+    if (!verdict.ok) {
+      const who = verdict.players
+        .map((fs, i) => {
+          const texts = fs.filter((f) => f.severity === "block").map((f) => f.text);
+          return texts.length ? `${entrants[i].name} (${texts.join(", ")})` : null;
+        })
+        .filter(Boolean);
+      const team = verdict.team.filter((f) => f.severity === "block").map((f) => f.text);
+      return {
+        ok: false,
+        error: `Can't approve into ${division!.name}: ${[...who, ...team].join(" · ")}`,
+      };
+    }
+  }
 
   const existingTeams = await db.select({ id: teams.id }).from(teams).where(eq(teams.tournamentId, t.id));
   const roster = await db.select().from(players).where(eq(players.tournamentId, t.id));
@@ -119,12 +174,6 @@ export async function approveRegistration(
     resolved.push({ entrant: e, personId: person.id, rating: carriedRating(person, t.sport, format) });
   }
 
-  /* The category the entrant chose on the public page, validated against this
-     tournament — a stale or forged id would otherwise file the team under
-     another event's category. Falls back to the event's first division, which
-     for a single-category event is the "Main" it was created with. */
-  const divisionId = await resolveDivisionId(t.id, reg.divisionId);
-
   const claimed = await db.transaction(async (tx) => {
     /* Claim the entry FIRST, conditionally. The check at the top of this
        function reads the status outside any transaction, so two approvals of
@@ -159,8 +208,25 @@ export async function approveRegistration(
         name: r.entrant.name,
         gender: r.entrant.gender,
         ratings: r.rating == null ? {} : { [formatKey]: r.rating },
+        /* What was declared, carried onto the player row, so the "doesn't fit"
+           flags on the manage screen judge the same evidence approval just
+           did — and never have to match players back to the entry by name. */
+        dob: r.entrant.dob,
+        dupr: r.entrant.dupr,
       })),
     );
+
+    /* A declared date of birth fills a person's record only where it has
+       none. Never overwrites: a returning player's stored date may have come
+       from an organiser who checked it, and an entry form typed by anybody
+       should not be able to change it. One at a time — at most twelve. */
+    for (const r of resolved) {
+      if (!r.personId || !r.entrant.dob) continue;
+      await tx
+        .update(people)
+        .set({ dob: r.entrant.dob })
+        .where(and(eq(people.id, r.personId), isNull(people.dob)));
+    }
 
     /* Write the person back onto the entry, so the organiser can see who was
        matched and the link survives if the player row is later removed. */
@@ -194,9 +260,14 @@ export async function setRegistrationStatus(
   registrationId: string,
   status: Extract<Registration["status"], "declined" | "withdrawn" | "pending">,
   note?: string | null,
+  opts: { tournamentId?: string } = {},
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const [reg] = await db.select().from(registrations).where(eq(registrations.id, registrationId)).limit(1);
   if (!reg) return { ok: false, error: "That entry no longer exists." };
+  /* Same scoping as approval: decided from THIS event's screen, or not at all. */
+  if (opts.tournamentId && reg.tournamentId !== opts.tournamentId) {
+    return { ok: false, error: "That entry is not part of this event." };
+  }
 
   /* Un-approving would leave a team and players behind with no entry pointing
      at them. Removing the team is the organiser's call on the Players tab, not
@@ -220,9 +291,13 @@ export async function setRegistrationStatus(
 export async function setPaymentState(
   registrationId: string,
   state: Registration["paymentState"],
+  opts: { tournamentId?: string } = {},
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const [reg] = await db.select().from(registrations).where(eq(registrations.id, registrationId)).limit(1);
   if (!reg) return { ok: false, error: "That entry no longer exists." };
+  if (opts.tournamentId && reg.tournamentId !== opts.tournamentId) {
+    return { ok: false, error: "That entry is not part of this event." };
+  }
 
   await db
     .update(registrations)

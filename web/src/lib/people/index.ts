@@ -19,7 +19,7 @@ import "server-only";
  * pretending otherwise.
  */
 
-import { and, eq, ilike, isNotNull, or, sql } from "drizzle-orm";
+import { and, eq, ilike, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import { people, players, type Person } from "@/lib/db/schema";
@@ -129,6 +129,22 @@ export async function findByPhone(rawPhone: string): Promise<Person | null> {
   if (!phone) return null;
   const [row] = await db.select().from(people).where(eq(people.phone, phone)).limit(1);
   return row ?? null;
+}
+
+/**
+ * Everyone behind a list of phone numbers, in ONE query, keyed by the
+ * normalised number.
+ *
+ * For checking a whole entry, or a whole list of entries, against a category's
+ * rules. One `findByPhone` per player would be a query per player — and fired
+ * together, a fan-out that grows with the entry, which is the shape that wedged
+ * the site on 2026-09-15 (see lib/db/index.ts).
+ */
+export async function peopleByPhones(raw: (string | null | undefined)[]): Promise<Map<string, Person>> {
+  const phones = [...new Set(raw.map((p) => normalisePhone(p)).filter((p): p is string => !!p))];
+  if (phones.length === 0) return new Map();
+  const rows = await db.select().from(people).where(inArray(people.phone, phones));
+  return new Map(rows.map((p) => [p.phone!, p]));
 }
 
 export type NewPersonInput = {

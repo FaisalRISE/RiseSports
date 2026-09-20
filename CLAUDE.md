@@ -623,6 +623,13 @@ console; the remaining port is engines, foundations and the UI kit.
   rallies were provably on the server. **Anything periodic in a client component must be pinned
   behind a ref**, as `flushRef` now is; and `useOfflineScoring` takes `claim`/`restore` out of
   the clock object rather than depending on the object, which is rebuilt every second.
+- **Both sides of a knockout match drawn before its feeders have played were the SAME team, as
+  far as the console was concerned.** An unfilled slot became `id: "tbd"`, and `sideOf` is
+  `t.id === teamA.id ? "a" : "b"` — so side B answered as side A, and React warned that two
+  children shared a key, which it may duplicate or drop. The placeholder is `tbd:a` / `tbd:b`
+  now. Found on 2026-09-20 by `e2e:event` on a FRESH database: the two runs before it had both
+  stopped short of playing the knockout out, for the order-sensitivity reasons below, so the
+  suite had never once reached the screen.
 - `lib/scoring/clock.ts` is the client-safe half — the record's shape, the pause reasons and
   `fmtClock`. The arithmetic stays in `timing.ts` behind `import "server-only"`. A clock that
   cannot tick in the browser is not a clock, and nothing in "12:05" is worth protecting.
@@ -1026,6 +1033,148 @@ instance. A long-lived client against a TRANSACTION pooler is exactly what goes 
 the `globalThis` change that client is one per process by design.
 
 Next areas by size: engines & draws (~30 left), foundations (~27), the UI kit (~16).
+
+### Category rules — who can enter (2026-09-17)
+
+`lib/eligibility/` (engine + `store.ts`), migration `0018`, `e2e/eligibility.mjs`. Until this a
+category was a NAME: nothing stopped a man entering Women's Doubles or a 40-year-old entering
+Under-17. The legacy app checked all of it (`checkEligibility`, `app.source.js:573`).
+
+Faisal approved a picture of the screens before any were built (the "Who Can Enter" artifact,
+2026-09-17), and chose:
+
+| Question | Answer |
+|---|---|
+| Organiser adds a player who does not fit | **Stopped with the reason; "Add anyway" lets them in**, the waived reasons go on `teams.rules_waived`, the card says "Let in by organiser" |
+| A player with no rating vs a rating limit | **Allowed under an "up to" limit with an organiser-only note; refused by an "at least" limit.** A phone is REQUIRED when a category has a rating limit, so a blank one cannot be used to look unrated |
+| Rules edited after teams entered | **Nobody removed; misfits marked red; the draw still works** |
+
+Defaults, not asked: Mixed = at least one man and one woman; no DUPR fails a DUPR limit.
+
+- **NULL means "no limit" on every new column**, which is what keeps every existing category,
+  and every one created without touching the rules, behaving and looking exactly as before.
+  The e2e proves it (an entry to Main with no phone and the untouched M default is accepted).
+- **Missing evidence mostly FAILS**: no date of birth fails an age bound, no DUPR fails both DUPR
+  bounds, no gender fails a gender rule, unrated fails "at least". The ONE exception is unrated
+  under "up to" (Faisal's call) — a newcomer belongs in the beginners' category.
+- **Ages are integer Y-M-D arithmetic on strings, never a `Date`**, counted on the category's own
+  `age_on` (a real `date` column; the database rejects 30 February). The birthday counts;
+  29 February falls on 1 March. An event with no date yet counts on today in India and the panel
+  says so prominently — that date does not follow the event if one is set later.
+- **`sportRating` is NOT `riseBest`.** Only keys for THIS sport, and only ones with matches or a
+  deliberate seed (`seedSource` dupr/organiser — `createPerson` writes only that one key). A
+  default seed nobody has played on is unrated. `riseBest` would let a strong badminton player
+  read as strong at pickleball.
+- **One evidence rule everywhere: declared for this team, then the person's record.** Approval
+  copies the declared `dob`/`dupr` onto the `players` row, and the red flags read that row first,
+  so approval and the flags cannot disagree — tested with a stored date of birth that says 30 and
+  a declaration that says 36. Players are never matched back to the entry by name.
+  - The PUBLIC form uses `useStored: false`: no sign-in, so typing someone else's phone must not
+    borrow their stored date of birth. The rating still comes from the person.
+  - `people.dob` is filled from a declaration only WHERE NULL, never overwritten.
+- **Checked on every way in**: `submitEntry`, `approveRegistration` (again, before creating anyone —
+  the category may have tightened since), `addPlayer` (before creating anyone). A team never
+  moves between categories today; `teams.divisionId` carries a comment that any future path must
+  run `entryFailures`. The database refuses rules that cannot mean anything (9 CHECKs in `0018`);
+  whether a PERSON fits spans tables and cannot be a CHECK.
+- **A waiver is a KEY, not the sentence the organiser read** — `waiverLine` writes
+  `<rule code>\t<player row id>` on `teams.rules_waived`, one per line, and `divisionMisfits`
+  matches on that. A rule tightened later is a different bound, so a different code, so still
+  red — which is the behaviour Faisal asked for. Keying it on the sentence looked equivalent and
+  was not: the sentence moves with the EVIDENCE. A player refused by "Rating 1200+ only
+  (unrated)" was waived under exactly those words, and the moment they had a number — a seed
+  placed by the same form, or one match played — the flags produced "Rating 1200+ only", which
+  the stored line no longer matched. The team went red again with nobody having changed
+  anything, and the organiser's decision was silently undone. The code carries no evidence, and
+  `:unrated`/`:missing` is stripped from it, because a waiver is about the rule that was broken
+  and not about which fact happened to be missing when it was given. The player row rather than
+  the name, so two people called Rahul on one team are waived separately.
+- **The organiser's add is judged on the level it is ABOUT to give the player.** `addPlayer`
+  looks the candidate up without creating them — a refusal must leave no orphan behind — so for
+  somebody new there is no person to read a rating off, and `sportRating(null)` is null. Null
+  under an "up to" limit is a NOTE, so a player the organiser placed at the top of the local
+  scene walked into a beginners' category without a word, and `divisionMisfits` then marked the
+  team red for a rating the same form had just placed, with no waiver possible because nobody
+  had been asked. `playerEvidence` now takes a declared `rating`, used only when there is no
+  person yet: `seedFromDupr(dupr)` else the starting-level band, mirroring `newPersonRow`
+  exactly. A default seed stays null — it is not evidence — and an existing person is judged on
+  their own record, because the write does not re-seed them.
+- **ONE definition of "the team is complete": `squadIsComplete(size, minTeamSize)`**, which is
+  `size >= max(2, minTeamSize)`. There were two, and they disagreed wherever min < max: the add
+  check waited for `maxTeamSize` while the flags judged at the minimum, so on a min-2/max-6
+  event a second man joined a Mixed team unchallenged and the card went red on the very next
+  render — again with no waiver to be had. A team shown in red is a team the organiser was asked
+  about first.
+- **Community play now calls the same engine** (`eligibilityFailures` and `ageOn` are thin
+  wrappers), keeping its own evidence: `riseBest ?? 0`, `dupr ?? 0`, ages on the day of play. Its
+  old tests pass unchanged. Two behaviours changed deliberately, both tested: an invalid date of
+  birth used to roll over via `fromISO` and now fails an age rule; a date of birth after the day
+  used to give a negative age, which passed "N and under", and now fails.
+- **Fixed on the way, all the same class of hole**: `approveEntry`, decline, payment,
+  `removePlayer` and `removeDivision` acted on an id with no tournament check, so a manager of one
+  event could act on another's rows; `addTeam` silently swapped a foreign category id for the
+  default; approval silently filed an entry whose category had been deleted into the first one.
+- **Team size 1 is refused while a Mixed category exists.** The registration settings redirect
+  with a CODE (`?problem=mixed-team-size`) and the page builds the sentence from the database —
+  never a message carried in the URL, which anyone could craft.
+- **The entry form and the add-player form submit with `onSubmit`, not a function `action`.**
+  React resets every field when a function action returns, which after a refusal wiped out what
+  the entrant typed at the exact moment they were told what to fix.
+  - The add-player form ALSO keeps the Server Action on `action`, for the seconds before React
+    hydrates. It was a plain server form, and a tap in that window used to add the player; with
+    only `onSubmit` the browser did a GET of the manage page with the fields in the query
+    string, so nothing was added and nothing was said. React checks `defaultPrevented` before
+    running a form action (read in `react-dom-client.development.js`), so once hydrated the
+    `preventDefault` is what stops it and there is never a double add.
+  - **Nothing the rules judge may be `required` in the browser.** The DUPR box was, in a
+    DUPR-limited category, so an organiser who did not know the number could not submit at all:
+    no reason, and no "add anyway" tick — the one path Faisal's decision provides. The server
+    refuses it instead, with both. The same argument applies to every future field the server
+    is meant to answer for.
+- **A date of birth is bounded where it is JUDGED, at the same 1900 floor the database keeps**
+  (`parseDobISO`). `parseISODate` calls "1089-05-17" a real date, so a mistyped year passed
+  every "at least" rule with an age in the hundreds and then violated
+  `registration_players_dob_sane` inside the insert — which threw out of the transaction and
+  left the entrant with no entry and no message, the exact failure the switch to `onSubmit` was
+  made to avoid. A browser's date field produces "0019-05-17" from two typed digits, so this is
+  not a crafted-post problem. Both date inputs carry `min="1900-01-01"` as well.
+- **Declared beats stored, and where they disagree the organiser is TOLD.** Neither is proof —
+  `people.dob` is itself filled from an earlier declaration — so the later one wins, which is
+  what lets a player correct a date a stranger got wrong. But the app was holding a
+  contradiction and quietly picking a side: an Under-17 entry typed by someone whose own record
+  says forty was approved without a murmur. `playerEvidence` carries `storedDob`/`storedDupr`
+  out whenever the record counted and differs, and `personFailures` turns that into a NOTE —
+  never a block, and only where a rule actually reads that field. Never on the public form
+  (`useStored: false`), because what is on file for a number somebody typed is not theirs to be
+  told.
+- **One phone number stands for one player.** Where a category has a rating limit the phone IS
+  the evidence, so two rows carrying one number both read as that person and both cleared the
+  limit — while the write path deliberately leaves the second unlinked, since one person cannot
+  be on a team twice. The team was created with a player the rule had never really been applied
+  to, and the manage screen then flagged it red for a reason the entrant was never given a
+  chance to fix. The public form now refuses the repeat outright, and `entrantEvidence` — used
+  by approval AND by the approvals list, so they cannot drift — judges the entry the way it will
+  be STORED, one person per number.
+- **`describeDivisionRules` authorises like every other action in its file.** It reads the
+  database, and a Server Action is a public endpoint; the precedent it was written from
+  (`describeScoring`) is pure and touches nothing. It is `requireManager` now, and the form asks
+  once the typing stops rather than once per keystroke.
+- The flags are one fixed set of five sequential queries (`divisionMisfits`), loaded AFTER the
+  manage page's `Promise.all`, never inside it; the approvals list finds every waiting entrant's
+  person in one `peopleByPhones` query. Query count is tested flat for 2 teams and 10.
+- **A removed player row takes its state with it.** The entry form keeps man/woman per row in a
+  fixed array of twelve and the row count separately; "remove" only shrank the count. A row set
+  to F, removed and added back came back showing F, with `touched` still saying the entrant had
+  chosen it — so switching category could not reset it either. They type a man's name under a
+  dropdown they never look at, and Mixed is satisfied by a woman who is not on the team.
+  (Separately, "remove" always drops the LAST row rather than the one clicked, which is
+  pre-existing and is being fixed on its own.)
+- `npm run test:tz` runs the unit suite under UTC and Asia/Kolkata (a script, because
+  `TZ=… vitest` is not valid in Windows' shell).
+- Not done, by decision: `playingSince`, `duprUpdatedAfter`, `duprId`, equal-numbers Mixed,
+  blocking draws, a gender CHECK on people/players (needs a data audit first), moving teams
+  between categories, proving a phone belongs to the person (impossible without sign-in — hence
+  the "unrated" note).
 
 ## Access: the site is deliberately open, and the switch is a trap
 

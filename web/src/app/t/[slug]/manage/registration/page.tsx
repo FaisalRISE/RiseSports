@@ -5,8 +5,9 @@ import { db } from "@/lib/db";
 import { registrationPlayers } from "@/lib/db/schema";
 import { principalFor } from "@/lib/auth/guard";
 import { canManage } from "@/lib/auth/policy";
-import { entryWindow } from "@/lib/registration";
-import { maskPhone } from "@/lib/people";
+import { entrantEvidence, entryWindow } from "@/lib/registration";
+import { maskPhone, normalisePhone, peopleByPhones } from "@/lib/people";
+import { entryFailures, hasRules, rulesOfDivision } from "@/lib/eligibility";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { EntryDecisions } from "@/components/EntryDecisions";
 import {
@@ -27,8 +28,14 @@ const statusLabel = {
   finished: "Finished",
 } as const;
 
-export default async function RegistrationPage({ params }: { params: Promise<{ slug: string }> }) {
+export default async function RegistrationPage({
+  params, searchParams,
+}: {
+  params: Promise<{ slug: string }>;
+  searchParams: Promise<{ problem?: string }>;
+}) {
   const { slug } = await params;
+  const { problem } = await searchParams;
   const data = await loadRegistrationTab(slug);
   if (!data) notFound();
   const { tournament: t, divisions: divs, entries } = data;
@@ -37,9 +44,56 @@ export default async function RegistrationPage({ params }: { params: Promise<{ s
   const people = entries.length
     ? await db.select().from(registrationPlayers).where(inArray(registrationPlayers.registrationId, entries.map((e) => e.id)))
     : [];
-  const playersOf = (id: string) => people.filter((p) => p.registrationId === id);
+  const playersOf = (id: string) =>
+    people.filter((p) => p.registrationId === id).sort((a, b) => a.position - b.position);
 
+  /* ── Does each waiting entry still fit its category? ───────────────────
+     Said on the list, so the organiser sees it BEFORE pressing Approve rather
+     than only in the refusal after. Every waiting entrant's person is found in
+     ONE query, not one per entry: a query per entry is a fan-out that grows
+     with the list (lib/db/index.ts). Same evidence and same verdict approval
+     will reach — `approveRegistration` builds it the same way. */
   const pending = entries.filter((e) => e.status === "pending");
+  const known = await peopleByPhones(pending.flatMap((e) => playersOf(e.id).map((p) => p.phone)));
+  const divisionOf = new Map(divs.map((d) => [d.id, d]));
+  const fitOf = new Map(
+    pending.map((e) => {
+      const d = e.divisionId ? divisionOf.get(e.divisionId) : divs.length === 1 ? divs[0] : undefined;
+      const r = d ? rulesOfDivision(d) : null;
+      if (!r || !hasRules(r)) return [e.id, { reasons: [] as string[], notes: [] as string[] }];
+      const squad = playersOf(e.id);
+      const verdict = entryFailures(
+        entrantEvidence(squad, known, t.sport, normalisePhone),
+        r,
+        { complete: true, minTeamSize: t.minTeamSize, dated: true },
+      );
+      return [e.id, {
+        reasons: [
+          ...verdict.players.flatMap((fs, i) =>
+            fs.filter((f) => f.severity === "block").map((f) => `${squad[i].name} (${f.text})`)),
+          ...verdict.team.filter((f) => f.severity === "block").map((f) => f.text),
+        ],
+        /* Notes never block; they are what the organiser should look at before
+           pressing Approve. "Unrated" is worded for that moment; the rest —
+           a date of birth or a DUPR that disagrees with the record on file —
+           are already sentences. */
+        notes: verdict.players.flatMap((fs, i) =>
+          fs.filter((f) => f.severity === "note").map((f) =>
+            f.code.startsWith("rating:max")
+              ? `${squad[i].name} is unrated. Check their level before approving.`
+              : `${squad[i].name}: ${f.text}.`)),
+      }];
+    }),
+  );
+
+  /* A code from the settings form, turned into words HERE from the database —
+     never a sentence carried in the URL, which anyone could craft. */
+  const mixedName = divs.find((d) => d.genderRule === "MX")?.name;
+  const settingsProblem =
+    problem === "mixed-team-size" && mixedName
+      ? `${mixedName} is Mixed and needs teams of at least two. Change that category's rules first, or keep team size at 2 or more.`
+      : null;
+
   const approved = entries.filter((e) => e.status === "approved");
   const window = entryWindow(t);
   const publicUrl = `/e/${t.slug}`;
@@ -110,6 +164,12 @@ export default async function RegistrationPage({ params }: { params: Promise<{ s
                   <li key={e.id} className="rounded-lg border border-neutral-800 bg-neutral-950 p-3">
                     <div className="flex flex-wrap items-baseline gap-2">
                       <span className="font-bold">{e.teamName}</span>
+                      {/* Which category — the thing its rules are judged against. */}
+                      {divs.length > 1 && (
+                        <span className="rounded-full border border-neutral-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-neutral-400">
+                          {(e.divisionId && divisionOf.get(e.divisionId)?.name) || "No category"}
+                        </span>
+                      )}
                       <span
                         className={`rounded px-1.5 text-[10px] font-black uppercase ${
                           e.status === "approved" ? "bg-emerald-500/20 text-emerald-300"
@@ -136,10 +196,36 @@ export default async function RegistrationPage({ params }: { params: Promise<{ s
                     </div>
 
                     {/* Names in full; numbers masked. The organiser needs to know
-                        a number is on file, not to read it off a screen. */}
-                    <p className="mt-1 text-[11px] text-neutral-400">
-                      {squad.map((p) => `${p.name}${p.phone ? ` (${maskPhone(p.phone)})` : " (no phone)"}`).join(" · ")}
-                    </p>
+                        a number is on file, not to read it off a screen. Man or
+                        woman per player, because category rules turn on it. */}
+                    <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-neutral-400">
+                      {squad.map((p) => (
+                        <li key={p.id} className="flex items-center gap-1.5">
+                          <span>{p.name}</span>
+                          <span className={`rounded px-1 text-[10px] font-bold ${p.gender === "F" ? "bg-violet-500/20 text-violet-300" : "bg-blue-500/20 text-blue-300"}`}>
+                            {p.gender}
+                          </span>
+                          <span className="font-mono text-[10px] text-neutral-600">{p.phone ? maskPhone(p.phone) : "no phone"}</span>
+                        </li>
+                      ))}
+                    </ul>
+
+                    {(() => {
+                      const fit = fitOf.get(e.id);
+                      if (!fit || (fit.reasons.length === 0 && fit.notes.length === 0)) return null;
+                      return (
+                        <div className="mt-2 space-y-1" data-entry-fit>
+                          {fit.reasons.length > 0 && (
+                            <p className="rounded-lg border border-rose-500/50 bg-rose-500/10 p-2 text-[11px] font-semibold text-rose-300">
+                              Doesn’t fit current rules: {fit.reasons.join(" · ")}
+                            </p>
+                          )}
+                          {fit.notes.map((n) => (
+                            <p key={n} className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-2 text-[11px] text-neutral-500">{n}</p>
+                          ))}
+                        </div>
+                      );
+                    })()}
 
                     {Object.keys(e.answers ?? {}).length > 0 && (
                       <p className="mt-1 text-[11px] text-neutral-500">
@@ -170,6 +256,12 @@ export default async function RegistrationPage({ params }: { params: Promise<{ s
         {/* ── Settings ──────────────────────────────────────────────────── */}
         <form action={saveRegistrationSettings.bind(null, t.id)} className="space-y-4 rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
           <h2 className="text-[11px] font-black uppercase tracking-widest text-neutral-400">The public page</h2>
+
+          {settingsProblem && (
+            <p role="alert" className="rounded-lg border border-rose-500/50 bg-rose-500/10 p-3 text-xs font-semibold text-rose-300">
+              Not saved. {settingsProblem}
+            </p>
+          )}
 
           <Field label="About">
             <textarea name="about" defaultValue={t.about ?? ""} rows={3} maxLength={1000}
