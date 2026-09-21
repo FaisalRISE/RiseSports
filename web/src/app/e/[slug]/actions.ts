@@ -17,7 +17,8 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/lib/db";
-import { divisions, registrations, registrationPlayers, tournaments } from "@/lib/db/schema";
+import { divisions, registrations, tournaments } from "@/lib/db/schema";
+import { writeEntry } from "@/lib/registration/store";
 import {
   entryRuleProblems, entryWindow, validateEntry, verdictProblems, type Problem, type TypedPlayer,
 } from "@/lib/registration";
@@ -141,25 +142,22 @@ export async function submitEntry(slug: string, formData: FormData): Promise<Sub
   const named = typed;
 
   /* One entry per phone per event. Without this a double-tapped submit button
-     puts the same pair in the draw twice, and an organiser has to spot it. */
+     puts the same pair in the draw twice, and an organiser has to spot it.
+     This look-up is the cheap, common case; `writeEntry` settles the rare one
+     where two submits arrive together, through the database. */
+  const already = { ok: false as const, problems: [{ field: "form", message: "An entry from this number is already in for this event." }] };
   const contactPhone = normalisePhone(named[0]?.phone ?? null);
   if (contactPhone) {
     const existing = await db
       .select({ id: registrations.id, status: registrations.status })
       .from(registrations)
       .where(and(eq(registrations.tournamentId, t.id), eq(registrations.contactPhone, contactPhone)));
-    const live = existing.find((e) => e.status === "pending" || e.status === "approved");
-    if (live) {
-      return {
-        ok: false,
-        problems: [{ field: "form", message: "An entry from this number is already in for this event." }],
-      };
-    }
+    if (existing.some((e) => e.status === "pending" || e.status === "approved")) return already;
   }
 
   const registrationId = randomUUID();
-  await db.transaction(async (tx) => {
-    await tx.insert(registrations).values({
+  const written = await writeEntry(
+    {
       id: registrationId,
       tournamentId: t.id,
       divisionId: entry.divisionId,
@@ -173,27 +171,24 @@ export async function submitEntry(slug: string, formData: FormData): Promise<Sub
       /* Free events still start unpaid; the organiser can waive or the fee is
          simply zero. One state machine, no special case. */
       paymentState: t.entryFee === 0 ? "waived" : "unpaid",
-    });
-
-    await tx.insert(registrationPlayers).values(
-      named.map((p, i) => ({
-        id: randomUUID(),
-        registrationId,
-        name: p.name,
-        /* Normalised here so the roster can match it later without guessing. */
-        phone: normalisePhone(p.phone),
-        /* Past the rules check, a gender rule has already refused a blank; a
-           category without one never produced one. */
-        gender: p.gender ?? "M",
-        position: i,
-        /* Only what the category asked for. A date of birth typed into a form
-           that did not need it is not kept — the less personal data held, the
-           less there is to hold carefully. */
-        dob: needs.dob ? p.dob || null : null,
-        dupr: needs.dupr ? duprToX100(p.dupr) : null,
-      })),
-    );
-  });
+    },
+    named.map((p, i) => ({
+      id: randomUUID(),
+      name: p.name,
+      /* Normalised here so the roster can match it later without guessing. */
+      phone: normalisePhone(p.phone),
+      /* Past the rules check, a gender rule has already refused a blank; a
+         category without one never produced one. */
+      gender: p.gender ?? "M",
+      position: i,
+      /* Only what the category asked for. A date of birth typed into a form
+         that did not need it is not kept — the less personal data held, the
+         less there is to hold carefully. */
+      dob: needs.dob ? p.dob || null : null,
+      dupr: needs.dupr ? duprToX100(p.dupr) : null,
+    })),
+  );
+  if (!written) return already;
 
   revalidatePath(`/t/${s}/manage`);
   /* A short human-quotable reference, so a registrant chasing an organiser on

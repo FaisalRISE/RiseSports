@@ -134,6 +134,13 @@
       "when": 1789662283103,
       "tag": "0018_nebulous_mister_fear",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789969523049,
+      "tag": "0019_entry_race_and_dupr_strict",
+      "breakpoints": true
     }
   ]
 }

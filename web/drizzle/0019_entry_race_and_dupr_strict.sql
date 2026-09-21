@@ -1,0 +1,2 @@
+ALTER TABLE "divisions" ADD COLUMN "dupr_strict" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "registrations_one_live_per_phone" ON "registrations" USING btree ("tournament_id","contact_phone") WHERE contact_phone is not null and status in ('pending', 'approved');

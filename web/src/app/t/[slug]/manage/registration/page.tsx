@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 import { registrationPlayers } from "@/lib/db/schema";
 import { principalFor } from "@/lib/auth/guard";
 import { canManage } from "@/lib/auth/policy";
-import { entrantEvidence, entryWindow } from "@/lib/registration";
+import { entrantEvidence, entryWindow, indiaLocalInput } from "@/lib/registration";
 import { maskPhone, normalisePhone, peopleByPhones } from "@/lib/people";
 import { entryFailures, hasRules, rulesOfDivision } from "@/lib/eligibility";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
@@ -98,8 +98,6 @@ export default async function RegistrationPage({
   const window = entryWindow(t);
   const publicUrl = `/e/${t.slug}`;
 
-  const dt = (d: Date | null) => (d ? new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : "");
-
   return (
     <>
       <OpenAccessBanner />
@@ -191,7 +189,7 @@ export default async function RegistrationPage({
                         </span>
                       )}
                       <span className="ml-auto text-[10px] text-neutral-600">
-                        {e.createdAt.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+                        {e.createdAt.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" })}
                       </span>
                     </div>
 
@@ -278,12 +276,12 @@ export default async function RegistrationPage({
               <input name="entryFee" inputMode="decimal" defaultValue={t.entryFee ? String(t.entryFee / 100) : "0"}
                 className="w-full rounded-lg border border-neutral-700 bg-neutral-950 p-2.5 text-sm" />
             </Field>
-            <Field label="Entries open">
-              <input type="datetime-local" name="opensAt" defaultValue={dt(t.registrationOpensAt)}
+            <Field label="Entries open" hint="India time">
+              <input type="datetime-local" name="opensAt" defaultValue={indiaLocalInput(t.registrationOpensAt)}
                 className="w-full rounded-lg border border-neutral-700 bg-neutral-950 p-2.5 text-sm" />
             </Field>
-            <Field label="Entries close">
-              <input type="datetime-local" name="closesAt" defaultValue={dt(t.registrationClosesAt)}
+            <Field label="Entries close" hint="India time">
+              <input type="datetime-local" name="closesAt" defaultValue={indiaLocalInput(t.registrationClosesAt)}
                 className="w-full rounded-lg border border-neutral-700 bg-neutral-950 p-2.5 text-sm" />
             </Field>
             <Field label="Min players per team">

@@ -449,3 +449,52 @@ describe("approving into a category with rules", () => {
     expect((await approve.approveRegistration(together)).ok).toBe(true);
   });
 });
+
+describe("one live entry per phone, decided by the database", () => {
+  let writeEntry: typeof import("./store").writeEntry;
+  beforeAll(async () => {
+    ({ writeEntry } = await import("./store"));
+  });
+
+  const newEntry = (id: string, phone: string) => ({
+    id, tournamentId: ids.tournament, teamName: id, contactName: "Kiran", contactPhone: phone,
+    status: "pending" as const,
+  });
+  const players = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ id: randomUUID(), name: `P${i}`, gender: "M" as const, position: i }));
+
+  it("writes an entry and its players together", async () => {
+    const id = randomUUID();
+    expect(await writeEntry(newEntry(id, "+919000000401"), players(2))).toBe(true);
+    const rows = await db.select().from(schema.registrationPlayers).where(eq(schema.registrationPlayers.registrationId, id));
+    expect(rows).toHaveLength(2);
+  });
+
+  it("writes NOTHING when the phone already has a live entry — not even the players", async () => {
+    /* The path the entry action's own look-up cannot cover: the look-up said
+       "no live entry" a moment ago, and one has landed since. The index is
+       what refuses it, through `onConflictDoNothing` — no error to parse, so
+       it behaves the same on PGlite and on postgres-js, which name the
+       violated constraint differently. */
+    await writeEntry(newEntry(randomUUID(), "+919000000402"), players(2));
+    const second = randomUUID();
+    expect(await writeEntry(newEntry(second, "+919000000402"), players(2))).toBe(false);
+    expect(await db.select().from(schema.registrations).where(eq(schema.registrations.id, second))).toEqual([]);
+    expect(
+      await db.select().from(schema.registrationPlayers).where(eq(schema.registrationPlayers.registrationId, second)),
+    ).toEqual([]);
+  });
+
+  it("refuses to approve a declined entry, which could collide with a newer one", async () => {
+    const old = await entryWith([{ name: "Once", phone: "+919000000403" }], "Declined Once");
+    await approve.setRegistrationStatus(old, "declined", "Full");
+    /* The same phone enters again, and that entry is live. */
+    expect(await writeEntry(newEntry(randomUUID(), "+919000000403"), players(1))).toBe(true);
+
+    const res = await approve.approveRegistration(old);
+    expect(res.ok).toBe(false);
+    expect(!res.ok && res.error).toMatch(/declined/);
+    const [still] = await db.select().from(schema.registrations).where(eq(schema.registrations.id, old));
+    expect(still.status).toBe("declined");
+  });
+});

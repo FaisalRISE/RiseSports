@@ -54,6 +54,14 @@ export async function approveRegistration(
     return { ok: false, error: "That entry is not part of this event." };
   }
   if (reg.status === "approved") return { ok: false, error: "That entry is already approved." };
+  /* Only a WAITING entry can be approved. The screen only ever offers Approve
+     on one, but a stale page on a second phone, or a direct call, could approve
+     a declined entry — and once the same phone has entered again, bringing the
+     old one back to life collides with `registrations_one_live_per_phone`
+     inside the transaction below and throws. */
+  if (reg.status !== "pending") {
+    return { ok: false, error: `That entry was ${reg.status}. Ask them to enter again.` };
+  }
 
   const [t] = await db.select().from(tournaments).where(eq(tournaments.id, reg.tournamentId)).limit(1);
   if (!t) return { ok: false, error: "Tournament not found." };
@@ -180,11 +188,13 @@ export async function approveRegistration(
        the same entry — a double tap, or two organisers on two phones — both saw
        "pending" and both built a team. This update succeeds for exactly one of
        them: on Postgres the second waits for the first to commit and then finds
-       the row already approved, so it matches nothing and writes nothing. */
+       the row no longer pending, so it matches nothing and writes nothing.
+       `= 'pending'` rather than `<> 'approved'`, so a declined entry can never
+       be claimed either. */
     const won = await tx
       .update(registrations)
       .set({ status: "approved", decidedAt: new Date(), note: null })
-      .where(and(eq(registrations.id, reg.id), ne(registrations.status, "approved")))
+      .where(and(eq(registrations.id, reg.id), eq(registrations.status, "pending")))
       .returning({ id: registrations.id });
     if (won.length === 0) return false;
 

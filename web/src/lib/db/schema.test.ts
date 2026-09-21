@@ -534,6 +534,60 @@ describe("category rules, enforced by the database", () => {
     const [row] = await db.select().from(schema.divisions).where(eq(schema.divisions.id, "rules-2"));
     expect(row.ageOn).toBe("2026-10-12");
   });
+
+  it("lets a player with no DUPR in unless the organiser chooses strict", async () => {
+    /* Faisal, 2026-09-21: organiser's discretion, and the default is to let
+       them in with a "No DUPR" flag. A category written without touching the
+       switch must come out lenient. */
+    await division({ id: "rules-lenient", duprMax: 350 });
+    const [row] = await db.select().from(schema.divisions).where(eq(schema.divisions.id, "rules-lenient"));
+    expect(row.duprStrict).toBe(false);
+  });
+});
+
+describe("one live entry per phone per event, enforced by the database", () => {
+  /* The entry action asks before it inserts, but asking and inserting are two
+     statements: two submits in the same moment both got "no". The partial
+     unique index is the arbiter. Matched on the index NAME here, which PGlite
+     reports as `constraint` — postgres-js calls the same field
+     `constraint_name`, which is why the app itself never matches on it (see
+     lib/registration/store). */
+  const entry = (id: string, phone: string | null, status = "pending") =>
+    db.insert(schema.registrations).values({
+      id, tournamentId: seeded.oslId, teamName: id, contactName: "C", contactPhone: phone, status,
+    } as never);
+
+  async function refused(write: Promise<unknown>) {
+    let caught: unknown = null;
+    try { await write; } catch (e) { caught = e; }
+    const err = caught as { constraint?: string; cause?: { constraint?: string } } | null;
+    expect(err?.cause?.constraint ?? err?.constraint).toBe("registrations_one_live_per_phone");
+  }
+
+  it("refuses a second live entry from the same phone", async () => {
+    await entry("live-1", "+919800000001");
+    await refused(entry("live-2", "+919800000001"));
+    await refused(entry("live-3", "+919800000001", "approved"));
+  });
+
+  it("lets the same phone enter again once the first was declined", async () => {
+    await entry("dec-1", "+919800000002", "declined");
+    await expect(entry("dec-2", "+919800000002")).resolves.toBeDefined();
+  });
+
+  it("leaves entries with no phone alone, and other events alone", async () => {
+    await entry("nophone-1", null);
+    await expect(entry("nophone-2", null)).resolves.toBeDefined();
+    await db.insert(schema.tournaments).values({
+      id: "phone-elsewhere", slug: "phone-elsewhere", name: "Elsewhere", ownerId: seeded.ownerId,
+    } as never);
+    await expect(
+      db.insert(schema.registrations).values({
+        id: "other-event", tournamentId: "phone-elsewhere", teamName: "x", contactName: "C",
+        contactPhone: "+919800000001",
+      } as never),
+    ).resolves.toBeDefined();
+  });
 });
 
 describe("buildLog", () => {

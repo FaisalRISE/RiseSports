@@ -1185,6 +1185,55 @@ Defaults, not asked: Mixed = at least one man and one woman; no DUPR fails a DUP
   between categories, proving a phone belongs to the person (impossible without sign-in — hence
   the "unrated" note).
 
+### Entry fixes, a rating per sport, and the "No DUPR" switch (2026-09-21)
+
+Faisal asked for "small fixes first". Two of them changed a feature in use, so he was asked, and
+his answers widened the work into a principle: *"RiseR rating is specific to each sport… A player
+can join without DUPR based on organiser's discretion."* Migration `0019` carries the whole
+schema side.
+
+**Two entries from one phone at the same moment.** `submitEntry` asked "does this phone have a
+live entry?" and then inserted — two statements, so two submits in the same moment both got
+"no". The partial unique index `registrations_one_live_per_phone` (`tournament_id,
+contact_phone` where the status is pending or approved) is the arbiter now; a declined entry
+drops out, so that phone may enter again.
+
+- **It is consulted through `onConflictDoNothing()`, never by catching the error.** The two
+  drivers name the violated constraint DIFFERENTLY: PGlite puts it on `constraint`,
+  postgres-js on `constraint_name` (`postgres/src/connection.js:46`). A catch matching the name
+  passes every local test — `schema.test.ts`'s `refusedBy` reads `constraint` — and in
+  production would have shown the entrant a raw database error. Found by an adversarial review
+  of the plan, before a line was written. `findOrCreatePerson` settles its race the same way;
+  **anything new that must tell one unique violation from another has to read both fields, or
+  better, avoid needing to.** `lib/registration/store.ts` `writeEntry` holds it.
+- The partial index's predicate is LITERAL SQL in `schema.ts`, because drizzle-kit writes it into
+  the migration as text.
+- **Approval claims only a PENDING entry** (`= 'pending'`, it was `<> 'approved'`). The screen
+  only offers Approve on one, but a stale page could approve a declined entry — which, once the
+  same phone had entered again, collided with the new index inside the transaction and threw.
+
+**Entry open/close times ran five and a half hours late on the live site.** `dateOrNull` did
+`new Date("2026-10-12T09:00")`, which reads the time in the SERVER's timezone — UTC on Vercel —
+so 09:00 typed in India was stored as 14:30 India time, and `entryWindow` compares it with the
+real clock. Nothing looked wrong because the form (`getTimezoneOffset`) and the page (no
+`timeZone`) converted back through the same wrong offset. **On a laptop in India every step was
+right**, which is where it had been tested: installing the old code and running the tests
+proves it — three fail under `TZ=UTC`, and the time tests pass under `TZ=Asia/Kolkata`.
+
+- Entry windows are TRUE instants, unlike match times, which are floating. They are India time
+  (`parseIndiaLocal`, `indiaLocalInput`, `indiaTimeLabel` in `lib/registration`), and the form
+  and the page both say "India time".
+- **Fixed-offset arithmetic, not `Intl`, builds the input's value.** India keeps no daylight
+  saving, so +05:30 is exact. `Intl` formats can return "09:00 a.m." or "24:00"; a
+  `datetime-local` box then renders EMPTY, and the next Save of any setting on that form posts
+  it empty and silently erases the window.
+- The same class, fixed alongside: the print pack's printed-at time and the approvals list's
+  entry date (true instants, now India time), and the public page's event date (floating, now
+  `timeZone: "UTC"` like every other schedule render).
+- **Not fixed, raised separately:** community session "today" and ages still use the server's
+  date (`lib/community/localISO`), so between 00:00 and 05:30 in India the live site thinks it
+  is yesterday.
+
 ## Access: the site is deliberately open, and the switch is a trap
 
 `rise-sports.vercel.app` lets any visitor create events, manage them and enter scores that move

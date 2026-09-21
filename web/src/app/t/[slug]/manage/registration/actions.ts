@@ -16,7 +16,7 @@ import { db } from "@/lib/db";
 import { divisions, registrations, tournaments, type FormField, type TournamentStatus, type Waiver } from "@/lib/db/schema";
 import { principalFor } from "@/lib/auth/guard";
 import { canManage, assert } from "@/lib/auth/policy";
-import { feeToPaise } from "@/lib/registration";
+import { feeToPaise, parseIndiaLocal } from "@/lib/registration";
 import { approveRegistration, setRegistrationStatus, setPaymentState } from "@/lib/registration/approve";
 
 async function requireManager(tournamentId: string) {
@@ -33,12 +33,10 @@ const refresh = (slug: string) => {
   revalidatePath(`/e/${slug}`);
 };
 
-const dateOrNull = (v: FormDataEntryValue | null): Date | null => {
-  const s = String(v ?? "").trim();
-  if (!s) return null;
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? null : d;
-};
+/* The organiser types India time. `new Date(s)` read it in the SERVER's
+   timezone — UTC on Vercel — which opened and closed entries five and a half
+   hours late. See `parseIndiaLocal`. */
+const dateOrNull = (v: FormDataEntryValue | null): Date | null => parseIndiaLocal(String(v ?? ""));
 
 /** Move the tournament through its lifecycle: draft → open → live → finished. */
 export async function setStatus(tournamentId: string, status: TournamentStatus) {

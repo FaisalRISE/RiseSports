@@ -10,6 +10,7 @@
  * an organiser of one event and a spectator at another. They are checked
  * server-side in every Server Action — the client is never trusted. */
 
+import { sql } from "drizzle-orm";
 import {
   pgTable, text, integer, boolean, timestamp, jsonb, uniqueIndex, index, primaryKey, date,
 } from "drizzle-orm/pg-core";
@@ -355,6 +356,10 @@ export const divisions = pgTable(
     /** DUPR ×100, inclusive — the units of `people.dupr`. */
     duprMin: integer("dupr_min_x100"),
     duprMax: integer("dupr_max_x100"),
+    /** A player with NO DUPR, against a DUPR bound: false (the default, Faisal
+        2026-09-21) lets them in and flags "No DUPR" for the organiser; true
+        keeps them out. Means nothing without a DUPR bound. */
+    duprStrict: boolean("dupr_strict").notNull().default(false),
     createdAt: created(),
   },
   (t) => [index("divisions_tournament_idx").on(t.tournamentId)],
@@ -402,6 +407,15 @@ export const registrations = pgTable(
   (t) => [
     index("registrations_tournament_idx").on(t.tournamentId),
     index("registrations_status_idx").on(t.tournamentId, t.status),
+    /* One LIVE entry per phone per event, enforced by the database. The entry
+       action asks first, but asking and inserting are two statements, and two
+       taps on Submit in the same moment both got a "no" to the question. A
+       declined or withdrawn entry drops out of the index, so that phone may
+       enter again. The predicate is literal SQL on purpose: drizzle-kit writes
+       it into the migration as text, and a bound value would not survive. */
+    uniqueIndex("registrations_one_live_per_phone")
+      .on(t.tournamentId, t.contactPhone)
+      .where(sql`contact_phone is not null and status in ('pending', 'approved')`),
   ],
 );
 

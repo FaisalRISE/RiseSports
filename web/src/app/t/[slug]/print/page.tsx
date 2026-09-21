@@ -45,7 +45,7 @@ export default async function PrintPage({
   const nameOf = (id: string) => byId.get(id)?.name ?? "—";
 
   const printedAt = new Date().toLocaleString("en-GB", {
-    day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+    day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata",
   }).replace(",", " ·");
 
   const asPrint = (m: (typeof loaded.matches)[number]): PrintMatch => {

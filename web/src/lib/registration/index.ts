@@ -42,21 +42,64 @@ export function entryWindow(
     return {
       open: false,
       when: "before",
-      reason: `Entries open on ${fmt(t.registrationOpensAt)}.`,
+      reason: `Entries open on ${indiaTimeLabel(t.registrationOpensAt)} (India time).`,
     };
   }
   if (t.registrationClosesAt && now > t.registrationClosesAt) {
     return {
       open: false,
       when: "after",
-      reason: `Entries closed on ${fmt(t.registrationClosesAt)}.`,
+      reason: `Entries closed on ${indiaTimeLabel(t.registrationClosesAt)} (India time).`,
     };
   }
   return { open: true };
 }
 
-const fmt = (d: Date) =>
-  d.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+/* ── Entry open/close times are India time ────────────────────────────────
+ *
+ * An entry window is a TRUE instant — `entryWindow` compares it with the real
+ * clock — unlike a match time, which is "floating" and never compared with now
+ * (see lib/schedule). So the organiser's "09:00" has to become the instant
+ * 09:00 IS, somewhere. That somewhere is India, where the app's organisers are.
+ *
+ * It used to be the SERVER's timezone: `new Date("2026-10-12T09:00")`, read on
+ * a Vercel machine running in UTC, is 09:00 UTC — 14:30 in India. Entries opened
+ * and closed five and a half hours late, and nothing looked wrong, because the
+ * form and the page converted back through the same offset. On a laptop in
+ * India, where the app was tested, every step happened to be right.
+ *
+ * India keeps no daylight saving, so +05:30 is a fixed offset and plain
+ * arithmetic is exact. `Intl` is deliberately NOT used to build the input's
+ * value: formats like en-CA can come back as "09:00 a.m." or "24:00", the
+ * `datetime-local` box then renders empty, and the next Save of ANY setting on
+ * that form posts it empty and silently erases the window. */
+
+const IST_MS = (5 * 60 + 30) * 60_000;
+const LOCAL = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/;
+
+/** A `datetime-local` value, read as India time. Null for anything else. */
+export function parseIndiaLocal(s: string | null | undefined): Date | null {
+  const hit = LOCAL.exec(String(s ?? "").trim());
+  if (!hit) return null;
+  const [y, mo, d, h, mi, sec] = hit.slice(1).map((x) => Number(x ?? 0));
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || sec > 59) return null;
+  const utc = Date.UTC(y, mo - 1, d, h, mi, sec);
+  /* Date.UTC rolls 31 April over into May; refuse it rather than move it. */
+  if (new Date(utc).getUTCDate() !== d) return null;
+  return new Date(utc - IST_MS);
+}
+
+/** The value a `datetime-local` box needs to show this instant in India time. */
+export function indiaLocalInput(d: Date | null | undefined): string {
+  return d ? new Date(d.getTime() + IST_MS).toISOString().slice(0, 16) : "";
+}
+
+/** "12 Oct, 09:00" in India time, on any server. */
+export function indiaTimeLabel(d: Date): string {
+  return d.toLocaleString("en-GB", {
+    day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata",
+  });
+}
 
 export type EntryInput = {
   teamName: string;

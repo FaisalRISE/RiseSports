@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { entryWindow, entryRuleProblems, validateEntry, verdictProblems, formatFee, feeToPaise, type EntryInput, type Problem, type TypedPlayer } from "./index";
+import { entryWindow, entryRuleProblems, indiaLocalInput, indiaTimeLabel, parseIndiaLocal, validateEntry, verdictProblems, formatFee, feeToPaise, type EntryInput, type Problem, type TypedPlayer } from "./index";
 import { NO_RULES, entryFailures, type Rules } from "@/lib/eligibility";
 import { vi } from "vitest";
 vi.mock("server-only", () => ({}));
@@ -274,5 +274,50 @@ describe("telling the entrant what went wrong", () => {
     expect(ps[0].message).toBe("This team cannot enter Mixed: Mixed needs at least one man and one woman.");
     expect(ps.some((p) => p.field.startsWith("player:"))).toBe(false);
     expect(ps.find((p) => p.field === "division")?.message).toBe("Mixed needs at least one man and one woman.");
+  });
+});
+
+describe("entry open and close times are India time", () => {
+  /* These pass under TZ=UTC AND TZ=Asia/Kolkata (`npm run test:tz`). The bug
+     they pin was invisible on a laptop in India: `new Date("…T09:00")` read the
+     time in the SERVER's zone, which is UTC on Vercel, so 09:00 typed became
+     14:30 in India and entries opened five and a half hours late. */
+
+  it("reads what the organiser typed as India time", () => {
+    expect(parseIndiaLocal("2026-10-12T09:00")?.toISOString()).toBe("2026-10-12T03:30:00.000Z");
+    /* Just after midnight in India is still the previous day in UTC. */
+    expect(parseIndiaLocal("2026-10-12T00:30")?.toISOString()).toBe("2026-10-11T19:00:00.000Z");
+    /* A browser may send seconds. */
+    expect(parseIndiaLocal("2026-10-12T09:00:15")?.toISOString()).toBe("2026-10-12T03:30:15.000Z");
+  });
+
+  it("refuses anything that is not a real local date and time", () => {
+    for (const bad of ["", "   ", "2026-10-12", "2026-04-31T09:00", "2026-13-01T09:00", "2026-10-12T24:00", "12/10/2026 09:00"]) {
+      expect(parseIndiaLocal(bad), bad).toBeNull();
+    }
+  });
+
+  it("gives the date box back exactly what was typed", () => {
+    for (const typed of ["2026-10-12T09:00", "2026-10-12T00:30", "2026-12-31T23:59", "2027-01-01T00:00"]) {
+      const shown = indiaLocalInput(parseIndiaLocal(typed));
+      /* The shape a datetime-local box accepts. Anything else renders empty —
+         and the next Save of the settings form would then erase the window. */
+      expect(shown).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+      expect(shown).toBe(typed);
+    }
+    expect(indiaLocalInput(null)).toBe("");
+  });
+
+  it("states the time in India time, whatever the server's own zone", () => {
+    expect(indiaTimeLabel(new Date("2026-10-12T03:30:00Z"))).toMatch(/12 Oct.*09:00/);
+  });
+
+  it("opens and closes at the India time that was typed", () => {
+    const t0 = t({ registrationOpensAt: parseIndiaLocal("2026-10-12T09:00") });
+    /* 08:59 in India: not yet, and the reason names 09:00, not 03:30 or 14:30. */
+    const early = entryWindow(t0, new Date("2026-10-12T03:29:00Z"));
+    expect(early.open).toBe(false);
+    if (!early.open) expect(early.reason).toMatch(/09:00 \(India time\)/);
+    expect(entryWindow(t0, new Date("2026-10-12T03:30:00Z")).open).toBe(true);
   });
 });

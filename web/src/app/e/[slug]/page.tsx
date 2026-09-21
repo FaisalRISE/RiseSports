@@ -4,7 +4,7 @@ import { asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { divisions, registrations, tournaments, users } from "@/lib/db/schema";
 import { sportOf } from "@/lib/sports/registry";
-import { entryWindow, formatFee } from "@/lib/registration";
+import { entryWindow, formatFee, indiaTimeLabel } from "@/lib/registration";
 import { rulesFor } from "@/lib/matchState";
 import { EntryForm } from "@/components/EntryForm";
 import { hasRules, needsFrom, ruleChips, rulesOfDivision, rulesSentence } from "@/lib/eligibility";
@@ -74,7 +74,7 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
             <h2 className="mb-1 text-lg font-black">Enter this event</h2>
             <p className="mb-4 text-xs text-neutral-400">
               {t.registrationClosesAt
-                ? `Entries close ${t.registrationClosesAt.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}.`
+                ? `Entries close ${indiaTimeLabel(t.registrationClosesAt)} (India time).`
                 : "Entries are open."}
             </p>
             <EntryForm
@@ -130,7 +130,7 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
         <dl className="grid gap-3 sm:grid-cols-2">
           <Detail label="Sport" value={`${sport.emoji} ${sport.name}`} />
           <Detail label="Format" value={t.format === "osl" ? "OSL team format" : t.format === "pickleboss" ? "Pickleboss" : "Standard"} />
-          <Detail label="Date" value={t.startsAt ? t.startsAt.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "long" }) : "To be confirmed"} />
+          <Detail label="Date" value={t.startsAt ? t.startsAt.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "long", timeZone: "UTC" }) : "To be confirmed"} />
           <Detail label="Venue" value={t.venue ?? "To be confirmed"} />
           <Detail label="Team size" value={t.minTeamSize === t.maxTeamSize ? `${t.minTeamSize} players` : `${t.minTeamSize}–${t.maxTeamSize} players`} />
           <Detail label="Organised by" value={owner?.name ?? "—"} />
