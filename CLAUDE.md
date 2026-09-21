@@ -1243,6 +1243,9 @@ proves it — three fail under `TZ=UTC`, and the time tests pass under `TZ=Asia/
     the first one is known, which is why `sessionDates` only had its START changed.
   - Covered: `sessionDates` (the strip, `/play`'s next date), ages in `communityVerdict`/`ageOn`,
     the ladder challenge date, the venue picker's earliest date, and a new game's default day.
+  - **The Court Ledger had the same bug** — an expense's default date and a payment's date —
+    and uses `todayInIndia()` too, in a SEPARATE commit so it can be kept or dropped on its own.
+    After it, nothing in the app calls `localISO(new Date())`.
   - The host form's default day is computed on the SERVER and passed down as `defaultDay`. Read
     in the form with `new Date()`, it was the server's day while rendering and the phone's once
     hydrated — two different days after midnight in India.
