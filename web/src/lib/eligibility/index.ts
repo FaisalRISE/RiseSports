@@ -463,13 +463,16 @@ export function rulesOfDivision(
   };
 }
 
-/** A community game's restrictions, in the same terms. Ages count on the day.
-    `duprStrict` is optional in the stored jsonb: a game saved before it existed
-    reads as lenient, the default. */
+/** A community game's restrictions, in the same terms. Ages count on the host's
+    cut-off date, like a category's; a game saved without one leaves `ageOn`
+    null and its caller supplies the day. `duprStrict` is optional in the
+    stored jsonb: a game saved before it existed reads as lenient, the default. */
 export function rulesOfRestrictions(r: Restrictions): Rules {
+  const hasAge = r.ageMin != null || r.ageMax != null;
   return {
     gender: r.gender,
-    ageMin: r.ageMin, ageMax: r.ageMax, ageOn: null,
+    ageMin: r.ageMin, ageMax: r.ageMax,
+    ageOn: hasAge && r.ageOn && parseISODate(r.ageOn) ? r.ageOn : null,
     ratingMin: r.gsrMin, ratingMax: r.gsrMax,
     duprMin: r.duprMin, duprMax: r.duprMax,
     duprStrict: strictWith(r.duprStrict, r.duprMin, r.duprMax),

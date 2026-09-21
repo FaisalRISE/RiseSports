@@ -325,6 +325,47 @@ describe("restrictionChips", () => {
     expect(restrictionChips(restrict({ duprStrict: true }))).toEqual([]);
     expect(isUnrestricted(restrict({ duprStrict: true }))).toBe(true);
   });
+
+  it("carries the host's cut-off date on the age chip", () => {
+    expect(restrictionChips(restrict({ ageMin: 18, ageOn: "2026-01-01" }))).toEqual(["Age 18+ on 1 Jan 2026"]);
+    expect(restrictionChips(restrict({ ageMin: 8, ageMax: 16, ageOn: "2026-04-01" }))).toEqual(["Age 8–16 on 1 Apr 2026"]);
+    /* A date with no age limit is no limit. */
+    expect(restrictionChips(restrict({ ageOn: "2026-01-01" }))).toEqual([]);
+  });
+});
+
+/* ── The host's cut-off date ──────────────────────────────────────────────
+ *
+ * Faisal, 2026-09-21: "cut off date to be set by the organiser". A game with an
+ * age limit counts ages on the date its host chose — the same rule as a
+ * tournament category — not on the day somebody asks to join. */
+describe("ages are counted on the host's cut-off date", () => {
+  const pb = { sport: "pb" as const, on: new Date("2026-09-21T06:00:00Z") };
+  /* 18 on 1 Jun 2026: 18 today, but 17 on 1 Jan. */
+  const turned18inJune = player({ dob: "2008-06-01" });
+
+  it("refuses someone old enough today but not on the cut-off — and names the date", () => {
+    expect(eligibilityFailures(turned18inJune, restrict({ ageMin: 18, ageOn: "2026-01-01" }), pb))
+      .toEqual(["Age 18+ only (on 1 Jan 2026)"]);
+  });
+
+  it("lets in someone who was young enough on the cut-off, though older today", () => {
+    expect(eligibilityFailures(turned18inJune, restrict({ ageMax: 17, ageOn: "2026-01-01" }), pb)).toEqual([]);
+  });
+
+  it("uses the cut-off over the day the check runs", () => {
+    /* The same player and limit, judged on the day: 18, so in. */
+    expect(eligibilityFailures(turned18inJune, restrict({ ageMin: 18 }), pb)).toEqual([]);
+  });
+
+  it("leaves a game saved without a cut-off exactly as it was", () => {
+    expect(eligibilityFailures(player({ dob: "2010-01-01" }), restrict({ ageMin: 18 }), pb))
+      .toEqual(["Age 18+ only"]);
+  });
+
+  it("ignores a stored date that is not a real one, rather than counting on nonsense", () => {
+    expect(eligibilityFailures(turned18inJune, restrict({ ageMin: 18, ageOn: "2026-02-30" }), pb)).toEqual([]);
+  });
 });
 
 describe("slugifyGame", () => {

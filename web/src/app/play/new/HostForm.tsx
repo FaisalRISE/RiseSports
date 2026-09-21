@@ -55,6 +55,11 @@ export function HostForm({ sports, error, defaultDay }: {
   const [accessType, setAccessType] = useState<string>("open");
   const [price, setPrice] = useState("");
   const [limitsOpen, setLimitsOpen] = useState(false);
+  /* Held here, not left to the inputs, so the cut-off date can appear the
+     moment an age limit is typed — and so all three survive hiding the limits. */
+  const [ages, setAges] = useState<[string, string]>(["", ""]);
+  const [ageOn, setAgeOn] = useState("");
+  const hasAge = ages[0].trim() !== "" || ages[1].trim() !== "";
 
   const toggleDay = (d: number) =>
     setDays((cur) => (cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d].sort((a, b) => a - b)));
@@ -222,7 +227,22 @@ export function HostForm({ sports, error, defaultDay }: {
               </select>
               <span className="block text-[11px] text-neutral-500">Only matters if you set a DUPR limit.</span>
             </Field>
-            <Pair label="Age" a="ageMin" b="ageMax" aPlace="18" bPlace="45" />
+            <Pair label="Age" a="ageMin" b="ageMax" aPlace="18" bPlace="45" value={ages} onChange={setAges} />
+            {/* Faisal, 2026-09-21: the host sets the cut-off. `required` here is
+                the host's own setting, not a fact about a player, so the browser
+                may insist on it — and it saves the host from the server's refusal,
+                which sends the form back empty. */}
+            {hasAge && (
+              <Field label="Age counted on">
+                <input
+                  type="date" name="ageOn" required min="1900-01-01"
+                  value={ageOn} onChange={(e) => setAgeOn(e.target.value)} className={input}
+                />
+                <span className="block text-[11px] text-neutral-500">
+                  The cut-off date. A player&apos;s age on this day is what counts, for every session.
+                </span>
+              </Field>
+            )}
             <Field label="Gender">
               <select name="gender" defaultValue="any" className={input}>
                 <option value="any">Anyone</option>
@@ -326,16 +346,29 @@ function Choices({
   );
 }
 
+/** Two bounds. Left to the inputs unless `value` is given, when the caller
+    holds them — the age pair does, to know when to ask for a cut-off date. */
 function Pair({
-  label, a, b, aPlace, bPlace,
-}: { label: string; a: string; b: string; aPlace: string; bPlace: string }) {
+  label, a, b, aPlace, bPlace, value, onChange,
+}: {
+  label: string; a: string; b: string; aPlace: string; bPlace: string;
+  value?: [string, string]; onChange?: (v: [string, string]) => void;
+}) {
+  const held = (i: 0 | 1) =>
+    value && onChange
+      ? {
+          value: value[i],
+          onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+            onChange(i === 0 ? [e.target.value, value[1]] : [value[0], e.target.value]),
+        }
+      : {};
   return (
     <div className="space-y-1">
       <span className="text-xs font-bold text-neutral-400">{label}</span>
       <div className="flex items-center gap-2">
-        <input name={a} placeholder={aPlace} inputMode="decimal" aria-label={`${label} minimum`} className={input} />
+        <input name={a} placeholder={aPlace} inputMode="decimal" aria-label={`${label} minimum`} className={input} {...held(0)} />
         <span className="text-xs text-neutral-500">to</span>
-        <input name={b} placeholder={bPlace} inputMode="decimal" aria-label={`${label} maximum`} className={input} />
+        <input name={b} placeholder={bPlace} inputMode="decimal" aria-label={`${label} maximum`} className={input} {...held(1)} />
       </div>
     </div>
   );

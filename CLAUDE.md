@@ -1254,10 +1254,23 @@ proves it — three fail under `TZ=UTC`, and the time tests pass under `TZ=Asia/
     the app was tested in India, which is exactly why it went unseen. Also checked in a browser
     against a dev server in UTC with its clock moved to that instant: the old code offered
     "Mon 21 Sep", the fix offers "Mon 28 Sep".
-  - **Still NOT counted on the day of play:** the verdict takes an `on` date, and no caller
-    passes one, so a player's age is judged on TODAY for every date in the strip. Someone
-    turning 18 next Thursday cannot sign up for next Thursday's 18+ game until that morning.
-    Raised separately; passing the session date is a behaviour change to ask about first.
+  - **Ages count on the HOST's cut-off date.** Asked whether ages should be judged on today or
+    on the day of play, Faisal answered (2026-09-21): *"Cut off date to be set by the
+    organiser."* So a community game with an age limit carries `restrictions.ageOn`, exactly as
+    a tournament category carries `age_on`:
+    - **Required beside an age limit** — the host form shows "Age counted on" the moment an
+      age is typed and the browser will not submit without it; `createCommunityGame` refuses
+      it too ("Choose the date ages are counted on."), because a Server Action can be called
+      without the form. `required` is fine here: it is the host's own setting, not evidence
+      about a player (see "Nothing the rules judge may be `required`" above).
+    - The chip reads "Age 18+ on 1 Jan 2026" and a refusal "Age 18+ only (on 1 Jan 2026)" —
+      a player who is 18 today but was 17 on the cut-off is otherwise told a rule they seem
+      to meet.
+    - **Optional in the jsonb**, like `duprStrict`: no migration, `NO_RESTRICTIONS` unchanged.
+      A game saved without one counts on today in India. There were NO community games in
+      production when this shipped (checked by query), so none is in that state.
+    - **Set at creation only** — there is still no edit-game screen, so a host who wants next
+      season's cut-off creates a new game.
 
 **No DUPR: the organiser decides.** Faisal: *"A player can join without DUPR based on
 organiser's discretion. we can highlight the same."* A player with no DUPR, against any DUPR

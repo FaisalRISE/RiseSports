@@ -12,7 +12,7 @@ import "server-only";
 
 import type { CommunityGame, Person, Restrictions } from "@/lib/db/schema";
 import {
-  ageOnISO, indiaDateISO, personFailures, rulesOfRestrictions, sportRating, todayInIndia,
+  ageOnISO, dateLabel, indiaDateISO, personFailures, rulesOfRestrictions, sportRating, todayInIndia,
 } from "@/lib/eligibility";
 import type { SportId } from "@/lib/sports/registry";
 
@@ -157,7 +157,12 @@ export type CommunityVerdict = {
  *   - a missing DUPR is MISSING, not 0. It is let in and flagged unless the
  *     host made the game strict — the organiser's discretion, like
  *     tournaments. As 0 it slipped under every "DUPR up to" limit silently.
- *   - ages are counted on the day of play.
+ *   - ages are counted on the host's cut-off date (Faisal, 2026-09-21: "cut off
+ *     date to be set by the organiser"), as a tournament category counts on
+ *     its own. A game saved without one counts on `on`, else today in India.
+ *     The refusal names the date — "Age 18+ only (on 1 Jan 2026)" — because a
+ *     player who is 18 today and was 17 then would otherwise be told a rule
+ *     they seem to meet.
  *
  * Two behaviours changed when the rules moved to lib/eligibility, both tested:
  *   - an invalid date of birth ("1994-13-45") used to roll over into a real
@@ -180,7 +185,7 @@ export function communityVerdict(
       dupr: person.dupr ?? null,
     },
     rulesOfRestrictions(r),
-    { fallbackOn: indiaDateISO(opts.on ?? new Date()) },
+    { fallbackOn: indiaDateISO(opts.on ?? new Date()), dated: true },
   );
   return {
     blocks: fs.filter((f) => f.severity === "block").map((f) => f.text),
@@ -212,9 +217,12 @@ export function restrictionChips(r: Restrictions | null | undefined): string[] {
   else if (r.duprMax != null) out.push(`DUPR up to ${d(r.duprMax)}`);
   if (r.duprStrict && (r.duprMin != null || r.duprMax != null)) out.push("DUPR required");
 
-  if (r.ageMin != null && r.ageMax != null) out.push(`Age ${r.ageMin}–${r.ageMax}`);
-  else if (r.ageMin != null) out.push(`Age ${r.ageMin}+`);
-  else if (r.ageMax != null) out.push(`Age up to ${r.ageMax}`);
+  /* The cut-off belongs in the chip: "Age 18+" means something else a week
+     before a birthday. */
+  const on = r.ageOn ? ` on ${dateLabel(r.ageOn)}` : "";
+  if (r.ageMin != null && r.ageMax != null) out.push(`Age ${r.ageMin}–${r.ageMax}${on}`);
+  else if (r.ageMin != null) out.push(`Age ${r.ageMin}+${on}`);
+  else if (r.ageMax != null) out.push(`Age up to ${r.ageMax}${on}`);
 
   return out;
 }
