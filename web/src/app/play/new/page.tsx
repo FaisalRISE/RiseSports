@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
+import { todayWeekday } from "@/lib/community";
 import { SPORTS, SPORT_IDS, usesDupr } from "@/lib/sports/registry";
 import { HostForm } from "./HostForm";
 
@@ -28,7 +29,7 @@ export default async function NewCommunityGame({
           Set it up once; it then runs on the days you choose, week after week.
         </p>
 
-        <HostForm sports={sports} error={error} />
+        <HostForm sports={sports} error={error} defaultDay={todayWeekday()} />
       </main>
     </>
   );

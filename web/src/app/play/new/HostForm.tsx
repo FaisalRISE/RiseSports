@@ -35,13 +35,20 @@ const SCHEDULES = [
   ["mexicano", "Mexicano", "Each round is matched on how you are doing."],
 ] as const;
 
-export function HostForm({ sports, error }: { sports: { id: string; name: string; emoji: string; dupr: boolean }[]; error?: string }) {
+export function HostForm({ sports, error, defaultDay }: {
+  sports: { id: string; name: string; emoji: string; dupr: boolean }[];
+  error?: string;
+  /** Today's weekday in India, worked out on the server. Read here with
+      `new Date()` it was the SERVER's day while rendering (UTC, still
+      yesterday until 05:30 in India) and the phone's once running. */
+  defaultDay: number;
+}) {
   const [name, setName] = useState("");
   const [sport, setSport] = useState("pb");
   /* DUPR is a pickleball rating, so the limit is offered only there. */
   const duprApplies = sports.find((s) => s.id === sport)?.dupr ?? false;
   const [freq, setFreq] = useState<"daily" | "weekly">("weekly");
-  const [days, setDays] = useState<number[]>([new Date().getDay()]);
+  const [days, setDays] = useState<number[]>([defaultDay]);
   const [startTime, setStartTime] = useState("20:00");
   const [endTime, setEndTime] = useState("22:00");
   const [courts, setCourts] = useState(2);
@@ -51,6 +58,11 @@ export function HostForm({ sports, error }: { sports: { id: string; name: string
   const [accessType, setAccessType] = useState<string>("open");
   const [price, setPrice] = useState("");
   const [limitsOpen, setLimitsOpen] = useState(false);
+  /* Held here, not left to the inputs, so the cut-off date can appear the
+     moment an age limit is typed — and so all three survive hiding the limits. */
+  const [ages, setAges] = useState<[string, string]>(["", ""]);
+  const [ageOn, setAgeOn] = useState("");
+  const hasAge = ages[0].trim() !== "" || ages[1].trim() !== "";
 
   const toggleDay = (d: number) =>
     setDays((cur) => (cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d].sort((a, b) => a - b)));
@@ -222,7 +234,22 @@ export function HostForm({ sports, error }: { sports: { id: string; name: string
                 </Field>
               </>
             )}
-            <Pair label="Age" a="ageMin" b="ageMax" aPlace="18" bPlace="45" />
+            <Pair label="Age" a="ageMin" b="ageMax" aPlace="18" bPlace="45" value={ages} onChange={setAges} />
+            {/* Faisal, 2026-09-21: the host sets the cut-off. `required` here is
+                the host's own setting, not a fact about a player, so the browser
+                may insist on it — and it saves the host from the server's refusal,
+                which sends the form back empty. */}
+            {hasAge && (
+              <Field label="Age counted on">
+                <input
+                  type="date" name="ageOn" required min="1900-01-01"
+                  value={ageOn} onChange={(e) => setAgeOn(e.target.value)} className={input}
+                />
+                <span className="block text-[11px] text-neutral-500">
+                  The cut-off date. A player&apos;s age on this day is what counts, for every session.
+                </span>
+              </Field>
+            )}
             <Field label="Gender">
               <select name="gender" defaultValue="any" className={input}>
                 <option value="any">Anyone</option>
@@ -326,16 +353,29 @@ function Choices({
   );
 }
 
+/** Two bounds. Left to the inputs unless `value` is given, when the caller
+    holds them — the age pair does, to know when to ask for a cut-off date. */
 function Pair({
-  label, a, b, aPlace, bPlace,
-}: { label: string; a: string; b: string; aPlace: string; bPlace: string }) {
+  label, a, b, aPlace, bPlace, value, onChange,
+}: {
+  label: string; a: string; b: string; aPlace: string; bPlace: string;
+  value?: [string, string]; onChange?: (v: [string, string]) => void;
+}) {
+  const held = (i: 0 | 1) =>
+    value && onChange
+      ? {
+          value: value[i],
+          onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+            onChange(i === 0 ? [e.target.value, value[1]] : [value[0], e.target.value]),
+        }
+      : {};
   return (
     <div className="space-y-1">
       <span className="text-xs font-bold text-neutral-400">{label}</span>
       <div className="flex items-center gap-2">
-        <input name={a} placeholder={aPlace} inputMode="decimal" aria-label={`${label} minimum`} className={input} />
+        <input name={a} placeholder={aPlace} inputMode="decimal" aria-label={`${label} minimum`} className={input} {...held(0)} />
         <span className="text-xs text-neutral-500">to</span>
-        <input name={b} placeholder={bPlace} inputMode="decimal" aria-label={`${label} maximum`} className={input} />
+        <input name={b} placeholder={bPlace} inputMode="decimal" aria-label={`${label} maximum`} className={input} {...held(1)} />
       </div>
     </div>
   );

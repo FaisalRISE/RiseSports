@@ -30,7 +30,8 @@ import {
   ledgerBalances, ledgerPairs, ledgerSettleUp,
   type LedgerBook, type Transfer,
 } from "@/lib/finance";
-import { localISO, slugifyGame } from "@/lib/community";
+import { slugifyGame } from "@/lib/community";
+import { todayInIndia } from "@/lib/eligibility";
 
 export type LedgerResult = { ok: true; id?: string } | { ok: false; error: string };
 const no = (error: string): LedgerResult => ({ ok: false, error });
@@ -355,7 +356,8 @@ export async function recordPayment(bookId: string, input: PaymentInput): Promis
     method: input.method,
     note: input.note.trim().slice(0, 120),
     status: "PENDING",
-    date: localISO(new Date()),
+    /* India's date: the server runs in UTC and is a day behind until 05:30. */
+    date: todayInIndia(),
   });
   return { ok: true, id };
 }

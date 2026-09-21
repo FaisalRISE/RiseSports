@@ -1232,9 +1232,45 @@ proves it — three fail under `TZ=UTC`, and the time tests pass under `TZ=Asia/
 - The same class, fixed alongside: the print pack's printed-at time and the approvals list's
   entry date (true instants, now India time), and the public page's event date (floating, now
   `timeZone: "UTC"` like every other schedule render).
-- **Not fixed, raised separately:** community session "today" and ages still use the server's
-  date (`lib/community/localISO`), so between 00:00 and 05:30 in India the live site thinks it
-  is yesterday.
+- **Community "today" is India's today — fixed 2026-09-21 (committed, not yet pushed).** It
+  used the server's date (`localISO(new Date())`), so from 00:00 to 05:30 in India the session
+  strip opened on a day that was over, a Monday game offered Monday after Monday had ended, ages
+  were counted a day early, and a new game defaulted to yesterday's weekday.
+  - **ONE definition: `indiaDateISO(instant)` / `todayInIndia()` in `lib/eligibility`**, fixed
+    +05:30 arithmetic (no longer `Intl` en-CA — a locale's format is not a contract).
+    `todayWeekday()` in `lib/community` is its weekday. **`localISO(new Date())` is never
+    "today"** — `localISO`/`fromISO` stay as the pair that walks and names calendar days once
+    the first one is known, which is why `sessionDates` only had its START changed.
+  - Covered: `sessionDates` (the strip, `/play`'s next date), ages in `communityVerdict`/`ageOn`,
+    the ladder challenge date, the venue picker's earliest date, and a new game's default day.
+  - **The Court Ledger had the same bug** — an expense's default date and a payment's date —
+    and uses `todayInIndia()` too, in a SEPARATE commit so it can be kept or dropped on its own.
+    After it, nothing in the app calls `localISO(new Date())`.
+  - The host form's default day is computed on the SERVER and passed down as `defaultDay`. Read
+    in the form with `new Date()`, it was the server's day while rendering and the phone's once
+    hydrated — two different days after midnight in India.
+  - Tests pin 20:00 UTC on Mon 21 Sep (01:30 Tue 22nd in India). Installing the old code: five
+    fail under `TZ=UTC` and all pass under `TZ=Asia/Kolkata` — the live site runs in UTC and
+    the app was tested in India, which is exactly why it went unseen. Also checked in a browser
+    against a dev server in UTC with its clock moved to that instant: the old code offered
+    "Mon 21 Sep", the fix offers "Mon 28 Sep".
+  - **Ages count on the HOST's cut-off date.** Asked whether ages should be judged on today or
+    on the day of play, Faisal answered (2026-09-21): *"Cut off date to be set by the
+    organiser."* So a community game with an age limit carries `restrictions.ageOn`, exactly as
+    a tournament category carries `age_on`:
+    - **Required beside an age limit** — the host form shows "Age counted on" the moment an
+      age is typed and the browser will not submit without it; `createCommunityGame` refuses
+      it too ("Choose the date ages are counted on."), because a Server Action can be called
+      without the form. `required` is fine here: it is the host's own setting, not evidence
+      about a player (see "Nothing the rules judge may be `required`" above).
+    - The chip reads "Age 18+ on 1 Jan 2026" and a refusal "Age 18+ only (on 1 Jan 2026)" —
+      a player who is 18 today but was 17 on the cut-off is otherwise told a rule they seem
+      to meet.
+    - **Optional in the jsonb**, like `duprStrict`: no migration, `NO_RESTRICTIONS` unchanged.
+      A game saved without one counts on today in India. There were NO community games in
+      production when this shipped (checked by query), so none is in that state.
+    - **Set at creation only** — there is still no edit-game screen, so a host who wants next
+      season's cut-off creates a new game.
 
 **No DUPR: the organiser decides.** Faisal: *"A player can join without DUPR based on
 organiser's discretion. we can highlight the same."* A player with no DUPR, against any DUPR

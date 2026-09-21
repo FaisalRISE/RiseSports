@@ -5,7 +5,7 @@ import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { describeDbError, describeDbTarget } from "@/lib/db/error";
 import { loadBook, balancesOf } from "@/lib/ledger/store";
 import { LEDGER_TYPES, ledgerMoney, ledgerShares, ledgerTypeMeta } from "@/lib/finance";
-import { localISO } from "@/lib/community";
+import { todayInIndia } from "@/lib/eligibility";
 import { currentMemberId } from "../actions";
 import { BookView, type EntryView, type MemberView, type PairView, type PaymentView, type TransferView } from "./BookView";
 
@@ -136,7 +136,7 @@ export default async function BookPage({ params }: { params: Promise<{ slug: str
           pending={pendingViews}
           myBalance={myBalance}
           myBalanceLabel={ledgerMoney(Math.abs(myBalance))}
-          today={localISO(new Date())}
+          today={todayInIndia()}
           /* One source of truth for the categories: the picker and the entries
              list must never disagree about what a Court Booking looks like. */
           types={Object.entries(LEDGER_TYPES).map(([id, m]) => ({ id, ...m }))}

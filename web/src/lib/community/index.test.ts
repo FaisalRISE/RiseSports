@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
-  localISO, fromISO, sessionDates, prettyDate, prettyDays,
+  localISO, fromISO, sessionDates, todayWeekday, prettyDate, prettyDays,
   capacityOf, ageOn, communityVerdict, eligibilityFailures, restrictionChips, isUnrestricted,
   priceLabel, slugifyGame,
 } from "./index";
@@ -94,6 +94,58 @@ describe("sessionDates", () => {
   it("crosses a month and a year boundary", () => {
     const dec31 = new Date(2026, 11, 31, 12, 0, 0); // a Thursday
     expect(sessionDates({ freq: "daily", days: [] }, 2, dec31)).toEqual(["2026-12-31", "2027-01-01"]);
+  });
+});
+
+/* ── "Today" is India's today, wherever the server is ─────────────────────
+ *
+ * The live server runs in UTC. From 00:00 to 05:30 in India its date is still
+ * yesterday, and every "today" worked out with its own clock was a day behind:
+ * the session strip opened on a day that was over, and ages were counted on it.
+ *
+ * Every instant below is written in UTC so it names ONE moment on any machine.
+ * 20:00 UTC on Monday 21 Sep is 01:30 on Tuesday the 22nd in India.
+ *
+ * Verified by breaking it: with the old code (the walk starting from the
+ * server's own midnight, ages on `localISO(new Date())`) these fail under
+ * TZ=UTC — where the live site runs — and pass under TZ=Asia/Kolkata, which is
+ * why nobody testing on a laptop in India could have seen it. */
+describe("today is India's today", () => {
+  const afterMidnightInIndia = new Date("2026-09-21T20:00:00Z");
+
+  afterEach(() => vi.useRealTimers());
+
+  it("starts the session strip on India's date, not the server's", () => {
+    expect(sessionDates({ freq: "daily", days: [] }, 2, afterMidnightInIndia))
+      .toEqual(["2026-09-22", "2026-09-23"]);
+  });
+
+  it("does not offer a Monday game on a Monday that is already over in India", () => {
+    expect(sessionDates({ freq: "weekly", days: [1] }, 1, afterMidnightInIndia)).toEqual(["2026-09-28"]);
+    expect(sessionDates({ freq: "weekly", days: [2] }, 1, afterMidnightInIndia)).toEqual(["2026-09-22"]);
+  });
+
+  it("uses India's date when no clock is passed in — which is how the pages call it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(afterMidnightInIndia);
+    expect(sessionDates({ freq: "daily", days: [] }, 1)).toEqual(["2026-09-22"]);
+    expect(todayWeekday()).toBe(2); // Tuesday
+  });
+
+  it("changes day at midnight in India, and not a minute before", () => {
+    const daily = { freq: "daily" as const, days: [] };
+    expect(sessionDates(daily, 1, new Date("2026-09-21T18:29:00Z"))).toEqual(["2026-09-21"]); // 23:59
+    expect(sessionDates(daily, 1, new Date("2026-09-21T18:30:00Z"))).toEqual(["2026-09-22"]); // 00:00
+  });
+
+  it("counts a birthday on India's date", () => {
+    /* 18 on the 22nd. At 01:30 that morning in India the server still says the
+       21st, and used to call them 17. */
+    const turning18 = player({ dob: "2008-09-22" });
+    expect(ageOn("2008-09-22", afterMidnightInIndia)).toBe(18);
+    vi.useFakeTimers();
+    vi.setSystemTime(afterMidnightInIndia);
+    expect(eligibilityFailures(turning18, restrict({ ageMin: 18 }), { sport: "pb" })).toEqual([]);
   });
 });
 
@@ -272,6 +324,47 @@ describe("restrictionChips", () => {
     /* Strict with nothing to be strict about is no limit at all. */
     expect(restrictionChips(restrict({ duprStrict: true }))).toEqual([]);
     expect(isUnrestricted(restrict({ duprStrict: true }))).toBe(true);
+  });
+
+  it("carries the host's cut-off date on the age chip", () => {
+    expect(restrictionChips(restrict({ ageMin: 18, ageOn: "2026-01-01" }))).toEqual(["Age 18+ on 1 Jan 2026"]);
+    expect(restrictionChips(restrict({ ageMin: 8, ageMax: 16, ageOn: "2026-04-01" }))).toEqual(["Age 8–16 on 1 Apr 2026"]);
+    /* A date with no age limit is no limit. */
+    expect(restrictionChips(restrict({ ageOn: "2026-01-01" }))).toEqual([]);
+  });
+});
+
+/* ── The host's cut-off date ──────────────────────────────────────────────
+ *
+ * Faisal, 2026-09-21: "cut off date to be set by the organiser". A game with an
+ * age limit counts ages on the date its host chose — the same rule as a
+ * tournament category — not on the day somebody asks to join. */
+describe("ages are counted on the host's cut-off date", () => {
+  const pb = { sport: "pb" as const, on: new Date("2026-09-21T06:00:00Z") };
+  /* 18 on 1 Jun 2026: 18 today, but 17 on 1 Jan. */
+  const turned18inJune = player({ dob: "2008-06-01" });
+
+  it("refuses someone old enough today but not on the cut-off — and names the date", () => {
+    expect(eligibilityFailures(turned18inJune, restrict({ ageMin: 18, ageOn: "2026-01-01" }), pb))
+      .toEqual(["Age 18+ only (on 1 Jan 2026)"]);
+  });
+
+  it("lets in someone who was young enough on the cut-off, though older today", () => {
+    expect(eligibilityFailures(turned18inJune, restrict({ ageMax: 17, ageOn: "2026-01-01" }), pb)).toEqual([]);
+  });
+
+  it("uses the cut-off over the day the check runs", () => {
+    /* The same player and limit, judged on the day: 18, so in. */
+    expect(eligibilityFailures(turned18inJune, restrict({ ageMin: 18 }), pb)).toEqual([]);
+  });
+
+  it("leaves a game saved without a cut-off exactly as it was", () => {
+    expect(eligibilityFailures(player({ dob: "2010-01-01" }), restrict({ ageMin: 18 }), pb))
+      .toEqual(["Age 18+ only"]);
+  });
+
+  it("ignores a stored date that is not a real one, rather than counting on nonsense", () => {
+    expect(eligibilityFailures(turned18inJune, restrict({ ageMin: 18, ageOn: "2026-02-30" }), pb)).toEqual([]);
   });
 });
 

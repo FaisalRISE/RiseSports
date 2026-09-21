@@ -11,7 +11,9 @@ import "server-only";
  */
 
 import type { CommunityGame, Person, Restrictions } from "@/lib/db/schema";
-import { ageOnISO, personFailures, rulesOfRestrictions, sportRating } from "@/lib/eligibility";
+import {
+  ageOnISO, dateLabel, indiaDateISO, personFailures, rulesOfRestrictions, sportRating, todayInIndia,
+} from "@/lib/eligibility";
 import type { SportId } from "@/lib/sports/registry";
 
 /* ── Dates ────────────────────────────────────────────────────────────────
@@ -28,9 +30,19 @@ import type { SportId } from "@/lib/sports/registry";
  *
  * The fix is to never let a local date go through UTC: format the local Y-M-D
  * directly. `localISO` below is the whole of it, and a test pins it.
+ *
+ * ── Whose "today" ────────────────────────────────────────────────────────
+ * `localISO(new Date())` is the SERVER's today, and the live server runs in
+ * UTC — so from 00:00 to 05:30 India time it is still yesterday: the session
+ * strip started a day early and ages were counted on the wrong day. Every
+ * "today" in community play is `todayInIndia()` (lib/eligibility), a fixed
+ * +05:30 that does not care where the server is. `localISO`/`fromISO` stay the
+ * pair that walks and names calendar days once the first one is known; they
+ * are never the way to FIND today.
  */
 
-/** "2026-09-14" from a Date's LOCAL year, month and day. Never via toISOString. */
+/** "2026-09-14" from a Date's LOCAL year, month and day. Never via toISOString.
+ *  Not for "today" — see above. */
 export function localISO(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
@@ -45,7 +57,7 @@ export function fromISO(iso: string): Date {
 type Recurrence = Pick<CommunityGame, "freq" | "days">;
 
 /**
- * The next `count` dates this game runs, starting today.
+ * The next `count` dates this game runs, starting today — India's today.
  *
  * A weekly game with no days set would loop forever looking for a match, so the
  * walk is bounded: 200 days is a generous ceiling on "the next six sessions"
@@ -53,8 +65,10 @@ type Recurrence = Pick<CommunityGame, "freq" | "days">;
  */
 export function sessionDates(game: Recurrence, count = 6, now = new Date()): string[] {
   const out: string[] = [];
-  const cursor = new Date(now);
-  cursor.setHours(0, 0, 0, 0);
+  /* The walk starts on India's calendar day, then moves in local midnights —
+     `fromISO` and `localISO` name the same day whatever the server's zone, so
+     only the START had to stop depending on it. */
+  const cursor = fromISO(todayInIndia(now));
 
   const days = game.days ?? [];
   for (let guard = 0; out.length < count && guard < 200; guard++) {
@@ -63,6 +77,9 @@ export function sessionDates(game: Recurrence, count = 6, now = new Date()): str
   }
   return out;
 }
+
+/** Today's weekday in India, 0 = Sunday like `days`. A new game's default day. */
+export const todayWeekday = (now = new Date()): number => fromISO(todayInIndia(now)).getDay();
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -92,11 +109,12 @@ export const capacityOf = (game: Pick<CommunityGame, "courts" | "perCourt">): nu
  * Whole years old on `on`, or null when it cannot be known.
  *
  * A thin wrapper since 2026-09-17: the arithmetic is `ageOnISO` in
- * lib/eligibility, which tournament categories use too. `on` is turned into the
- * LOCAL calendar day first, the same way session dates are keyed.
+ * lib/eligibility, which tournament categories use too. `on` is turned into
+ * India's calendar day first — the day the session strip shows — not the
+ * server's, which is a day behind for five and a half hours every night.
  */
 export function ageOn(dob: string | null, on: Date): number | null {
-  return ageOnISO(dob, localISO(on));
+  return ageOnISO(dob, indiaDateISO(on));
 }
 
 type Entrant = Pick<Person, "gender" | "dob" | "dupr" | "riseRatings" | "matchCount" | "seedSource">;
@@ -139,7 +157,12 @@ export type CommunityVerdict = {
  *   - a missing DUPR is MISSING, not 0. It is let in and flagged unless the
  *     host made the game strict — the organiser's discretion, like
  *     tournaments. As 0 it slipped under every "DUPR up to" limit silently.
- *   - ages are counted on the day of play.
+ *   - ages are counted on the host's cut-off date (Faisal, 2026-09-21: "cut off
+ *     date to be set by the organiser"), as a tournament category counts on
+ *     its own. A game saved without one counts on `on`, else today in India.
+ *     The refusal names the date — "Age 18+ only (on 1 Jan 2026)" — because a
+ *     player who is 18 today and was 17 then would otherwise be told a rule
+ *     they seem to meet.
  *
  * Two behaviours changed when the rules moved to lib/eligibility, both tested:
  *   - an invalid date of birth ("1994-13-45") used to roll over into a real
@@ -162,7 +185,7 @@ export function communityVerdict(
       dupr: person.dupr ?? null,
     },
     rulesOfRestrictions(r),
-    { fallbackOn: localISO(opts.on ?? new Date()) },
+    { fallbackOn: indiaDateISO(opts.on ?? new Date()), dated: true },
   );
   return {
     blocks: fs.filter((f) => f.severity === "block").map((f) => f.text),
@@ -194,9 +217,12 @@ export function restrictionChips(r: Restrictions | null | undefined): string[] {
   else if (r.duprMax != null) out.push(`DUPR up to ${d(r.duprMax)}`);
   if (r.duprStrict && (r.duprMin != null || r.duprMax != null)) out.push("DUPR required");
 
-  if (r.ageMin != null && r.ageMax != null) out.push(`Age ${r.ageMin}–${r.ageMax}`);
-  else if (r.ageMin != null) out.push(`Age ${r.ageMin}+`);
-  else if (r.ageMax != null) out.push(`Age up to ${r.ageMax}`);
+  /* The cut-off belongs in the chip: "Age 18+" means something else a week
+     before a birthday. */
+  const on = r.ageOn ? ` on ${dateLabel(r.ageOn)}` : "";
+  if (r.ageMin != null && r.ageMax != null) out.push(`Age ${r.ageMin}–${r.ageMax}${on}`);
+  else if (r.ageMin != null) out.push(`Age ${r.ageMin}+${on}`);
+  else if (r.ageMax != null) out.push(`Age up to ${r.ageMax}${on}`);
 
   return out;
 }

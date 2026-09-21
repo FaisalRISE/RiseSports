@@ -5,8 +5,9 @@ import { describeDbError, describeDbTarget } from "@/lib/db/error";
 import { gameCards, type GameCard } from "@/lib/community/store";
 import { me } from "@/lib/community/me";
 import {
-  localISO, prettyDate, prettyDays, priceLabel, restrictionChips,
+  prettyDate, prettyDays, priceLabel, restrictionChips,
 } from "@/lib/community";
+import { todayInIndia } from "@/lib/eligibility";
 import { listVenues, slotsFor, bookingsForVenues, isVenueOwner } from "@/lib/venues";
 import { sportOf } from "@/lib/sports/registry";
 import { IdentityBar } from "./IdentityBar";
@@ -163,7 +164,7 @@ export default async function PlayPage() {
         {!dbError && (
           <Venues
             venues={venueViews}
-            today={localISO(new Date())}
+            today={todayInIndia()}
             meId={viewer?.id ?? null}
             meName={viewer?.name ?? null}
           />

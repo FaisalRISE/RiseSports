@@ -178,12 +178,22 @@ export function dateLabel(iso: string): string {
  */
 export const floatingDateISO = (d: Date): string => d.toISOString().slice(0, 10);
 
-/** Today where the app's players are. For an event with no date yet. */
-export function todayInIndia(now: Date = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
-  }).format(now);
+/**
+ * The calendar day this instant falls on IN INDIA, "YYYY-MM-DD", on any server.
+ *
+ * The live site runs in UTC, so anything that turns "now" into a date with the
+ * server's own clock — `getDate()`, `setHours(0)` — is still on yesterday
+ * between 00:00 and 05:30 India time. India keeps no daylight saving, so the
+ * offset is fixed and plain arithmetic is exact; `Intl` is not used, for the
+ * reason lib/registration gives (a locale's format is not a contract).
+ */
+export function indiaDateISO(d: Date): string {
+  return new Date(d.getTime() + (5 * 60 + 30) * 60_000).toISOString().slice(0, 10);
 }
+
+/** Today where the app's players are. For an event with no date yet, and for
+ *  every "today" in community play. */
+export const todayInIndia = (now: Date = new Date()): string => indiaDateISO(now);
 
 /* ── DUPR, stored in hundredths ───────────────────────────────────────────*/
 
@@ -453,13 +463,16 @@ export function rulesOfDivision(
   };
 }
 
-/** A community game's restrictions, in the same terms. Ages count on the day.
-    `duprStrict` is optional in the stored jsonb: a game saved before it existed
-    reads as lenient, the default. */
+/** A community game's restrictions, in the same terms. Ages count on the host's
+    cut-off date, like a category's; a game saved without one leaves `ageOn`
+    null and its caller supplies the day. `duprStrict` is optional in the
+    stored jsonb: a game saved before it existed reads as lenient, the default. */
 export function rulesOfRestrictions(r: Restrictions): Rules {
+  const hasAge = r.ageMin != null || r.ageMax != null;
   return {
     gender: r.gender,
-    ageMin: r.ageMin, ageMax: r.ageMax, ageOn: null,
+    ageMin: r.ageMin, ageMax: r.ageMax,
+    ageOn: hasAge && r.ageOn && parseISODate(r.ageOn) ? r.ageOn : null,
     ratingMin: r.gsrMin, ratingMax: r.gsrMax,
     duprMin: r.duprMin, duprMax: r.duprMax,
     duprStrict: strictWith(r.duprStrict, r.duprMin, r.duprMax),

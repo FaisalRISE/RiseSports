@@ -240,6 +240,21 @@ describe("payments need the recipient to agree", () => {
   it("refuses somebody who is not in the book", async () => {
     expect((await s.recordPayment(bookId, pay({ toId: "outsider" }))).ok).toBe(false);
   });
+
+  it("is dated with India's day, not the server's", async () => {
+    /* 20:00 UTC on the 21st is 01:30 on the 22nd in India. The server runs in
+       UTC and used to date this the 21st. Only Date is faked — the database's
+       own timers keep running. Fails under TZ=UTC with the old code. */
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-09-21T20:00:00Z"));
+      await s.recordPayment(bookId, pay());
+    } finally {
+      vi.useRealTimers();
+    }
+    const [row] = await testDb.select().from(schema.ledgerPayments);
+    expect(row.date).toBe("2026-09-22");
+  });
 });
 
 describe("settling up", () => {

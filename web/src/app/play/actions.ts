@@ -16,6 +16,7 @@ import { z } from "zod";
 import { createGame } from "@/lib/community/store";
 import { setMe, clearMe, myPersonId } from "@/lib/community/me";
 import { NO_RESTRICTIONS, type CommunityGame } from "@/lib/db/schema";
+import { parseISODate } from "@/lib/eligibility";
 import { SPORT_IDS, usesDupr } from "@/lib/sports/registry";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
@@ -94,6 +95,7 @@ const createSchema = z.object({
   gsrMin: optionalNumber, gsrMax: optionalNumber,
   duprMin: optionalDupr, duprMax: optionalDupr,
   ageMin: optionalNumber, ageMax: optionalNumber,
+  ageOn: z.string().trim().nullable().catch(null),
   gender: z.enum(["any", "M", "F"]),
   duprStrict: z.boolean(),
 });
@@ -117,6 +119,7 @@ export async function createCommunityGame(formData: FormData): Promise<never> {
     gsrMin: formData.get("gsrMin"), gsrMax: formData.get("gsrMax"),
     duprMin: formData.get("duprMin"), duprMax: formData.get("duprMax"),
     ageMin: formData.get("ageMin"), ageMax: formData.get("ageMax"),
+    ageOn: formData.get("ageOn"),
     gender: formData.get("gender") ?? "any",
     duprStrict: formData.get("duprStrict") === "on",
   });
@@ -139,6 +142,16 @@ export async function createCommunityGame(formData: FormData): Promise<never> {
      hides it for other sports; this drops one a crafted post sends anyway. */
   const [duprMin, duprMax] = usesDupr(v.sport as CommunityGame["sport"]) ? range(v.duprMin, v.duprMax) : [null, null];
   const [ageMin, ageMax] = range(v.ageMin, v.ageMax);
+
+  /* Faisal, 2026-09-21: "cut off date to be set by the organiser". Required
+     beside an age limit, as it is for a tournament category. The form asks for
+     it too, but THIS is the check that counts: a Server Action can be called
+     without the form. Not stored without an age limit, where it means nothing. */
+  const hasAge = ageMin != null || ageMax != null;
+  const ageOn = v.ageOn && parseISODate(v.ageOn) ? v.ageOn : null;
+  if (hasAge && !ageOn) {
+    redirect(`/play/new?error=${encodeURIComponent("Choose the date ages are counted on.")}`);
+  }
 
   const game = await createGame({
     name: v.name,
@@ -165,6 +178,7 @@ export async function createCommunityGame(formData: FormData): Promise<never> {
          about. Left OFF the stored row when false, so a game reads the same
          whether it was made before this switch existed or after. */
       ...(v.duprStrict && (duprMin != null || duprMax != null) ? { duprStrict: true } : {}),
+      ...(hasAge && ageOn ? { ageOn } : {}),
     },
     /* Whoever is holding the phone becomes the host. With no identity chosen
        the game is hostless, and open access lets anyone run it — the same

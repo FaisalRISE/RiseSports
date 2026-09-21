@@ -620,6 +620,11 @@ export type Restrictions = {
       changing it would change the column's stored default and cost a
       migration for nothing. */
   duprStrict?: boolean;
+  /** "YYYY-MM-DD" — the cut-off date ages are counted on, chosen by the host
+      (Faisal, 2026-09-21). Present only beside an age limit. OPTIONAL for the
+      same reason as `duprStrict`; a game saved without one counts ages on the
+      day the check runs. */
+  ageOn?: string;
 };
 
 export const NO_RESTRICTIONS: Restrictions = {

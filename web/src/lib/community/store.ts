@@ -16,7 +16,7 @@ import {
   type AttendanceState, type CommunityGame, type CommunitySession, type Person,
   type Restrictions,
 } from "@/lib/db/schema";
-import { capacityOf, sessionDates, slugifyGame } from "./index";
+import { capacityOf, sessionDates, slugifyGame, todayWeekday } from "./index";
 
 /* ── Games ────────────────────────────────────────────────────────────────*/
 
@@ -64,9 +64,10 @@ export async function createGame(input: NewGameInput): Promise<CommunityGame> {
   if (taken.length) slug = `${slug}-${randomUUID().slice(0, 4)}`;
 
   /* A weekly game with no day chosen would never run. Default to today, which
-     is what the legacy create handler does (app.source.js:9377). */
+     is what the legacy create handler does (app.source.js:9377) — India's
+     today, not the server's, which is a day behind until 05:30. */
   const days =
-    input.freq === "daily" ? [] : input.days.length ? [...input.days].sort((a, b) => a - b) : [new Date().getDay()];
+    input.freq === "daily" ? [] : input.days.length ? [...input.days].sort((a, b) => a - b) : [todayWeekday()];
 
   const [game] = await db
     .insert(communityGames)

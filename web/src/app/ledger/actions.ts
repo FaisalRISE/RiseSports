@@ -17,7 +17,7 @@ import { z } from "zod";
 
 import * as store from "@/lib/ledger/store";
 import { ledgerPaise } from "@/lib/finance";
-import { localISO } from "@/lib/community";
+import { todayInIndia } from "@/lib/eligibility";
 import type { LedgerEntryType, LedgerPaymentMethod } from "@/lib/db/schema";
 
 export type LedgerActionResult = { ok: true; id?: string } | { ok: false; error: string };
@@ -75,7 +75,7 @@ const entrySchema = z.object({
   type: z.enum(TYPES),
   note: z.string().trim().max(120).catch(""),
   venue: z.string().trim().max(80).catch(""),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).catch(() => localISO(new Date())),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).catch(() => todayInIndia()),
 });
 
 export async function saveEntryAction(
