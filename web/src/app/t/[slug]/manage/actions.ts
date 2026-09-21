@@ -24,7 +24,7 @@ import { reliabilityForPerson } from "@/lib/rating/reliability";
 import type { PickerResult } from "@/components/PersonPicker";
 import { ratingFormatFor } from "@/lib/rating/tournament";
 import { seedFromDupr } from "@/lib/rating";
-import { ratingKey } from "@/lib/sports/registry";
+import { DEFAULT_SPORT, SPORTS, ratingKey } from "@/lib/sports/registry";
 
 /* Same discipline as the scoring actions: load, authorize server-side, write.
  * With RISE_OPEN_ACCESS unset these assertions pass for everyone; with it set
@@ -306,11 +306,17 @@ export async function seedByRating(tournamentId: string) {
   const roster = await peopleForTournament(t.id);
   const teamRows = await db.select().from(teams).where(eq(teams.tournamentId, t.id));
 
+  /* Seeded on each player's rating in THIS event's sport and format — the
+     number the event carries in. It was `riseBest`, the best across every
+     sport, so a pickleball star topped the seeding of their first badminton
+     event (Faisal, 2026-09-21: "RiseR rating is specific to each sport"). */
+  const format = ratingFormatFor(rows);
   const strengthOf = (teamId: string): number | null => {
     const ids = rows.filter((p) => p.teamId === teamId && p.personId).map((p) => p.personId!);
     const ratings = ids
-      .map((id) => roster.get(id)?.riseBest)
-      .filter((r): r is number => typeof r === "number");
+      .map((id) => roster.get(id))
+      .filter((person): person is NonNullable<typeof person> => !!person)
+      .map((person) => carriedRating(person, t.sport, format));
     if (ratings.length === 0) return null;
     return ratings.reduce((s, n) => s + n, 0) / ratings.length;
   };
@@ -853,12 +859,17 @@ export async function fillKnockoutSlots(tournamentId: string) {
  * Returns display-ready strings, not domain objects: this crosses to a client
  * component, so the rating engine and the reliability rules stay on the server
  * exactly as the bundle-leak guard requires.
+ *
+ * The rating shown is the one in the EVENT's sport — the page binds it, so the
+ * picker keeps its `(query) => …` shape. A bound argument still arrives from
+ * the browser, so it is checked against the registry like any other input.
  */
-export async function searchRoster(query: string): Promise<PickerResult[]> {
+export async function searchRoster(sport: string, query: string): Promise<PickerResult[]> {
   const q = z.string().trim().max(60).catch("").parse(query);
   if (q.length < 2) return [];
 
-  const found = await searchPeople(q, 8);
+  const sp = sport in SPORTS ? sport : DEFAULT_SPORT;
+  const found = await searchPeople(q, 8, sp);
   const now = new Date();
   const ids = found.map((f) => f.id);
   const history = ids.length

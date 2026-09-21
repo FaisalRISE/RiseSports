@@ -34,9 +34,11 @@ const LABEL: Record<Tab, string> = {
 };
 
 export function HostRoster({
-  slug, date, rows, capacity, pricePaise,
+  slug, date, rows, capacity, pricePaise, sport,
 }: {
   slug: string; date: string; rows: RosterRow[]; capacity: number; pricePaise: number;
+  /** The game's sport, so a walk-in's rating is the one that counts here. */
+  sport: string;
 }) {
   const byState = (s: Tab) => rows.filter((r) => r.state === s);
   const confirmed = byState("confirmed");
@@ -89,7 +91,7 @@ export function HostRoster({
       {/* Walk-ins. Somebody turning up at the court who never opened the app is
           the ordinary case, and without this the host cannot put them on. */}
       {(tab === "confirmed" || tab === "requested") && (
-        <AddPlayer slug={slug} date={date} onError={setError} alreadyOn={rows.map((r) => r.personId)} />
+        <AddPlayer slug={slug} date={date} sport={sport} onError={setError} alreadyOn={rows.map((r) => r.personId)} />
       )}
 
       {shown.length === 0 ? (
@@ -172,9 +174,9 @@ export function HostRoster({
 
 /** Search for somebody and put them straight on the list. */
 function AddPlayer({
-  slug, date, onError, alreadyOn,
+  slug, date, sport, onError, alreadyOn,
 }: {
-  slug: string; date: string; onError: (e: string | null) => void; alreadyOn: string[];
+  slug: string; date: string; sport: string; onError: (e: string | null) => void; alreadyOn: string[];
 }) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<PlayerHit[] | null>(null);
@@ -182,7 +184,7 @@ function AddPlayer({
 
   const run = () => {
     if (query.trim().length < 2) return;
-    start(async () => setHits(await searchPlayers(query)));
+    start(async () => setHits(await searchPlayers(query, sport)));
   };
 
   const add = (personId: string) =>

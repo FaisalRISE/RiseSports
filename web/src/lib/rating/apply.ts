@@ -30,7 +30,7 @@ import {
 } from "@/lib/db/schema";
 import {
   calcRtgChange, calcExp, marginMultiplier, phaseMultiplier, verificationWeight,
-  provisionalMultiplier, DEFAULT_SEED, type Phase, type Verification,
+  provisionalMultiplier, DEFAULT_SEED, startingRating, type Phase, type Verification,
 } from "@/lib/rating";
 import { phaseOf, ratingFormatFor } from "@/lib/rating/tournament";
 import { ratingKey } from "@/lib/sports/registry";
@@ -131,8 +131,15 @@ type Side = { personIds: string[]; ratings: number[]; mean: number };
 
 const mean = (ns: number[]) => (ns.length ? ns.reduce((s, n) => s + n, 0) / ns.length : DEFAULT_SEED);
 
-/** What a person's rating is right now for this format. */
-const ratingOf = (p: Person, key: string) => p.riseRatings?.[key] ?? p.riseBest ?? DEFAULT_SEED;
+/** What a person's rating is right now for this format ("pb:md"). A format they
+    have never played starts from their level in the SAME sport; a sport they
+    have never played starts fresh. It used to fall back to `riseBest`, which
+    started a strong pickleball player's first badminton match at their
+    pickleball number (Faisal, 2026-09-21: a new sport starts fresh). */
+const ratingOf = (p: Person, key: string) => {
+  const [sport, format] = key.split(":");
+  return startingRating(p, sport, format);
+};
 
 /**
  * Apply one finished match.

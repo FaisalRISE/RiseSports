@@ -796,8 +796,9 @@ each player's profile.
   doubles are rated separately (§2), so one list of both ranks numbers that were never on the
   same scale. Choosing a format switches the page off `riseBest` — a max() across everything —
   and onto that format's own rating, including the tier.
-  - Format needs a sport: the keys are `"pb:md"`, so "doubles" alone names nothing. The page
-    says so when only a sport is picked.
+  - Format needs a sport: the keys are `"pb:md"`, so "doubles" alone names nothing.
+    **Superseded 2026-09-21**: the page is always one sport now, and the sport alone is a real
+    view — see "A rating is a rating IN ONE SPORT" below.
   - The query reads the JSONB by key (`riseRatings ->> 'pb:md'`, cast to int so 9 does not sort
     after 1000) and filters on `riseRatings -> 'pb:md' is not null`. **Not the `?` existence
     operator**: `?` is also a parameter placeholder in several Postgres drivers, and this app
@@ -1106,8 +1107,9 @@ Defaults, not asked: Mixed = at least one man and one woman; no DUPR fails a DUP
   render — again with no waiver to be had. A team shown in red is a team the organiser was asked
   about first.
 - **Community play now calls the same engine** (`eligibilityFailures` and `ageOn` are thin
-  wrappers), keeping its own evidence: `riseBest ?? 0`, `dupr ?? 0`, ages on the day of play. Its
-  old tests pass unchanged. Two behaviours changed deliberately, both tested: an invalid date of
+  wrappers), with ages on the day of play. It first kept its own evidence — `riseBest ?? 0`,
+  `dupr ?? 0` — and **since 2026-09-21 uses the tournaments' evidence** (`communityVerdict`,
+  below). Two behaviours changed deliberately, both tested: an invalid date of
   birth used to roll over via `fromISO` and now fails an age rule; a date of birth after the day
   used to give a negative age, which passed "N and under", and now fails.
 - **Fixed on the way, all the same class of hole**: `approveEntry`, decline, payment,
@@ -1271,6 +1273,59 @@ rating is `sportRating(person, game.sport)`, no longer `riseBest ?? 0`:
   most newcomers.
 - The host roster shows the notes (`[data-host-note]`). It is the first host-facing note on
   community: the player sees nothing extra, and joining still blocks on blocks only.
+
+**A rating is a rating IN ONE SPORT — everywhere.** Faisal: *"if a player is playing
+pickleball, his RiseR rating should only show pickleball. For badminton, it should show based on
+badminton matches played."* `people.riseBest` (a max() across every sport and format) is still
+written by the engine and is **no longer shown, judged, seeded or paired on anywhere**. Three
+definitions in `lib/rating`, and nothing else decides what a rating is:
+
+- `sportRating(person, sport)` — the best COUNTING key in that sport. A key counts if it has
+  matches behind it or was placed deliberately (DUPR or an organiser's band); a newcomer's
+  default 750 counts for nothing (Faisal: newcomers are unrated).
+- `formatRating(person, key)` — the same rule for one key, so the list filtered by a format
+  cannot show a newcomer's unplayed 750 that the sport view shows as "—".
+- `startingRating(person, sport, format)` — what a player brings INTO an event: that format's
+  own number, else their level in the same sport, else the default. **A new sport starts
+  fresh** (Faisal); another format of the same sport carries over. It replaced the `riseBest`
+  fallback in `ratingOf` (the engine) and `carriedRating`, which started a strong pickleball
+  player's first badminton event at their pickleball number and seeded them top of it.
+
+**Their SQL twins** (`sportRatingSql`, `formatRatingSql` in `lib/people`) sort and filter the
+lists, and `people/sportRating.test.ts` holds the two languages to the same answer over ten
+fixtures in the SELECT, WHERE and ORDER BY positions. Breaking the SQL's counting rule fails it —
+checked. Rules of use:
+
+- **SQL sorts and filters; the number SHOWN always comes from the TypeScript** on the loaded
+  row. A computed numeric can arrive as a string from postgres-js and a number from PGlite.
+- Keys are matched by PREFIX with `starts_with`, the sport is a BOUND parameter (it comes from
+  the URL) and is checked against the registry first; `jsonb_each_text`, never the `?` operator.
+
+Where it shows:
+
+- **Home "Top rated"**: one sport at a time, pickleball first, with sport links and "Nobody is
+  rated in Badminton yet." (it used to hide itself when empty).
+- **`/people`**: always one sport — "Every sport" is gone, and so is the "pick a format too"
+  message: the sport on its own is a real view, each player's best format in it, the same
+  number a category limit judges them on. A format is still a competition (only people rated
+  in it); the sport view lists everybody, because the page is also the directory.
+- **Profile**: one line per sport played (`[data-sport-rating]`), or "Unrated".
+- **In context, the event's or game's sport**: the community host roster and member lists,
+  balanced pairings, the tournament ratings page, "Seed by RISE Rating", the organiser's
+  player picker (`searchRoster.bind(null, t.sport)`) and the host's walk-in search. The "who
+  are you" bar has no game in view, so it shows the pickleball rating WITH the sport's name —
+  never an unlabelled number (🏓 alone is both pickleball and table tennis).
+- **Not changed**: `detectSandbagging(…, riseBest)` — a Wave 3 heuristic.
+
+`e2e/carryover.mjs` passed for the wrong reason before this: its second and third events had one
+player a side (singles) while the first moved a MIXED rating, and the ratings page showed
+`riseBest`, which hid the difference. Both are mixed pairs now, so the number compared is the
+one the event carries in.
+
+**Raised separately, not fixed here:** the first player added to an EMPTY event is seeded under
+a singles key (`insertPlayer` works the format out from the roster including only them); and the
+DUPR box appears on non-pickleball events, where a DUPR — a pickleball rating — would seed a
+badminton one.
 
 ## Access: the site is deliberately open, and the switch is a trap
 

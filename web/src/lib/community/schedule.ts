@@ -17,7 +17,7 @@ import {
 } from "@/lib/db/schema";
 import { applyResult } from "@/lib/rating/apply";
 import { ratingKey } from "@/lib/sports/registry";
-import { DEFAULT_SEED } from "@/lib/rating";
+import { DEFAULT_SEED, sportRating } from "@/lib/rating";
 import { buildSchedule, type Entrant } from "./pairings";
 import { ensureSession, findSession } from "./store";
 
@@ -86,7 +86,10 @@ export async function generateSchedule(
   }
 
   const confirmed = await db
-    .select({ personId: communityAttendance.personId, riseBest: people.riseBest })
+    .select({
+      personId: communityAttendance.personId,
+      riseRatings: people.riseRatings, matchCount: people.matchCount, seedSource: people.seedSource,
+    })
     .from(communityAttendance)
     .innerJoin(people, eq(communityAttendance.personId, people.id))
     .where(
@@ -97,7 +100,10 @@ export async function generateSchedule(
 
   const entrants: Entrant[] = confirmed.map((c) => ({
     personId: c.personId,
-    rating: c.riseBest ?? DEFAULT_SEED,
+    /* Balanced by the rating in THIS game's sport. A pickleball evening used
+       to balance courts on each player's best rating in any sport (Faisal,
+       2026-09-21). Unrated players balance at the default, as before. */
+    rating: sportRating(c, game.sport) ?? DEFAULT_SEED,
   }));
 
   const blocks = buildSchedule(entrants, game, rand);

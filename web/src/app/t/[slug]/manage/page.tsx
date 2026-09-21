@@ -261,7 +261,7 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                     return (
                       <AddPlayerForm
                         add={addPlayer.bind(null, t.id, team.id)}
-                        search={searchRoster}
+                        search={searchRoster.bind(null, t.sport)}
                         needs={{ dob: need.dob, dupr: need.dupr, duprRequired: need.duprRequired }}
                         hasGenderRule={need.gender}
                         seedBands={SEED_BANDS}

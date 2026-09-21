@@ -3,7 +3,7 @@ import Link from "next/link";
 import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { matches, people, ratingHistory, tournaments } from "@/lib/db/schema";
-import { getTier } from "@/lib/rating";
+import { getTier, sportRating } from "@/lib/rating";
 import { reliabilityForPerson, playedFromHistory } from "@/lib/rating/reliability";
 import { detectSandbagging, sandbaggingNote } from "@/lib/rating/sandbagging";
 import { maskPhone } from "@/lib/people";
@@ -15,7 +15,7 @@ import { myPersonId } from "@/lib/community/me";
 import { SkillRadar } from "@/components/SkillRadar";
 import { RateForm } from "./RateForm";
 import { PolicyPicker } from "./PolicyPicker";
-import { SPORTS, skillsFor, tagsFor, sportOf, DEFAULT_SPORT, type SportId } from "@/lib/sports/registry";
+import { SPORTS, SPORT_IDS, skillsFor, tagsFor, sportOf, DEFAULT_SPORT, type SportId } from "@/lib/sports/registry";
 import { PLACING_LABEL, PLACING_MEDAL } from "@/lib/placings";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 
@@ -103,7 +103,20 @@ export default async function PersonPage({
     : { scores: {}, tags: [] };
 
   const names = await opponentNames(history);
-  const tier = person.riseBest == null ? null : getTier(person.riseBest);
+
+  /* One rating PER SPORT played — Faisal, 2026-09-21: "RiseR rating is
+     specific to each sport". The single number this card used to show was
+     `riseBest`, a max() across every sport, so a player's pickleball page could
+     be headed by their badminton rating. A sport appears once there is a
+     rating in it that counts (matches, or a deliberate placement). */
+  const ratedIn = SPORT_IDS
+    .map((sp) => ({ sport: SPORTS[sp], rating: sportRating(person, sp) }))
+    .filter((r): r is { sport: (typeof SPORTS)[SportId]; rating: number } => r.rating != null);
+
+  /* Where they started, for someone who has not played yet: the one key a new
+     person is seeded with, and the sport it is in. */
+  const seedKey = Object.keys(person.riseRatings ?? {})[0] ?? null;
+  const seedSport = seedKey ? sportOf(seedKey.split(":")[0] as SportId) : null;
 
   return (
     <>
@@ -132,10 +145,29 @@ export default async function PersonPage({
         )}
 
         <section className="grid gap-3 sm:grid-cols-3">
-          <div className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
+          <div className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4" data-ratings>
             <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">RISE Rating</div>
-            <div className="font-mono text-4xl font-black">{person.riseBest ?? "—"}</div>
-            {tier && <div className="text-sm text-neutral-300">{tier.emoji} {tier.name}</div>}
+            {ratedIn.length === 0 ? (
+              <>
+                <div className="font-mono text-4xl font-black">—</div>
+                <div className="text-sm text-neutral-400">Unrated</div>
+              </>
+            ) : (
+              <ul className="mt-1 space-y-1.5">
+                {ratedIn.map(({ sport: sp, rating }) => {
+                  const t = getTier(rating);
+                  return (
+                    <li key={sp.id} data-sport-rating={sp.id}>
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="text-xs font-bold text-neutral-400">{sp.emoji} {sp.name}</span>
+                        <span className="font-mono text-2xl font-black tabular-nums">{rating}</span>
+                      </div>
+                      <div className="text-right text-[11px] text-neutral-400">{t.emoji} {t.name}</div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
 
           <div className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
@@ -326,10 +358,11 @@ export default async function PersonPage({
           <h2 className="mb-3 text-lg font-black">How this rating was earned</h2>
           {history.length === 0 ? (
             <p className="rounded-xl border border-dashed border-neutral-800 p-8 text-center text-sm text-neutral-500">
-              No rated matches yet. Started at {person.riseBest ?? "—"}
+              No rated matches yet. Started at {seedKey ? person.riseRatings[seedKey] : "—"}
+              {seedSport ? ` in ${seedSport.name}` : ""}
               {person.seedSource === "dupr" ? ", seeded from DUPR."
                 : person.seedSource === "organiser" ? ", set by an organiser."
-                : "."}
+                : " — the standard start, which counts as unrated until they play."}
             </p>
           ) : (
             <ol className="space-y-2">

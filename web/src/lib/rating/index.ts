@@ -3,6 +3,7 @@
    minifier renames every identifier, so the algorithm ships intact under a
    one-letter name. See lib/__tests__/bundle-leak.test.ts. */
 import "server-only";
+import type { Person } from "@/lib/db/schema";
 
 /* RISE Rating engine — implements `Files for claude code/rise-rating-spec 4.md`.
  *
@@ -189,3 +190,68 @@ export const SEED_BANDS = [
 
 /** Spec §3: no DUPR and no organiser placement. */
 export const DEFAULT_SEED = 750;
+
+/* ---------- a rating is a rating IN ONE SPORT ----------
+ *
+ * Faisal, 2026-09-21: "RiseR rating is specific to each sport. So if a player
+ * is playing pickleball, his RiseR rating should only show pickleball. For
+ * badminton, it should show based on badminton matches played."
+ *
+ * `people.riseBest` is a max() across every sport and format. It is still
+ * written by the engine, and nothing shows it any more. What is shown, judged,
+ * seeded and paired on is one of these three. Their SQL twins, for sorting and
+ * filtering a list, are `sportRatingSql` / `formatRatingSql` in lib/people, and
+ * a test holds the two languages to the same answer. */
+
+type Rated = Pick<Person, "riseRatings" | "matchCount" | "seedSource">;
+
+/* Whether a stored number is a LEVEL anybody showed, or just the number the
+   app wrote down. It counts if there are matches behind it, or if someone
+   placed it on purpose — from a DUPR, or an organiser's placement band.
+   `createPerson` writes only the one key it seeds, so a zero-match key on such
+   a person IS that deliberate seed. The default 750 on a newcomer who has
+   never played counts for nothing: Faisal, 2026-09-21, "they're unrated". */
+const counts = (person: Rated, key: string): boolean =>
+  (person.matchCount?.[key] ?? 0) > 0 || person.seedSource === "dupr" || person.seedSource === "organiser";
+
+/**
+ * A person's RISE Rating in one sport, or null when they have none worth the
+ * name — the highest counting key for that sport. Their best format is the
+ * level they bring to a limit, a draw or a list.
+ */
+export function sportRating(person: Rated | null | undefined, sport: string): number | null {
+  if (!person) return null;
+  let best: number | null = null;
+  for (const [key, value] of Object.entries(person.riseRatings ?? {})) {
+    if (!key.startsWith(`${sport}:`) || typeof value !== "number") continue;
+    if (!counts(person, key)) continue;
+    if (best == null || value > best) best = value;
+  }
+  return best;
+}
+
+/**
+ * The same counting rule for exactly one key, "pb:md". Without it the list
+ * filtered by a format showed a newcomer's unplayed 750 while the list for the
+ * whole sport showed "—" for the same person.
+ */
+export function formatRating(person: Rated | null | undefined, key: string): number | null {
+  if (!person) return null;
+  const value = person.riseRatings?.[key];
+  return typeof value === "number" && counts(person, key) ? value : null;
+}
+
+/**
+ * The rating a player brings INTO an event of one sport and format: that
+ * format's own number; else their level in the same sport; else the default.
+ *
+ * So doubles to singles carries their level, and pickleball to badminton does
+ * NOT (Faisal, 2026-09-21: a new sport "starts fresh"). This used to fall back
+ * to `riseBest`, which started a strong pickleball player's first badminton
+ * event at their pickleball number — and seeded them top of the draw for it.
+ * The key's own value counts even as an unplayed default: it IS where their
+ * rating in that format currently stands.
+ */
+export function startingRating(person: Rated | null | undefined, sport: string, format: string): number {
+  return person?.riseRatings?.[`${sport}:${format}`] ?? sportRating(person, sport) ?? DEFAULT_SEED;
+}

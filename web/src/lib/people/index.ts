@@ -19,12 +19,12 @@ import "server-only";
  * pretending otherwise.
  */
 
-import { and, eq, ilike, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, eq, ilike, inArray, isNotNull, or, sql, type SQL } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import { people, players, type Person } from "@/lib/db/schema";
-import { DEFAULT_SEED, seedFromDupr, getTier, type Tier } from "@/lib/rating";
-import { ratingKey } from "@/lib/sports/registry";
+import { DEFAULT_SEED, seedFromDupr, getTier, sportRating, startingRating, type Tier } from "@/lib/rating";
+import { DEFAULT_SPORT } from "@/lib/sports/registry";
 
 /**
  * Normalise a phone number to E.164-ish for MATCHING.
@@ -76,27 +76,66 @@ export type PersonSummary = {
   appearances: number;
 };
 
-export const summarise = (p: Person, appearances = 0): PersonSummary => ({
-  id: p.id,
-  name: p.name,
-  gender: p.gender,
-  phoneMasked: maskPhone(p.phone),
-  hasPhone: !!p.phone,
-  rating: p.riseBest,
-  tier: p.riseBest == null ? null : getTier(p.riseBest),
-  reliability: p.reliability,
-  lastPlayedAt: p.lastPlayedAt,
-  appearances,
-});
+/** A person at a glance, with their rating IN ONE SPORT — the sport of the
+    event or game they are being picked for (2026-09-21: a rating is specific
+    to its sport). */
+export const summarise = (p: Person, appearances = 0, sport: string = DEFAULT_SPORT): PersonSummary => {
+  const rating = sportRating(p, sport);
+  return {
+    id: p.id,
+    name: p.name,
+    gender: p.gender,
+    phoneMasked: maskPhone(p.phone),
+    hasPhone: !!p.phone,
+    rating,
+    tier: rating == null ? null : getTier(rating),
+    reliability: p.reliability,
+    lastPlayedAt: p.lastPlayedAt,
+    appearances,
+  };
+};
+
+/* ── The same ratings, in SQL, for sorting and filtering a list ───────────
+ *
+ * `sportRating` and `formatRating` (lib/rating) decide what a person's rating
+ * in one sport, or one format, IS. A list sorted by it has to ask the database
+ * the same question, and these ask it — a test holds the two languages to the
+ * same answer, because two definitions of "the rating" drift.
+ *
+ *  - A correlated subquery over `jsonb_each_text`, matching keys by PREFIX
+ *    (`starts_with`), so it cannot miss a key the registry does not list —
+ *    exactly as `startsWith` does in TypeScript.
+ *  - The sport and the key are BOUND parameters, never `sql.raw`: they come
+ *    from the URL. Callers check them against the registry first as well.
+ *  - Not the `?` jsonb operator, which several Postgres drivers read as a
+ *    placeholder (CLAUDE.md, "The player pages").
+ *  - Use these to FILTER and SORT only. The number shown on the page comes from
+ *    the TypeScript on the loaded row: a computed numeric can arrive as a
+ *    string from postgres-js and a number from PGlite, and no local test would
+ *    ever see the difference.
+ */
+const counted = (key: SQL) =>
+  sql`(coalesce((${people.matchCount} ->> ${key})::numeric, 0) > 0 or ${people.seedSource} in ('dupr', 'organiser'))`;
+
+/** A person's rating in one sport, as SQL. Null when they have none. */
+export const sportRatingSql = (sport: string): SQL<number | null> => sql<number | null>`(
+  select max(r.value::numeric)
+  from jsonb_each_text(${people.riseRatings}) as r(key, value)
+  where starts_with(r.key, ${`${sport}:`}) and ${counted(sql`r.key`)}
+)`;
+
+/** A person's rating in one format ("pb:md"), as SQL. Null when it does not count. */
+export const formatRatingSql = (key: string): SQL<number | null> =>
+  sql<number | null>`(case when ${counted(sql`${key}`)} then (${people.riseRatings} ->> ${key})::numeric end)`;
 
 /**
  * Search the roster so an organiser can pick the right person.
  *
  * Returns enough to disambiguate — rating, reliability, when they last played
  * and how many events they appear in. A bare list of names would guarantee
- * mis-picks the moment two people share one.
+ * mis-picks the moment two people share one. The rating is the one in `sport`.
  */
-export async function searchPeople(query: string, limit = 10): Promise<PersonSummary[]> {
+export async function searchPeople(query: string, limit = 10, sport: string = DEFAULT_SPORT): Promise<PersonSummary[]> {
   const q = query.trim();
   if (q.length < 2) return [];
 
@@ -120,7 +159,7 @@ export async function searchPeople(query: string, limit = 10): Promise<PersonSum
     .groupBy(players.personId);
   const byId = new Map(counts.map((c) => [c.personId, c.n]));
 
-  return rows.map((p) => summarise(p, byId.get(p.id) ?? 0));
+  return rows.map((p) => summarise(p, byId.get(p.id) ?? 0, sport));
 }
 
 /** An exact-phone lookup. The only match that is safe to make automatically. */
@@ -255,10 +294,10 @@ export async function findOrCreatePerson(
   return { person: winner, created: false };
 }
 
-/** The rating this person brings INTO an event, for the format being played. */
+/** The rating this person brings INTO an event, for the format being played.
+    Their level in THIS sport, never another's — see `startingRating`. */
 export function carriedRating(person: Person, sport: string, format: string): number {
-  const key = ratingKey(sport as never, format);
-  return person.riseRatings?.[key] ?? person.riseBest ?? DEFAULT_SEED;
+  return startingRating(person, sport, format);
 }
 
 /** Everywhere a person appears in a tournament. Used to seed draws by skill. */

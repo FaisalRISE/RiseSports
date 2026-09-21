@@ -18,7 +18,7 @@ import "server-only";
  * So this reads what was applied. `phaseOf` and `ratingFormatFor` stay pure:
  * they are decisions, not lookups, and apply.ts uses them too. */
 
-import { getTier, DEFAULT_SEED, type Phase, type Tier } from "@/lib/rating";
+import { getTier, DEFAULT_SEED, startingRating, type Phase, type Tier } from "@/lib/rating";
 import { reliabilityForPerson } from "@/lib/rating/reliability";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
@@ -159,11 +159,15 @@ export async function tournamentRatings(
     moved.set(h.personId, cur);
   }
 
+  const format = ratingFormatFor(players);
   return players
     .map((p) => {
       const person = p.personId ? byPerson.get(p.personId) : undefined;
       const m = p.personId ? moved.get(p.personId) : undefined;
-      const current = person?.riseBest ?? DEFAULT_SEED;
+      /* The rating in THIS event's sport and format — the number the event
+         actually carries in and moves. It was `riseBest`, the best across every
+         sport and format, under a header naming this sport and format. */
+      const current = person ? startingRating(person, tournament.sport, format) : DEFAULT_SEED;
       const delta = m?.delta ?? 0;
       return {
         playerId: p.id,

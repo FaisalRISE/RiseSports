@@ -137,9 +137,18 @@ const slugB = await wizardCreate(p, `Carry Cup B ${stamp}`);
 await addTeams(["Kites", "Wrens"]);
 
 /* Same phone, no band this time: if the person is matched, the band is
-   irrelevant because they already have a rating. */
+   irrelevant because they already have a rating.
+
+   The SAME mixed pairs as the first event, so this event is rated in the same
+   format. It used to be one player a side — singles — and passed only because
+   the ratings page showed `riseBest`, a max() across every format: the number
+   it compared was not the one this event would carry her in on. The page now
+   shows the rating in the event's own sport and format (2026-09-21), so the
+   format has to be the one the first event moved. */
 await addPlayer({ ...PLAYERS[0], team: 0 }, null);
 await addPlayer({ ...PLAYERS[2], team: 1 }, null);
+await addPlayer({ ...PLAYERS[1], team: 0 }, null);
+await addPlayer({ ...PLAYERS[3], team: 1 }, null);
 
 const anyaB = await ratingOnRatingsPage(slugB, PLAYERS[0].name);
 ok(!!anyaB, "she is on the second event's ratings page");
@@ -192,6 +201,10 @@ ok((await pickForm.innerText()).includes("Linked:"), "picking links her");
 
 await pickForm.locator('button:has-text("Add")').click();
 await p.waitForTimeout(1200);
+/* Mixed pairs again, for the reason given at the second event. */
+await addPlayer({ ...PLAYERS[1], team: 0 }, null);
+await addPlayer({ ...PLAYERS[2], team: 1 }, null);
+await addPlayer({ ...PLAYERS[3], team: 1 }, null);
 
 const anyaC = await ratingOnRatingsPage(slugC, PLAYERS[0].name);
 ok(!!anyaC, "she is on the third event");

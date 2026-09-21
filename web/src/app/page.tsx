@@ -1,18 +1,23 @@
 import Link from "next/link";
-import { count, desc, isNotNull, sql } from "drizzle-orm";
+import { count, desc, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { describeDbError, describeDbTarget } from "@/lib/db/error";
 import { matches, people, tournaments } from "@/lib/db/schema";
-import { sportOf } from "@/lib/sports/registry";
-import { getTier } from "@/lib/rating";
+import { DEFAULT_SPORT, SPORTS, SPORT_IDS, sportOf, type SportId } from "@/lib/sports/registry";
+import { getTier, sportRating } from "@/lib/rating";
+import { sportRatingSql } from "@/lib/people";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { PersonLink } from "@/components/PersonLink";
 
 export const dynamic = "force-dynamic";
 
-type Top = { id: string; name: string; riseBest: number | null };
+type Top = { id: string; name: string; rating: number | null };
 
-export default async function Home() {
+export default async function Home({ searchParams }: { searchParams: Promise<{ sport?: string }> }) {
+  /* One sport at a time, pickleball first (Faisal, 2026-09-21: "RiseR rating is
+     specific to each sport"). A sport the registry does not know is ignored. */
+  const wanted = (await searchParams).sport;
+  const sport: SportId = wanted && wanted in SPORTS ? (wanted as SportId) : DEFAULT_SPORT;
   let rows: (typeof tournaments.$inferSelect)[] = [];
   let top: Top[] = [];
   let totals = { players: 0, matches: 0, tournaments: 0 };
@@ -34,11 +39,14 @@ export default async function Home() {
         .select({ n: count() })
         .from(matches)
         .where(sql`(${matches.typedScoreA} is not null or jsonb_array_length(${matches.log}) > 0)`),
+      /* Ranked by the rating in THIS sport, in the database; the number shown is
+         worked out again from the row by `sportRating`, the one definition —
+         see lib/people `sportRatingSql`. */
       db
-        .select({ id: people.id, name: people.name, riseBest: people.riseBest })
+        .select()
         .from(people)
-        .where(isNotNull(people.riseBest))
-        .orderBy(sql`${people.riseBest} desc nulls last`, people.name)
+        .where(sql`${sportRatingSql(sport)} is not null`)
+        .orderBy(desc(sportRatingSql(sport)), people.name)
         .limit(5),
     ]);
     totals = {
@@ -46,7 +54,7 @@ export default async function Home() {
       matches: Number(mc[0]?.n ?? 0),
       tournaments: rows.length,
     };
-    top = best;
+    top = best.map((p) => ({ id: p.id, name: p.name, rating: sportRating(p, sport) }));
   } catch (e) {
     dbError = describeDbError(e);
     /* The page gets the reason; the SERVER LOG also gets what was connected to.
@@ -117,27 +125,49 @@ export default async function Home() {
           </section>
         )}
 
-        {top.length > 0 && (
-          <section className="mb-6">
+        {!dbError && (
+          <section className="mb-6" data-top-rated>
             <div className="mb-2 flex items-baseline justify-between">
-              <h2 className="text-lg font-black">Top rated</h2>
-              <Link href="/people" className="text-[11px] font-bold text-neutral-500 hover:text-neutral-300">
+              <h2 className="text-lg font-black">
+                Top rated <span className="text-sm font-bold text-neutral-400">· {SPORTS[sport].emoji} {SPORTS[sport].name}</span>
+              </h2>
+              <Link href={sport === DEFAULT_SPORT ? "/people" : `/people?sport=${sport}`}
+                className="text-[11px] font-bold text-neutral-500 hover:text-neutral-300">
                 the whole roster
               </Link>
             </div>
-            <ol className="rounded-xl border border-neutral-800 bg-neutral-900/60">
-              {top.map((p, i) => {
-                const tier = p.riseBest == null ? null : getTier(p.riseBest);
-                return (
-                  <li key={p.id} className="flex items-center gap-3 border-b border-neutral-800 p-3 last:border-0">
-                    <span className="w-4 shrink-0 text-center font-mono text-[11px] text-neutral-600">{i + 1}</span>
-                    <PersonLink personId={p.id} name={p.name} className="min-w-0 flex-1 truncate text-sm font-bold" />
-                    {tier && <span className="text-[11px] text-neutral-500">{tier.emoji} {tier.name}</span>}
-                    <span className="font-mono text-lg font-black tabular-nums">{p.riseBest}</span>
-                  </li>
-                );
-              })}
-            </ol>
+            {/* A rating belongs to one sport, so the list is one sport at a
+                time. The sport is a link, so it survives a reload and a share. */}
+            <nav className="mb-2 flex flex-wrap gap-1.5" aria-label="Sport">
+              {SPORT_IDS.map((id) => (
+                <Link key={id} href={id === DEFAULT_SPORT ? "/" : `/?sport=${id}`}
+                  aria-current={id === sport ? "page" : undefined}
+                  className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${
+                    id === sport ? "border-amber-400 bg-amber-400 text-amber-950" : "border-neutral-700 text-neutral-400 hover:border-neutral-500"
+                  }`}>
+                  {SPORTS[id].emoji} {SPORTS[id].name}
+                </Link>
+              ))}
+            </nav>
+            {top.length === 0 ? (
+              <p className="rounded-xl border border-dashed border-neutral-800 p-4 text-center text-xs text-neutral-500">
+                Nobody is rated in {SPORTS[sport].name} yet.
+              </p>
+            ) : (
+              <ol className="rounded-xl border border-neutral-800 bg-neutral-900/60">
+                {top.map((p, i) => {
+                  const tier = p.rating == null ? null : getTier(p.rating);
+                  return (
+                    <li key={p.id} className="flex items-center gap-3 border-b border-neutral-800 p-3 last:border-0">
+                      <span className="w-4 shrink-0 text-center font-mono text-[11px] text-neutral-600">{i + 1}</span>
+                      <PersonLink personId={p.id} name={p.name} className="min-w-0 flex-1 truncate text-sm font-bold" />
+                      {tier && <span className="text-[11px] text-neutral-500">{tier.emoji} {tier.name}</span>}
+                      <span className="font-mono text-lg font-black tabular-nums">{p.rating}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
           </section>
         )}
 

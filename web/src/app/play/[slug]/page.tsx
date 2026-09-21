@@ -4,6 +4,8 @@ import { notFound } from "next/navigation";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { describeDbError, describeDbTarget } from "@/lib/db/error";
 import { sportOf } from "@/lib/sports/registry";
+import { sportRating } from "@/lib/rating";
+import type { Person } from "@/lib/db/schema";
 import { me } from "@/lib/community/me";
 import { viewingAsHost } from "@/lib/community/guard";
 import { gameBySlug, sessionView, myEntry, canJoinSessions } from "@/lib/community/store";
@@ -163,7 +165,7 @@ export default async function GamePage({
   const hostRows: RosterRow[] = view.roster.map((r) => ({
     personId: r.personId,
     name: r.person.name,
-    rating: r.person.riseBest,
+    rating: sportRating(r.person, game.sport),
     state: r.state,
     paid: r.paid,
     linkSent: r.paymentLinkSentAt !== null,
@@ -219,9 +221,9 @@ export default async function GamePage({
             {host && (
               <MembershipPanel
                 slug={game.slug}
-                members={roll.members.map(toMemberView)}
-                requested={roll.requested.map(toMemberView)}
-                invited={roll.invited.map(toMemberView)}
+                members={roll.members.map(toMemberView(game.sport))}
+                requested={roll.requested.map(toMemberView(game.sport))}
+                invited={roll.invited.map(toMemberView(game.sport))}
               />
             )}
           </section>
@@ -319,6 +321,7 @@ export default async function GamePage({
                 rows={hostRows}
                 capacity={capacity}
                 pricePaise={game.pricePaise}
+                sport={game.sport}
               />
             )}
 
@@ -424,12 +427,14 @@ export default async function GamePage({
 
 /* ── Pieces ───────────────────────────────────────────────────────────────*/
 
-/** Only the three fields the membership panel shows cross to the client. */
-const toMemberView = (r: { personId: string; person: { name: string; riseBest: number | null } }) => ({
-  personId: r.personId,
-  name: r.person.name,
-  rating: r.person.riseBest,
-});
+/** Only the three fields the membership panel shows cross to the client —
+    the rating being the one in THIS game's sport. */
+const toMemberView = (sport: string) =>
+  (r: { personId: string; person: Pick<Person, "name" | "riseRatings" | "matchCount" | "seedSource"> }) => ({
+    personId: r.personId,
+    name: r.person.name,
+    rating: sportRating(r.person, sport),
+  });
 
 function Badge({ children, tone = "plain" }: { children: React.ReactNode; tone?: "plain" | "warn" }) {
   const cls =

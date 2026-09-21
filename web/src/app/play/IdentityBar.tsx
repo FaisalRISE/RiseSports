@@ -112,7 +112,9 @@ export function IdentityBar({ name }: { name: string | null }) {
                 className="flex w-full items-center gap-2 rounded-lg border border-neutral-800 px-3 py-2 text-left hover:border-neutral-600"
               >
                 <span className="min-w-0 flex-1 truncate text-sm font-bold">{h.name}</span>
-                <span className="shrink-0 text-xs tabular-nums text-neutral-500">{h.rating ?? "—"}</span>
+                {/* Named, because a rating belongs to one sport and this bar has
+                    no game in view to say which. */}
+                <span className="shrink-0 text-xs tabular-nums text-neutral-500">{h.sportName} {h.rating ?? "—"}</span>
               </button>
             </li>
           ))}

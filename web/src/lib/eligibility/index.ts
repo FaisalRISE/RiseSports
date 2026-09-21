@@ -41,7 +41,7 @@ import "server-only";
  */
 
 import type { Division, GenderRule, Person, Restrictions } from "@/lib/db/schema";
-import { TIERS } from "@/lib/rating";
+import { TIERS, sportRating } from "@/lib/rating";
 
 /* ── Shapes ───────────────────────────────────────────────────────────────*/
 
@@ -199,39 +199,12 @@ export const duprLabel = (x100: number): string => (x100 / 100).toFixed(2);
 
 /* ── The rating that counts ───────────────────────────────────────────────*/
 
-/**
- * A person's RISE Rating in one sport, or null when they have none worth the
- * name.
- *
- * NOT `riseBest`: that is a max() across every sport and format, so a strong
- * badminton player would read as strong at pickleball. Only keys for THIS sport
- * count, and only ones that mean something:
- *
- *   - a key with matches behind it — a rating that has been earned;
- *   - a key with no matches that someone placed on purpose — seeded from a DUPR
- *     or an organiser's placement band (`seedSource`). `createPerson` writes
- *     only that one key, so a zero-match key on such a person IS the seed.
- *
- * A key sitting at the default seed with no matches is not evidence of
- * anything, so a person with only that reads as unrated. The highest counting
- * key wins, because the limit is about the player's level, and their best
- * format is the level they bring.
- */
-export function sportRating(
-  person: Pick<Person, "riseRatings" | "matchCount" | "seedSource"> | null | undefined,
-  sport: string,
-): number | null {
-  if (!person) return null;
-  const placed = person.seedSource === "dupr" || person.seedSource === "organiser";
-  let best: number | null = null;
-  for (const [key, value] of Object.entries(person.riseRatings ?? {})) {
-    if (!key.startsWith(`${sport}:`) || typeof value !== "number") continue;
-    const played = (person.matchCount?.[key] ?? 0) > 0;
-    if (!played && !placed) continue;
-    if (best == null || value > best) best = value;
-  }
-  return best;
-}
+/* `sportRating` — a person's RISE Rating in ONE sport, counting only keys with
+   matches behind them or a deliberate seed — lives with the rest of the rating
+   code in lib/rating, since the whole app judges and shows ratings per sport
+   (2026-09-21). Re-exported here because every rule reads it. NOT `riseBest`,
+   which is a max() across every sport and format. */
+export { sportRating };
 
 /* ── Evidence ─────────────────────────────────────────────────────────────*/
 

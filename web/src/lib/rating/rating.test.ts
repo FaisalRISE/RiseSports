@@ -10,6 +10,10 @@ import {
   seedFromDupr,
   TIERS,
   MAX_DELTA,
+  DEFAULT_SEED,
+  formatRating,
+  sportRating,
+  startingRating,
   type Phase,
 } from "./index";
 
@@ -255,5 +259,48 @@ describe("expectation, seeding and tiers", () => {
     expect(getTier(100).name).toBe("Beginner");
     expect(getTier(9999).name).toBe("Pro+");
     expect(getTier(-5).name).toBe("Beginner");   // out of range falls back, never undefined
+  });
+});
+
+describe("a rating is a rating in one sport", () => {
+  /* Faisal, 2026-09-21: "RiseR rating is specific to each sport. So if a player
+     is playing pickleball, his RiseR rating should only show pickleball. For
+     badminton, it should show based on badminton matches played." */
+  const person = (over: Partial<{ riseRatings: Record<string, number>; matchCount: Record<string, number>; seedSource: "default" | "dupr" | "organiser" }> = {}) =>
+    ({ riseRatings: {}, matchCount: {}, seedSource: "default" as const, ...over });
+
+  it("reads only this sport, and only numbers that mean something", () => {
+    const p = person({ riseRatings: { "pb:md": 1100, "bd:md": 1500 }, matchCount: { "pb:md": 5, "bd:md": 20 } });
+    expect(sportRating(p, "pb")).toBe(1100);
+    expect(sportRating(p, "bd")).toBe(1500);
+    expect(sportRating(p, "tt")).toBeNull();
+    /* The default seed on a newcomer who has never played is not a level. */
+    expect(sportRating(person({ riseRatings: { "pb:md": 750 } }), "pb")).toBeNull();
+    /* An organiser's or a DUPR's deliberate placement is. */
+    expect(sportRating(person({ riseRatings: { "pb:md": 1000 }, seedSource: "organiser" }), "pb")).toBe(1000);
+  });
+
+  it("reads one format by the same rule", () => {
+    const p = person({ riseRatings: { "pb:md": 980, "pb:ms": 750 }, matchCount: { "pb:md": 3 } });
+    expect(formatRating(p, "pb:md")).toBe(980);
+    expect(formatRating(p, "pb:ms")).toBeNull();
+    expect(formatRating(p, "pb:mx")).toBeNull();
+  });
+
+  it("carries a player's level into another format of the SAME sport", () => {
+    /* Doubles to singles: still a pickleball player of that level. */
+    const p = person({ riseRatings: { "pb:md": 1180 }, matchCount: { "pb:md": 12 } });
+    expect(startingRating(p, "pb", "ms")).toBe(1180);
+    /* And a format they already have is their own number, played or not. */
+    expect(startingRating(person({ riseRatings: { "pb:ms": 760 } }), "pb", "ms")).toBe(760);
+  });
+
+  it("starts a NEW sport fresh, rather than at their best in another", () => {
+    /* It fell back to `riseBest`, so a strong pickleball player's first badminton
+       match was rated as if they were strong at badminton — and they topped the
+       seeding of their first badminton event. */
+    const p = person({ riseRatings: { "pb:md": 1450 }, matchCount: { "pb:md": 40 } });
+    expect(startingRating(p, "bd", "md")).toBe(DEFAULT_SEED);
+    expect(startingRating(null, "pb", "md")).toBe(DEFAULT_SEED);
   });
 });

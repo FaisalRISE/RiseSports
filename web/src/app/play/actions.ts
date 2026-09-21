@@ -36,7 +36,9 @@ export async function forgetIdentity(): Promise<ActionResult> {
   return { ok: true };
 }
 
-export type PlayerHit = { id: string; name: string; rating: number | null };
+/** `sportName` names the sport `rating` is in: a rating belongs to one sport,
+    and a bare number beside a name would not say which. */
+export type PlayerHit = { id: string; name: string; rating: number | null; sportName: string };
 
 /**
  * Find a player by name, to say which one you are.
@@ -45,12 +47,17 @@ export type PlayerHit = { id: string; name: string; rating: number | null };
  * indistinguishable otherwise, and picking the wrong one here attaches your
  * evening to somebody else's rating — the same reasoning as PersonPicker.
  */
-export async function searchPlayers(query: string): Promise<PlayerHit[]> {
+export async function searchPlayers(query: string, sport?: string): Promise<PlayerHit[]> {
   const q = z.string().trim().max(60).catch("").parse(query);
   if (q.length < 2) return [];
+  /* The rating in the sport being played — the game's, from a host adding a
+     walk-in — or pickleball where there is no game in sight (the "who are you"
+     bar), and named either way. */
+  const { SPORTS, DEFAULT_SPORT } = await import("@/lib/sports/registry");
+  const sp = sport && sport in SPORTS ? (sport as keyof typeof SPORTS) : DEFAULT_SPORT;
   const { searchPeople } = await import("@/lib/people");
-  const found = await searchPeople(q, 8);
-  return found.map((f) => ({ id: f.id, name: f.name, rating: f.rating }));
+  const found = await searchPeople(q, 8, sp);
+  return found.map((f) => ({ id: f.id, name: f.name, rating: f.rating, sportName: SPORTS[sp].name }));
 }
 
 /* ── Hosting a game ───────────────────────────────────────────────────────*/
