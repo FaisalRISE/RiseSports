@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
-import { SPORTS, SPORT_IDS } from "@/lib/sports/registry";
+import { SPORTS, SPORT_IDS, usesDupr } from "@/lib/sports/registry";
 import { HostForm } from "./HostForm";
 
 /* The registry stays on the server — only id, name and emoji cross to the form.
@@ -14,7 +14,9 @@ export default async function NewCommunityGame({
 }) {
   const { error } = await searchParams;
 
-  const sports = SPORT_IDS.map((id) => ({ id, name: SPORTS[id].name, emoji: SPORTS[id].emoji }));
+  /* `dupr`: whether the sport has a DUPR at all (only pickleball), so the form
+     can hide the limit rather than offer one the server would drop. */
+  const sports = SPORT_IDS.map((id) => ({ id, name: SPORTS[id].name, emoji: SPORTS[id].emoji, dupr: usesDupr(id) }));
 
   return (
     <>

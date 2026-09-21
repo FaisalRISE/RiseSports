@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import { people, players, type Person } from "@/lib/db/schema";
 import { DEFAULT_SEED, seedFromDupr, getTier, sportRating, startingRating, type Tier } from "@/lib/rating";
-import { DEFAULT_SPORT } from "@/lib/sports/registry";
+import { DEFAULT_SPORT, usesDupr, type SportId } from "@/lib/sports/registry";
 
 /**
  * Normalise a phone number to E.164-ish for MATCHING.
@@ -220,13 +220,19 @@ export async function createPerson(input: NewPersonInput): Promise<Person> {
    two copies would drift, and a person's starting rating would then depend on
    which path happened to create them. */
 function newPersonRow(input: NewPersonInput, phone: string | null): typeof people.$inferInsert {
+  /* DUPR is a pickleball rating, so it seeds a pickleball key and nothing
+     else. Every form hides the box outside pickleball; this is the last line,
+     because a badminton key seeded from one would start a badminton player at
+     their pickleball level, and nothing downstream could tell. */
+  const dupr = input.dupr != null && usesDupr(input.formatKey.split(":")[0] as SportId) ? input.dupr : null;
+
   const seed =
-    input.dupr != null ? seedFromDupr(input.dupr)
+    dupr != null ? seedFromDupr(dupr)
     : input.bandSeed != null ? input.bandSeed
     : DEFAULT_SEED;
 
   const seedSource: Person["seedSource"] =
-    input.dupr != null ? "dupr" : input.bandSeed != null ? "organiser" : "default";
+    dupr != null ? "dupr" : input.bandSeed != null ? "organiser" : "default";
 
   return {
     id: randomUUID(),
@@ -239,8 +245,8 @@ function newPersonRow(input: NewPersonInput, phone: string | null): typeof peopl
     /* Deliberately null, not 0: nobody has a reliability score before they
        have played. Zero would read as "known to be unreliable". */
     reliability: null,
-    dupr: input.dupr != null ? Math.round(input.dupr * 100) : null,
-    duprEnteredAt: input.dupr != null ? new Date() : null,
+    dupr: dupr != null ? Math.round(dupr * 100) : null,
+    duprEnteredAt: dupr != null ? new Date() : null,
     seedSource,
     seededBy: input.seededBy ?? null,
   };

@@ -420,6 +420,65 @@ try {
   const capCard = await text(p, `[data-team="Cap Pair ${stamp}"]`);
   ok(/unrated/i.test(capCard) && !capCard.includes("Doesn’t meet"), "unrated players under a cap are a grey note, not red");
 
+  /* ══════════════════════════════════════════════════════════════════════ */
+  console.log("\n== DUPR is a pickleball rating ==");
+
+  /* Faisal, 2026-09-21: DUPR does not appear outside pickleball. Differential:
+     the pickleball event above HAS every one of these boxes — this suite typed
+     into them — so their absence here is the sport, not a broken page. */
+  const bdSlug = await createTournament(p, `Shuttle Rules ${stamp}`, { sport: "Badminton", format: "Standard" });
+  const bdCategory = await p.locator("[data-category]").first().getAttribute("data-category");
+  form = await openRules(bdCategory);
+  ok(await form.locator('select[name="ratingMin"]').count() === 1 && await form.locator('input[name="duprMax"]').count() === 0,
+    "a badminton category's rules offer a rating limit and no DUPR limit");
+  await form.locator('button:has-text("close")').click();
+  await p.waitForTimeout(400);
+
+  await addTeam(`Shuttlers ${stamp}`, bdCategory);
+  const bdTeam = p.locator(`[data-team="Shuttlers ${stamp}"]`);
+  ok(await bdTeam.locator('input[placeholder="Player name"]').count() === 1 && await bdTeam.locator('input[name="dupr"]').count() === 0,
+    "adding a badminton player asks for no DUPR");
+
+  /* The server, not just the screen: a post that carries a DUPR anyway. It
+     used to become the player's badminton seed. */
+  await bdTeam.locator('input[placeholder="Player name"]').fill(`Crafted ${stamp}`);
+  await bdTeam.locator('input[name="phone"]').fill(phone(90));
+  await bdTeam.locator("form").first().evaluate((f) => {
+    const i = document.createElement("input");
+    i.type = "hidden"; i.name = "dupr"; i.value = "4.50";
+    f.appendChild(i);
+  });
+  await bdTeam.locator('button:has-text("Add")').first().click();
+  await p.waitForTimeout(1800);
+  const crafted = bdTeam.locator(`a[href^="/people/"]:has-text("Crafted ${stamp}")`);
+  ok(await crafted.count() === 1, "the player is added");
+  const craftedHref = await crafted.first().getAttribute("href");
+  await p.goto(`${BASE}${craftedHref}`);
+  await p.waitForTimeout(1500);
+  const craftedProfile = await text(p);
+  ok(!craftedProfile.includes("DUPR") && !craftedProfile.includes("1125"),
+    "a DUPR smuggled into a badminton add is dropped: no DUPR on the profile and no rating seeded from it");
+
+  await p.goto(`${BASE}/t/${bdSlug}/ratings`);
+  await p.waitForTimeout(1500);
+  const bdHead = await text(p, "thead");
+  await p.goto(`${BASE}/t/${slug}/ratings`);
+  await p.waitForTimeout(1500);
+  const pbHead = await text(p, "thead");
+  ok(bdHead.includes("RISE") && !bdHead.includes("DUPR") && pbHead.includes("DUPR"),
+    "the ratings table has a DUPR column for pickleball and none for badminton");
+
+  /* Community games: the host picks the sport on the same form as the limits. */
+  await p.goto(`${BASE}/play/new`);
+  await p.waitForTimeout(1200);
+  await p.locator('button:has-text("Add limits")').click();
+  await p.waitForTimeout(300);
+  const pbLimits = await p.locator('input[name="duprMin"]').count();
+  await p.locator('select[name="sport"]').selectOption("bd");
+  await p.waitForTimeout(300);
+  const bdLimits = await p.locator('input[name="duprMin"]').count() + await p.locator('select[name="duprStrict"]').count();
+  ok(pbLimits === 1 && bdLimits === 0, "hosting a game offers a DUPR limit for pickleball and takes it away for badminton");
+
   console.log("\n== errors ==");
   const bad = realErrors(errs);
   ok(bad.length === 0, `no runtime errors: ${JSON.stringify(bad.slice(0, 3))}`);

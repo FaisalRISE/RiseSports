@@ -15,7 +15,7 @@ import { myPersonId } from "@/lib/community/me";
 import { SkillRadar } from "@/components/SkillRadar";
 import { RateForm } from "./RateForm";
 import { PolicyPicker } from "./PolicyPicker";
-import { SPORTS, SPORT_IDS, skillsFor, tagsFor, sportOf, DEFAULT_SPORT, type SportId } from "@/lib/sports/registry";
+import { SPORTS, SPORT_IDS, skillsFor, tagsFor, sportOf, usesDupr, DEFAULT_SPORT, type SportId } from "@/lib/sports/registry";
 import { PLACING_LABEL, PLACING_MEDAL } from "@/lib/placings";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 
@@ -116,6 +116,11 @@ export default async function PersonPage({
   /* Where they started, for someone who has not played yet: the one key a new
      person is seeded with, and the sport it is in. */
   const seedKey = Object.keys(person.riseRatings ?? {})[0] ?? null;
+  /* DUPR is a pickleball rating. A badminton player's profile saying "DUPR —
+     not provided" asks for a number that has nothing to do with them, so the
+     card is for somebody who plays a DUPR sport or already has one on file. */
+  const showDupr = person.dupr != null
+    || Object.keys(person.riseRatings ?? {}).some((k) => usesDupr(k.split(":")[0] as SportId));
   const seedSport = seedKey ? sportOf(seedKey.split(":")[0] as SportId) : null;
 
   return (
@@ -144,7 +149,7 @@ export default async function PersonPage({
           </p>
         )}
 
-        <section className="grid gap-3 sm:grid-cols-3">
+        <section className={`grid gap-3 ${showDupr ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
           <div className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4" data-ratings>
             <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">RISE Rating</div>
             {ratedIn.length === 0 ? (
@@ -184,18 +189,20 @@ export default async function PersonPage({
             <div className="text-xs text-neutral-400">{reliability.reason}</div>
           </div>
 
-          <div className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
-            <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">DUPR</div>
-            <div className="font-mono text-4xl font-black text-neutral-300">
-              {person.dupr == null ? "—" : (person.dupr / 100).toFixed(2)}
+          {showDupr && (
+            <div className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">DUPR</div>
+              <div className="font-mono text-4xl font-black text-neutral-300">
+                {person.dupr == null ? "—" : (person.dupr / 100).toFixed(2)}
+              </div>
+              <div className="text-xs text-neutral-500">
+                {person.duprEnteredAt
+                  ? `entered ${person.duprEnteredAt.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`
+                  : "not provided"}
+                {person.seedSource === "dupr" && " · used to seed"}
+              </div>
             </div>
-            <div className="text-xs text-neutral-500">
-              {person.duprEnteredAt
-                ? `entered ${person.duprEnteredAt.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`
-                : "not provided"}
-              {person.seedSource === "dupr" && " · used to seed"}
-            </div>
-          </div>
+          )}
         </section>
 
         {/* What other players say. Never feeds the RISE Rating — that is

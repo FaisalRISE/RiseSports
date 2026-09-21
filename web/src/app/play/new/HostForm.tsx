@@ -35,8 +35,11 @@ const SCHEDULES = [
   ["mexicano", "Mexicano", "Each round is matched on how you are doing."],
 ] as const;
 
-export function HostForm({ sports, error }: { sports: { id: string; name: string; emoji: string }[]; error?: string }) {
+export function HostForm({ sports, error }: { sports: { id: string; name: string; emoji: string; dupr: boolean }[]; error?: string }) {
   const [name, setName] = useState("");
+  const [sport, setSport] = useState("pb");
+  /* DUPR is a pickleball rating, so the limit is offered only there. */
+  const duprApplies = sports.find((s) => s.id === sport)?.dupr ?? false;
   const [freq, setFreq] = useState<"daily" | "weekly">("weekly");
   const [days, setDays] = useState<number[]>([new Date().getDay()]);
   const [startTime, setStartTime] = useState("20:00");
@@ -78,7 +81,7 @@ export function HostForm({ sports, error }: { sports: { id: string; name: string
         </Field>
 
         <Field label="Sport">
-          <select name="sport" defaultValue="pb" className={input}>
+          <select name="sport" value={sport} onChange={(e) => setSport(e.target.value)} className={input}>
             {sports.map((s) => (
               <option key={s.id} value={s.id}>{s.emoji} {s.name}</option>
             ))}
@@ -204,17 +207,21 @@ export function HostForm({ sports, error }: { sports: { id: string; name: string
               exactly which one, rather than just being refused.
             </p>
             <Pair label="Rating" a="gsrMin" b="gsrMax" aPlace="600" bPlace="900" />
-            <Pair label="DUPR" a="duprMin" b="duprMax" aPlace="3.00" bPlace="4.50" />
-            {/* Faisal, 2026-09-21: a player without a DUPR is let in at the
-                host's discretion, and flagged; strict keeps them out. It only
-                means anything beside a DUPR limit, and is saved off without one. */}
-            <Field label="Players without a DUPR">
-              <select name="duprStrict" defaultValue="" className={input}>
-                <option value="">Let them in, flagged for you</option>
-                <option value="on">Keep them out (strict)</option>
-              </select>
-              <span className="block text-[11px] text-neutral-500">Only matters if you set a DUPR limit.</span>
-            </Field>
+            {duprApplies && (
+              <>
+                <Pair label="DUPR" a="duprMin" b="duprMax" aPlace="3.00" bPlace="4.50" />
+                {/* Faisal, 2026-09-21: a player without a DUPR is let in at the
+                    host's discretion, and flagged; strict keeps them out. It only
+                    means anything beside a DUPR limit, and is saved off without one. */}
+                <Field label="Players without a DUPR">
+                  <select name="duprStrict" defaultValue="" className={input}>
+                    <option value="">Let them in, flagged for you</option>
+                    <option value="on">Keep them out (strict)</option>
+                  </select>
+                  <span className="block text-[11px] text-neutral-500">Only matters if you set a DUPR limit.</span>
+                </Field>
+              </>
+            )}
             <Pair label="Age" a="ageMin" b="ageMax" aPlace="18" bPlace="45" />
             <Field label="Gender">
               <select name="gender" defaultValue="any" className={input}>

@@ -465,6 +465,22 @@ describe("reading the organiser's form", () => {
     expect(parseRules({ ageOn: "2026-10-12" }, ctx)).toEqual({ ok: true, rules: NO_RULES });
   });
 
+  /* DUPR is a pickleball rating (Faisal, 2026-09-21). A badminton category
+     judged on it would be judging badminton players on pickleball, so in a
+     sport without one the fields are IGNORED, not refused: the form never
+     shows them, and a post that carries them anyway has nothing to fix. */
+  it("ignores every DUPR field in a sport that has no DUPR", () => {
+    const off = { maxTeamSize: 2, dupr: false };
+    expect(parseRules({ duprMin: "3.0", duprMax: "4.5", duprStrict: "on" }, off)).toEqual({ ok: true, rules: NO_RULES });
+    /* Not even a malformed one is worth a refusal there. */
+    expect(parseRules({ duprMax: "9" }, off)).toEqual({ ok: true, rules: NO_RULES });
+    /* The rest of the form still reads. */
+    expect(parseRules({ gender: "F", duprMax: "4.5" }, off)).toEqual({ ok: true, rules: rules({ gender: "F" }) });
+    /* And pickleball, or a caller that does not say, keeps DUPR. */
+    expect(parseRules({ duprMax: "4.5" }, { maxTeamSize: 2, dupr: true })).toEqual({ ok: true, rules: rules({ duprMax: 450 }) });
+    expect(parseRules({ duprMax: "4.5" }, ctx)).toEqual({ ok: true, rules: rules({ duprMax: 450 }) });
+  });
+
   it("reads the strict switch, and drops it when there is no DUPR limit to be strict about", () => {
     const strict = parseRules({ duprMax: "3.5", duprStrict: "on" }, ctx);
     expect(strict.ok && strict.rules.duprStrict).toBe(true);

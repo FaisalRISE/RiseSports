@@ -24,7 +24,7 @@ import { reliabilityForPerson } from "@/lib/rating/reliability";
 import type { PickerResult } from "@/components/PersonPicker";
 import { ratingFormatFor } from "@/lib/rating/tournament";
 import { seedFromDupr } from "@/lib/rating";
-import { DEFAULT_SPORT, SPORTS, ratingKey } from "@/lib/sports/registry";
+import { DEFAULT_SPORT, SPORTS, ratingKey, usesDupr } from "@/lib/sports/registry";
 
 /* Same discipline as the scoring actions: load, authorize server-side, write.
  * With RISE_OPEN_ACCESS unset these assertions pass for everyone; with it set
@@ -121,7 +121,10 @@ export async function addPlayer(tournamentId: string, teamId: string, formData: 
 
   const pickedId = String(formData.get("personId") ?? "").trim();
   const phone = String(formData.get("phone") ?? "").trim();
-  const duprRaw = String(formData.get("dupr") ?? "").trim();
+  /* DUPR only in pickleball. Elsewhere the box is not shown, and one that
+     arrives anyway is dropped — it would seed this sport's rating from a
+     pickleball number (lib/sports/registry `usesDupr`). */
+  const duprRaw = usesDupr(t.sport) ? String(formData.get("dupr") ?? "").trim() : "";
   const bandRaw = String(formData.get("band") ?? "").trim();
   const dobRaw = String(formData.get("dob") ?? "").trim();
 
@@ -495,7 +498,7 @@ export async function setDivisionRules(tournamentId: string, formData: FormData)
   const t = await requireManager(tournamentId);
   const divisionId = String(formData.get("divisionId") ?? "");
 
-  const parsed = parseRules(rulesInputFrom(formData), { maxTeamSize: t.maxTeamSize });
+  const parsed = parseRules(rulesInputFrom(formData), { maxTeamSize: t.maxTeamSize, dupr: usesDupr(t.sport) });
   if (!parsed.ok) return parsed;
   const r = parsed.rules;
 
@@ -541,7 +544,7 @@ export async function describeDivisionRules(
      touches nothing — this is not, so it authorises like every other action in
      this file. The form also asks once the typing stops, not once per key. */
   const t = await requireManager(tournamentId);
-  const parsed = parseRules(input, { maxTeamSize: t.maxTeamSize });
+  const parsed = parseRules(input, { maxTeamSize: t.maxTeamSize, dupr: usesDupr(t.sport) });
   return parsed.ok
     ? { sentence: rulesSentence(parsed.rules), problems: [] }
     : { sentence: "", problems: parsed.problems };

@@ -7,7 +7,7 @@ import { loadTournament } from "@/lib/tournamentState";
 import { tournamentRatings, ratingFormatFor } from "@/lib/rating/tournament";
 import { principalFor } from "@/lib/auth/guard";
 import { canView } from "@/lib/auth/policy";
-import { sportOf, formatLabel } from "@/lib/sports/registry";
+import { sportOf, formatLabel, usesDupr } from "@/lib/sports/registry";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 
 /* RISE Ratings for this event.
@@ -36,6 +36,9 @@ export default async function RatingsPage({ params }: { params: Promise<{ slug: 
   const rows = await tournamentRatings(t, people);
   const teamName = (id: string | null) => loaded.teams.find((x) => x.id === id)?.name ?? "—";
   const sport = sportOf(t.sport);
+  /* DUPR is a pickleball rating; beside a badminton RISE number it would read
+     as that player's badminton level. */
+  const showDupr = usesDupr(t.sport);
 
   const anyPlayed = rows.some((r) => r.played > 0);
   const unlinked = rows.filter((r) => !r.carried).length;
@@ -85,7 +88,7 @@ export default async function RatingsPage({ params }: { params: Promise<{ slug: 
                   {/* §7: shown wherever the rating is, because a rating without
                       it looks authoritative when it isn't. */}
                   <th className="p-2 text-left font-bold">Reliability</th>
-                  <th className="p-2 text-right font-bold">DUPR</th>
+                  {showDupr && <th className="p-2 text-right font-bold">DUPR</th>}
                 </tr>
               </thead>
               <tbody>
@@ -124,20 +127,22 @@ export default async function RatingsPage({ params }: { params: Promise<{ slug: 
                       )}
                     </td>
                     {/* Dated, because the premise of RiseR is that DUPR goes stale. */}
-                    <td className="whitespace-nowrap p-2 text-right text-xs text-neutral-400">
-                      {r.dupr == null ? (
-                        "—"
-                      ) : (
-                        <>
-                          {r.dupr.toFixed(2)}
-                          {r.duprEnteredAt && (
-                            <span className="ml-1 text-neutral-600">
-                              {r.duprEnteredAt.toLocaleDateString("en-GB", { month: "short", year: "2-digit" })}
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </td>
+                    {showDupr && (
+                      <td className="whitespace-nowrap p-2 text-right text-xs text-neutral-400">
+                        {r.dupr == null ? (
+                          "—"
+                        ) : (
+                          <>
+                            {r.dupr.toFixed(2)}
+                            {r.duprEnteredAt && (
+                              <span className="ml-1 text-neutral-600">
+                                {r.duprEnteredAt.toLocaleDateString("en-GB", { month: "short", year: "2-digit" })}
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

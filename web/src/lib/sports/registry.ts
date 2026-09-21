@@ -38,6 +38,9 @@ export type Sport = {
   setBased?: boolean;
   serveModel: ServeModel;
   draws?: boolean;
+  /** DUPR is a PICKLEBALL rating. Only a sport marked here asks for one, shows
+      one or accepts a DUPR limit (Faisal, 2026-09-21). */
+  dupr?: boolean;
   skills: string[];
   tags: string[];
 };
@@ -46,7 +49,7 @@ export const DEFAULT_SPORT: SportId = "pb";
 
 export const SPORTS: Record<SportId, Sport> = {
   pb: {
-    id: "pb", name: "Pickleball", emoji: "\u{1F3D3}", court: "court",
+    id: "pb", name: "Pickleball", emoji: "\u{1F3D3}", court: "court", dupr: true,
     playersPerCourt: 4, targets: [11, 15, 21], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
     scoring: { target: 11, winBy: 2, cap: null, golden: null }, serveModel: "sideout",
     skills: ["Serve", "Return", "Dink", "Drive", "Volley", "Drop Shot", "Lob", "Positioning", "Smash", "Reset", "Poach", "Backhand", "Speed Ups"],
@@ -104,6 +107,17 @@ export function sportOf(x?: SportId | { sport?: SportId | null } | null): Sport 
   const id = (typeof x === "string" ? x : x?.sport) ?? DEFAULT_SPORT;
   return SPORTS[id as SportId] ?? SPORTS[DEFAULT_SPORT];
 }
+
+/**
+ * Whether this sport has any business with a DUPR. DUPR is a pickleball
+ * rating: in a badminton event the box invited a number that would then SEED
+ * the player's badminton rating from their pickleball level, and a DUPR limit
+ * on a badminton category would judge badminton players on pickleball. So
+ * outside pickleball there is no DUPR box, no DUPR limit, no DUPR column —
+ * and the server drops one that arrives anyway, because a form is only one of
+ * a Server Action's callers.
+ */
+export const usesDupr = (x?: Parameters<typeof sportOf>[0]): boolean => !!sportOf(x).dupr;
 
 export const skillsFor = (x?: Parameters<typeof sportOf>[0]) => sportOf(x).skills;
 export const tagsFor = (x?: Parameters<typeof sportOf>[0]) => sportOf(x).tags;

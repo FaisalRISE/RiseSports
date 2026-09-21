@@ -32,7 +32,7 @@ const field = "w-full rounded-lg border border-neutral-700 bg-neutral-950 px-2 p
 const label = "text-[10px] font-bold uppercase tracking-widest text-neutral-500";
 
 export function DivisionRulesForm({
-  tournamentId, divisionId, initial, summary, eventDay, eventDayLabel, tiers, allowMixed, save, describe,
+  tournamentId, divisionId, initial, summary, eventDay, eventDayLabel, tiers, allowMixed, allowDupr, save, describe,
 }: {
   tournamentId: string;
   divisionId: string;
@@ -44,6 +44,8 @@ export function DivisionRulesForm({
   eventDayLabel: string | null;
   tiers: { name: string; min: number; max: number }[];
   allowMixed: boolean;
+  /** DUPR is a pickleball rating: another sport's category has no DUPR limit. */
+  allowDupr: boolean;
   save: (tournamentId: string, formData: FormData) => Promise<RulesSaveResult>;
   describe: (tournamentId: string, input: Record<string, string>) => Promise<{ sentence: string; problems: Problem[] }>;
 }) {
@@ -206,32 +208,36 @@ export function DivisionRulesForm({
       </div>
       {problemFor("ratingMin") && <p className="text-[11px] font-semibold text-rose-400">{problemFor("ratingMin")}</p>}
 
-      <div className="grid grid-cols-2 gap-2">
-        <label className="space-y-1">
-          <span className={label}>DUPR from</span>
-          <input name="duprMin" inputMode="decimal" placeholder="e.g. 3.00" value={s.duprMin}
-            onChange={(e) => set("duprMin")(e.target.value)} className={field} />
-        </label>
-        <label className="space-y-1">
-          <span className={label}>DUPR up to</span>
-          <input name="duprMax" inputMode="decimal" placeholder="e.g. 4.00" value={s.duprMax}
-            onChange={(e) => set("duprMax")(e.target.value)} className={field} />
-        </label>
-      </div>
-      {(problemFor("duprMin") || problemFor("duprMax")) && (
-        <p className="text-[11px] font-semibold text-rose-400">{problemFor("duprMin") ?? problemFor("duprMax")}</p>
-      )}
-      {/* Faisal, 2026-09-21: a player without a DUPR is in at the organiser's
-          discretion. Only offered once there is a DUPR limit to apply it to —
-          the server saves it off otherwise. */}
-      {(s.duprMin.trim() !== "" || s.duprMax.trim() !== "") && (
-        <label className="block space-y-1">
-          <span className={label}>Players without a DUPR</span>
-          <select name="duprStrict" value={s.duprStrict} onChange={(e) => set("duprStrict")(e.target.value)} className={field}>
-            <option value="">Let them in, flagged for you</option>
-            <option value="on">Keep them out (strict)</option>
-          </select>
-        </label>
+      {allowDupr && (
+        <>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="space-y-1">
+              <span className={label}>DUPR from</span>
+              <input name="duprMin" inputMode="decimal" placeholder="e.g. 3.00" value={s.duprMin}
+                onChange={(e) => set("duprMin")(e.target.value)} className={field} />
+            </label>
+            <label className="space-y-1">
+              <span className={label}>DUPR up to</span>
+              <input name="duprMax" inputMode="decimal" placeholder="e.g. 4.00" value={s.duprMax}
+                onChange={(e) => set("duprMax")(e.target.value)} className={field} />
+            </label>
+          </div>
+          {(problemFor("duprMin") || problemFor("duprMax")) && (
+            <p className="text-[11px] font-semibold text-rose-400">{problemFor("duprMin") ?? problemFor("duprMax")}</p>
+          )}
+          {/* Faisal, 2026-09-21: a player without a DUPR is in at the organiser's
+              discretion. Only offered once there is a DUPR limit to apply it to —
+              the server saves it off otherwise. */}
+          {(s.duprMin.trim() !== "" || s.duprMax.trim() !== "") && (
+            <label className="block space-y-1">
+              <span className={label}>Players without a DUPR</span>
+              <select name="duprStrict" value={s.duprStrict} onChange={(e) => set("duprStrict")(e.target.value)} className={field}>
+                <option value="">Let them in, flagged for you</option>
+                <option value="on">Keep them out (strict)</option>
+              </select>
+            </label>
+          )}
+        </>
       )}
 
       {sentence && problems.length === 0 && (

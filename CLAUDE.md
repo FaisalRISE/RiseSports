@@ -1323,9 +1323,30 @@ player a side (singles) while the first moved a MIXED rating, and the ratings pa
 one the event carries in.
 
 **Raised separately, not fixed here:** the first player added to an EMPTY event is seeded under
-a singles key (`insertPlayer` works the format out from the roster including only them); and the
-DUPR box appears on non-pickleball events, where a DUPR — a pickleball rating — would seed a
-badminton one.
+a singles key (`insertPlayer` works the format out from the roster including only them).
+
+### DUPR exists only in pickleball (2026-09-21)
+
+Faisal: *"DUPR should not appear for non pickleball sports."* DUPR is a pickleball rating. In a
+badminton event the add-player box took one and **seeded the badminton rating from it**, starting
+a player at their pickleball level; a DUPR limit on a badminton category judged badminton players
+on pickleball.
+
+- **One switch: `Sport.dupr` in the registry, read through `usesDupr(x)`.** Only `pb` has it. A
+  new sport that genuinely has a DUPR-like rating gets the flag; nothing else changes.
+- **Hidden on screen**: the add-player box, the category rules' DUPR limit and its "Players
+  without a DUPR" switch, the host form's DUPR limit (its sport select is controlled now, so the
+  limit comes and goes with the sport), the ratings page's DUPR column, and the profile's DUPR
+  card — which stays for anyone who plays a DUPR sport or already has a DUPR on file. The
+  registry is `server-only`, so client forms get a boolean prop (`showDupr`, `allowDupr`, a
+  `dupr` field on each host-form sport).
+- **Dropped on the server, because a Server Action is a public endpoint**: `addPlayer` ignores
+  the field, `parseRules(…, { dupr: false })` ignores every DUPR field (IGNORED, not refused —
+  there is nothing on screen for the organiser to fix), `createCommunityGame` stores no DUPR
+  limit, and — the last line — `newPersonRow` will not seed a non-DUPR sport's key from a DUPR
+  or store one. The e2e proves it by smuggling a DUPR into a badminton add.
+- No migration and no data change: production had no DUPR in any non-pickleball category,
+  game or player.
 
 ## Access: the site is deliberately open, and the switch is a trap
 

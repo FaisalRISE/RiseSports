@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { matches, players, teams, tournaments } from "@/lib/db/schema";
 import { viewMatch } from "@/lib/matchState";
-import { sportOf } from "@/lib/sports/registry";
+import { sportOf, usesDupr } from "@/lib/sports/registry";
 import { oslLineupIssues } from "@/lib/formats/osl";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, generateGroups, generateKnockout, generateSingleElim, fillKnockoutSlots, seedByRating, searchRoster, addDivision, setDivisionShape, generateSchedule, dropSchedule } from "./actions";
@@ -263,6 +263,7 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                         add={addPlayer.bind(null, t.id, team.id)}
                         search={searchRoster.bind(null, t.sport)}
                         needs={{ dob: need.dob, dupr: need.dupr, duprRequired: need.duprRequired }}
+                        showDupr={usesDupr(t.sport)}
                         hasGenderRule={need.gender}
                         seedBands={SEED_BANDS}
                       />
@@ -372,6 +373,7 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                         eventDayLabel={eventDay ? dateLabel(eventDay) : null}
                         tiers={TIERS.map((x) => ({ name: x.name, min: x.min, max: x.max }))}
                         allowMixed={t.maxTeamSize >= 2}
+                        allowDupr={usesDupr(t.sport)}
                         save={setDivisionRules}
                         describe={describeDivisionRules}
                       />

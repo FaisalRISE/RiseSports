@@ -16,7 +16,7 @@ import { z } from "zod";
 import { createGame } from "@/lib/community/store";
 import { setMe, clearMe, myPersonId } from "@/lib/community/me";
 import { NO_RESTRICTIONS, type CommunityGame } from "@/lib/db/schema";
-import { SPORT_IDS } from "@/lib/sports/registry";
+import { SPORT_IDS, usesDupr } from "@/lib/sports/registry";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -134,7 +134,10 @@ export async function createCommunityGame(formData: FormData): Promise<never> {
   const range = (min: number | null, max: number | null): [number | null, number | null] =>
     min != null && max != null && min > max ? [max, min] : [min, max];
   const [gsrMin, gsrMax] = range(v.gsrMin, v.gsrMax);
-  const [duprMin, duprMax] = range(v.duprMin, v.duprMax);
+  /* A DUPR limit only in pickleball: DUPR is a pickleball rating, and a
+     badminton game judged on it would be judging the wrong sport. The form
+     hides it for other sports; this drops one a crafted post sends anyway. */
+  const [duprMin, duprMax] = usesDupr(v.sport as CommunityGame["sport"]) ? range(v.duprMin, v.duprMax) : [null, null];
   const [ageMin, ageMax] = range(v.ageMin, v.ageMax);
 
   const game = await createGame({

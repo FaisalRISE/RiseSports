@@ -625,7 +625,9 @@ export type RulesProblem = { field: keyof RulesInput; message: string };
  */
 export function parseRules(
   input: RulesInput,
-  ctx: { maxTeamSize: number },
+  /** `dupr: false` for a sport with no DUPR (lib/sports/registry `usesDupr`):
+      DUPR fields are then ignored, whatever the post carried. */
+  ctx: { maxTeamSize: number; dupr?: boolean },
 ): { ok: true; rules: Rules } | { ok: false; problems: RulesProblem[] } {
   const problems: RulesProblem[] = [];
   const text = (v: string | null | undefined) => String(v ?? "").trim();
@@ -666,6 +668,7 @@ export function parseRules(
   }
 
   const dupr = (field: "duprMin" | "duprMax"): number | null => {
+    if (ctx.dupr === false) return null;
     const s = text(input[field]);
     if (!s) return null;
     const x = duprToX100(s);
