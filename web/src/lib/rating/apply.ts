@@ -32,7 +32,7 @@ import {
   calcRtgChange, calcExp, marginMultiplier, phaseMultiplier, verificationWeight,
   provisionalMultiplier, DEFAULT_SEED, startingRating, type Phase, type Verification,
 } from "@/lib/rating";
-import { phaseOf, ratingFormatFor } from "@/lib/rating/tournament";
+import { phaseOf, ratingFormatFor, refileSeeds } from "@/lib/rating/tournament";
 import { ratingKey } from "@/lib/sports/registry";
 import { viewMatch, rulesFor } from "@/lib/matchState";
 import type { Rules } from "@/lib/scoring/rules";
@@ -182,7 +182,13 @@ export async function applyMatchRatings(
   }
 
   const roster = await db.select().from(players).where(eq(players.tournamentId, t.id));
-  const key = ratingKey(t.sport, ratingFormatFor(roster));
+  const key = ratingKey(t.sport, ratingFormatFor(roster, t.minTeamSize));
+  /* The roster is complete by now, so this is the format for certain. A seed
+     filed under an earlier guess — the first player of an event that did not
+     yet know it was doubles, or a roster reshaped since by an approval or a
+     removal — moves here before anyone's rating is read. See `refileSeeds`;
+     a settled event has nothing stale and this costs nothing. */
+  await refileSeeds(t, roster, key);
 
   const personIdsOf = (teamId: string) =>
     roster.filter((p) => p.teamId === teamId && p.personId).map((p) => p.personId!);

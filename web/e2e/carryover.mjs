@@ -107,6 +107,18 @@ ok(/1000/.test(listed), "seeded from the placement band, not left blank");
 /* A phone is how a rating follows someone; it must never be published. */
 ok(!listed.includes(PLAYERS[0].phone), "the full phone number is NOT shown");
 
+/* Anya was the first player added to an empty event: a team of one, which
+   reads as singles. Her starting level used to be filed as women's SINGLES
+   while every match here moves MIXED, and stayed there counting as a rating
+   she had never played for. Once Bo joined her it belongs under mixed. */
+const inFormat = async (format) => {
+  await p.goto(`${BASE}/people?sport=pb&format=${format}&q=${encodeURIComponent(stamp)}`);
+  await p.waitForTimeout(900);
+  return (await text(p)).includes(PLAYERS[0].name);
+};
+ok(!(await inFormat("ws")), "her starting level is NOT filed as women's singles");
+ok(await inFormat("mx"), "it is filed as mixed, the format this event is rated in");
+
 console.log("\n-- draw and score --");
 await p.goto(`${BASE}/t/${slugA}/manage`);
 await p.waitForTimeout(600);

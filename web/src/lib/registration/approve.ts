@@ -131,7 +131,7 @@ export async function approveRegistration(
   const format = ratingFormatFor([
     ...roster,
     ...entrants.map((e) => ({ teamId: "pending", gender: e.gender }) as never),
-  ]);
+  ], t.minTeamSize);
   const formatKey = ratingKey(t.sport, format);
 
   const teamId = randomUUID();

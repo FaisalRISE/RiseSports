@@ -22,7 +22,7 @@ import { loadTournament, groupTables, resolverFactory } from "@/lib/tournamentSt
 import { findOrCreatePerson, findByPhone, carriedRating, peopleForTournament, searchPeople } from "@/lib/people";
 import { reliabilityForPerson } from "@/lib/rating/reliability";
 import type { PickerResult } from "@/components/PersonPicker";
-import { ratingFormatFor } from "@/lib/rating/tournament";
+import { ratingFormatFor, refileSeeds } from "@/lib/rating/tournament";
 import { seedFromDupr } from "@/lib/rating";
 import { DEFAULT_SPORT, SPORTS, ratingKey, usesDupr } from "@/lib/sports/registry";
 
@@ -234,7 +234,13 @@ async function insertPlayer(
   form: { pickedId: string; phone: string; duprRaw: string; bandRaw: string; dob: string | null; duprX100: number | null },
 ): Promise<string> {
   const roster = await db.select().from(players).where(eq(players.tournamentId, t.id));
-  const formatKey = ratingKey(t.sport, ratingFormatFor([...roster, { gender, teamId } as never]));
+  /* ONE format for everything this add writes — the seed's key, the rating
+     carried in, and the key it is recorded under — decided by the roster as it
+     will be with this player on it, and the event's team size. The carried
+     rating used to be read for the roster WITHOUT them, which for the first
+     player of an event is no roster at all. */
+  const format = ratingFormatFor([...roster, { gender, teamId } as never], t.minTeamSize);
+  const formatKey = ratingKey(t.sport, format);
 
   let personId: string | null = null;
   let carried: number | null = null;
@@ -243,7 +249,7 @@ async function insertPlayer(
     const [existing] = await db.select().from(people).where(eq(people.id, form.pickedId)).limit(1);
     if (existing) {
       personId = existing.id;
-      carried = carriedRating(existing, t.sport, ratingFormatFor(roster));
+      carried = carriedRating(existing, t.sport, format);
     }
   } else if (form.phone || form.duprRaw || form.bandRaw) {
     /* The validated DUPR, not the raw text: "9" is not a DUPR, and seeding a
@@ -261,7 +267,7 @@ async function insertPlayer(
       seededBy: t.ownerId,
     });
     personId = person.id;
-    carried = carriedRating(person, t.sport, ratingFormatFor(roster));
+    carried = carriedRating(person, t.sport, format);
   }
 
   const id = randomUUID();
@@ -286,6 +292,13 @@ async function insertPlayer(
   if (personId && form.dob) {
     await db.update(people).set({ dob: form.dob }).where(and(eq(people.id, personId), isNull(people.dob)));
   }
+
+  /* This player may be the one who shows what the event is: the partner who
+     turns a team of one into a pair, or the woman who makes it mixed. Seeds the
+     earlier players were filed under on the old guess move to where the event
+     will actually be rated. The new row is already filed under `formatKey`, so
+     only the rows read before it can be stale. */
+  await refileSeeds(t, roster, formatKey);
   return id;
 }
 
@@ -313,7 +326,7 @@ export async function seedByRating(tournamentId: string) {
      number the event carries in. It was `riseBest`, the best across every
      sport, so a pickleball star topped the seeding of their first badminton
      event (Faisal, 2026-09-21: "RiseR rating is specific to each sport"). */
-  const format = ratingFormatFor(rows);
+  const format = ratingFormatFor(rows, t.minTeamSize);
   const strengthOf = (teamId: string): number | null => {
     const ids = rows.filter((p) => p.teamId === teamId && p.personId).map((p) => p.personId!);
     const ratings = ids

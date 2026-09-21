@@ -1322,9 +1322,6 @@ player a side (singles) while the first moved a MIXED rating, and the ratings pa
 `riseBest`, which hid the difference. Both are mixed pairs now, so the number compared is the
 one the event carries in.
 
-**Raised separately, not fixed here:** the first player added to an EMPTY event is seeded under
-a singles key (`insertPlayer` works the format out from the roster including only them).
-
 ### DUPR exists only in pickleball (2026-09-21)
 
 Faisal: *"DUPR should not appear for non pickleball sports."* DUPR is a pickleball rating. In a
@@ -1347,6 +1344,32 @@ on pickleball.
   or store one. The e2e proves it by smuggling a DUPR into a badminton add.
 - No migration and no data change: production had no DUPR in any non-pickleball category,
   game or player.
+
+### A seed is filed under the format the event is RATED in (2026-09-21)
+
+The first player added to an empty event is a team of one, so `ratingFormatFor` read the event
+as singles and their seed went under `pb:ws` while every match moved `pb:mx`. The first match
+hid it — `startingRating` falls back to the level in the sport, and a DUPR or band seed counts —
+so what was left was an unplayed seed that **counts in `sportRating` for ever**: a player placed
+at 1000 who drops to 950 still showed, listed and was judged by limits at 1000. `e2e/carryover`
+filed Anya exactly there and nothing it checked could see it; it now asserts she is not on the
+women's-singles list (verified failing on the old code).
+
+- **Neither obvious fix works alone.** The team size helps only when the organiser set a minimum
+  of 2, and a wizard event starts at "one or two" — the first player really is indistinguishable
+  from a singles entrant. The team they join is just as small.
+- So: **predict, then correct.** `ratingFormatFor(players, minTeamSize)` counts every team as at
+  least the event's minimum (the maximum permits, it does not promise), and every tournament
+  caller passes it, the engine included, so filing and rating are one decision. Then
+  `refileSeeds` moves what an earlier guess filed, **after each organiser add** and **just before
+  a match is rated** — the latter covers approvals and removals without a call in each.
+- **Only a seed nobody has played on moves**, only for someone with no match in the sport
+  (`seedToRefile`), and **only one THIS event placed** — the row's `players.ratings` key equals
+  the seed's key. Moving another event's unplayed seed would make whichever event is played
+  second start from the original placement. The move is conditional SQL, so a match rated at the
+  same moment is never overwritten by the seed.
+- Seeds already misfiled in production are **not** cleaned up: anyone who has since played is
+  left alone by design. There is only test data there today.
 
 ## Access: the site is deliberately open, and the switch is a trap
 

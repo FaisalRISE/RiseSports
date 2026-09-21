@@ -53,7 +53,7 @@ export default async function RatingsPage({ params }: { params: Promise<{ slug: 
           </Link>
           <h1 className="mt-2 text-2xl font-black tracking-tight">RISE Ratings</h1>
           <p className="text-[11px] font-bold uppercase tracking-widest text-neutral-500">
-            {sport.name} · {formatLabel(ratingFormatFor(people))}
+            {sport.name} · {formatLabel(ratingFormatFor(people, t.minTeamSize))}
           </p>
         </header>
 
