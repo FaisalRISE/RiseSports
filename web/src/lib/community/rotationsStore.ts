@@ -14,7 +14,8 @@ import {
   communityGames, communitySessions,
   type CommunityGame,
 } from "@/lib/db/schema";
-import { capacityOf, localISO } from "./index";
+import { todayInIndia } from "@/lib/eligibility";
+import { capacityOf } from "./index";
 import { ensureSession } from "./store";
 import {
   reserveSlot, leaveSlot, kotcStart, kotcPickWinner, kotcNextRound,
@@ -175,7 +176,7 @@ export const settleChallenge = (
   game: CommunityGame, challenger: string, defender: string, challengerWon: boolean,
 ) =>
   withLadder(game, (order, log) => {
-    const res = ladderChallenge(order, log, challenger, defender, challengerWon, localISO(new Date()));
+    const res = ladderChallenge(order, log, challenger, defender, challengerWon, todayInIndia());
     return res.ok ? { order: res.order, log: res.log } : { error: res.error };
   });
 

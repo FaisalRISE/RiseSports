@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
-  localISO, fromISO, sessionDates, prettyDate, prettyDays,
+  localISO, fromISO, sessionDates, todayWeekday, prettyDate, prettyDays,
   capacityOf, ageOn, communityVerdict, eligibilityFailures, restrictionChips, isUnrestricted,
   priceLabel, slugifyGame,
 } from "./index";
@@ -94,6 +94,58 @@ describe("sessionDates", () => {
   it("crosses a month and a year boundary", () => {
     const dec31 = new Date(2026, 11, 31, 12, 0, 0); // a Thursday
     expect(sessionDates({ freq: "daily", days: [] }, 2, dec31)).toEqual(["2026-12-31", "2027-01-01"]);
+  });
+});
+
+/* ── "Today" is India's today, wherever the server is ─────────────────────
+ *
+ * The live server runs in UTC. From 00:00 to 05:30 in India its date is still
+ * yesterday, and every "today" worked out with its own clock was a day behind:
+ * the session strip opened on a day that was over, and ages were counted on it.
+ *
+ * Every instant below is written in UTC so it names ONE moment on any machine.
+ * 20:00 UTC on Monday 21 Sep is 01:30 on Tuesday the 22nd in India.
+ *
+ * Verified by breaking it: with the old code (the walk starting from the
+ * server's own midnight, ages on `localISO(new Date())`) these fail under
+ * TZ=UTC — where the live site runs — and pass under TZ=Asia/Kolkata, which is
+ * why nobody testing on a laptop in India could have seen it. */
+describe("today is India's today", () => {
+  const afterMidnightInIndia = new Date("2026-09-21T20:00:00Z");
+
+  afterEach(() => vi.useRealTimers());
+
+  it("starts the session strip on India's date, not the server's", () => {
+    expect(sessionDates({ freq: "daily", days: [] }, 2, afterMidnightInIndia))
+      .toEqual(["2026-09-22", "2026-09-23"]);
+  });
+
+  it("does not offer a Monday game on a Monday that is already over in India", () => {
+    expect(sessionDates({ freq: "weekly", days: [1] }, 1, afterMidnightInIndia)).toEqual(["2026-09-28"]);
+    expect(sessionDates({ freq: "weekly", days: [2] }, 1, afterMidnightInIndia)).toEqual(["2026-09-22"]);
+  });
+
+  it("uses India's date when no clock is passed in — which is how the pages call it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(afterMidnightInIndia);
+    expect(sessionDates({ freq: "daily", days: [] }, 1)).toEqual(["2026-09-22"]);
+    expect(todayWeekday()).toBe(2); // Tuesday
+  });
+
+  it("changes day at midnight in India, and not a minute before", () => {
+    const daily = { freq: "daily" as const, days: [] };
+    expect(sessionDates(daily, 1, new Date("2026-09-21T18:29:00Z"))).toEqual(["2026-09-21"]); // 23:59
+    expect(sessionDates(daily, 1, new Date("2026-09-21T18:30:00Z"))).toEqual(["2026-09-22"]); // 00:00
+  });
+
+  it("counts a birthday on India's date", () => {
+    /* 18 on the 22nd. At 01:30 that morning in India the server still says the
+       21st, and used to call them 17. */
+    const turning18 = player({ dob: "2008-09-22" });
+    expect(ageOn("2008-09-22", afterMidnightInIndia)).toBe(18);
+    vi.useFakeTimers();
+    vi.setSystemTime(afterMidnightInIndia);
+    expect(eligibilityFailures(turning18, restrict({ ageMin: 18 }), { sport: "pb" })).toEqual([]);
   });
 });
 

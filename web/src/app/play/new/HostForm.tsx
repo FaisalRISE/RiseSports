@@ -35,10 +35,17 @@ const SCHEDULES = [
   ["mexicano", "Mexicano", "Each round is matched on how you are doing."],
 ] as const;
 
-export function HostForm({ sports, error }: { sports: { id: string; name: string; emoji: string }[]; error?: string }) {
+export function HostForm({ sports, error, defaultDay }: {
+  sports: { id: string; name: string; emoji: string }[];
+  error?: string;
+  /** Today's weekday in India, worked out on the server. Read here with
+      `new Date()` it was the SERVER's day while rendering (UTC, still
+      yesterday until 05:30 in India) and the phone's once running. */
+  defaultDay: number;
+}) {
   const [name, setName] = useState("");
   const [freq, setFreq] = useState<"daily" | "weekly">("weekly");
-  const [days, setDays] = useState<number[]>([new Date().getDay()]);
+  const [days, setDays] = useState<number[]>([defaultDay]);
   const [startTime, setStartTime] = useState("20:00");
   const [endTime, setEndTime] = useState("22:00");
   const [courts, setCourts] = useState(2);

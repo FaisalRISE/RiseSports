@@ -1232,9 +1232,29 @@ proves it — three fail under `TZ=UTC`, and the time tests pass under `TZ=Asia/
 - The same class, fixed alongside: the print pack's printed-at time and the approvals list's
   entry date (true instants, now India time), and the public page's event date (floating, now
   `timeZone: "UTC"` like every other schedule render).
-- **Not fixed, raised separately:** community session "today" and ages still use the server's
-  date (`lib/community/localISO`), so between 00:00 and 05:30 in India the live site thinks it
-  is yesterday.
+- **Community "today" is India's today — fixed 2026-09-21 (committed, not yet pushed).** It
+  used the server's date (`localISO(new Date())`), so from 00:00 to 05:30 in India the session
+  strip opened on a day that was over, a Monday game offered Monday after Monday had ended, ages
+  were counted a day early, and a new game defaulted to yesterday's weekday.
+  - **ONE definition: `indiaDateISO(instant)` / `todayInIndia()` in `lib/eligibility`**, fixed
+    +05:30 arithmetic (no longer `Intl` en-CA — a locale's format is not a contract).
+    `todayWeekday()` in `lib/community` is its weekday. **`localISO(new Date())` is never
+    "today"** — `localISO`/`fromISO` stay as the pair that walks and names calendar days once
+    the first one is known, which is why `sessionDates` only had its START changed.
+  - Covered: `sessionDates` (the strip, `/play`'s next date), ages in `communityVerdict`/`ageOn`,
+    the ladder challenge date, the venue picker's earliest date, and a new game's default day.
+  - The host form's default day is computed on the SERVER and passed down as `defaultDay`. Read
+    in the form with `new Date()`, it was the server's day while rendering and the phone's once
+    hydrated — two different days after midnight in India.
+  - Tests pin 20:00 UTC on Mon 21 Sep (01:30 Tue 22nd in India). Installing the old code: five
+    fail under `TZ=UTC` and all pass under `TZ=Asia/Kolkata` — the live site runs in UTC and
+    the app was tested in India, which is exactly why it went unseen. Also checked in a browser
+    against a dev server in UTC with its clock moved to that instant: the old code offered
+    "Mon 21 Sep", the fix offers "Mon 28 Sep".
+  - **Still NOT counted on the day of play:** the verdict takes an `on` date, and no caller
+    passes one, so a player's age is judged on TODAY for every date in the strip. Someone
+    turning 18 next Thursday cannot sign up for next Thursday's 18+ game until that morning.
+    Raised separately; passing the session date is a behaviour change to ask about first.
 
 **No DUPR: the organiser decides.** Faisal: *"A player can join without DUPR based on
 organiser's discretion. we can highlight the same."* A player with no DUPR, against any DUPR
