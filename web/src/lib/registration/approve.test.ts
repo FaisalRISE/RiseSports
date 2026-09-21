@@ -268,7 +268,7 @@ describe("the same phone twice, and two taps at once", () => {
  * category as the organiser has since set it, and approval is the last moment
  * to refuse rather than flag a team that already exists. */
 describe("approving into a category with rules", () => {
-  const rules = { tournament: randomUUID(), wd: randomUUID(), vets: randomUUID(), cap: randomUUID(), other: randomUUID(), min: randomUUID() };
+  const rules = { tournament: randomUUID(), wd: randomUUID(), vets: randomUUID(), cap: randomUUID(), other: randomUUID(), min: randomUUID(), dupr: randomUUID() };
 
   beforeAll(async () => {
     await db.insert(schema.tournaments).values({
@@ -281,6 +281,7 @@ describe("approving into a category with rules", () => {
       { id: rules.cap, tournamentId: rules.tournament, name: "Capped", position: 2, ratingMax: 1049 },
       { id: rules.other, tournamentId: rules.tournament, name: "Open", position: 3 },
       { id: rules.min, tournamentId: rules.tournament, name: "Rated Only", position: 4, ratingMin: 750 },
+      { id: rules.dupr, tournamentId: rules.tournament, name: "DUPR Floor", position: 5, duprMin: 350 },
     ]);
   });
 
@@ -419,6 +420,29 @@ describe("approving into a category with rules", () => {
     expect(flagged?.notes ?? []).toEqual([
       "Disputed: Date of birth typed here (1 Jan 1990) is not the one on file",
     ]);
+  });
+
+  it("lets a blank DUPR in, but not past a DUPR the app already has on file", async () => {
+    /* The category is lenient (the default): no DUPR is let in, flagged. But
+       a blank is not a way round a DUPR the app KNOWS — approval reads the
+       stored record, so leaving the box empty does not hide a 3.00 from a
+       "3.50+" category. */
+    await db.insert(schema.people).values({
+      id: randomUUID(), name: "Known Low", phone: "+919000000501", dupr: 300,
+    });
+    const known = await ruledEntry(rules.dupr, [
+      { name: "Known Low", phone: "+919000000501", gender: "M" },
+      { name: "No Record", phone: "+919000000502", gender: "M" },
+    ], "Blank Boxes");
+    const res = await approve.approveRegistration(known);
+    expect(!res.ok && res.error).toBe("Can't approve into DUPR Floor: Known Low (DUPR 3.50+ only)");
+
+    /* With nobody's DUPR on file, the same blank boxes are simply let in. */
+    const fresh = await ruledEntry(rules.dupr, [
+      { name: "New A", phone: "+919000000503", gender: "M" },
+      { name: "New B", phone: "+919000000504", gender: "M" },
+    ], "Fresh Blanks");
+    expect((await approve.approveRegistration(fresh)).ok).toBe(true);
   });
 
   it("judges a shared phone the way it will be stored, not twice over", async () => {

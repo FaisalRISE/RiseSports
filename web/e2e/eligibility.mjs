@@ -247,6 +247,39 @@ try {
   ok(!accepted(t) && (await underPlayer(0)).includes("Enter a mobile number"),
     "leaving the phone blank cannot be used to look unrated");
 
+  /* Faisal, 2026-09-21: "A player can join without DUPR based on organiser's
+     discretion." Let in and flagged by default; Strict keeps them out. The
+     twin runs the SAME blank entry against the same category made strict. */
+  ok((await p.locator('input[name="playerDupr"]').first().getAttribute("required")) === null,
+    "the DUPR box is not compulsory in a category that is not strict");
+  t = await enter(slug, CAP, `Cap Blank ${stamp}`, [
+    { name: `Nodupr ${stamp}`, phone: phone(21) },
+    { name: `Nodupr2 ${stamp}`, phone: phone(22) },
+  ]);
+  ok(accepted(t), "a player with no DUPR is let in by default");
+
+  await p.goto(`${BASE}/t/${slug}/manage`);
+  await p.waitForTimeout(1200);
+  form = await openRules(CAP);
+  await form.locator('select[name="duprStrict"]').selectOption("on");
+  await p.waitForTimeout(800);
+  ok((await form.locator("[data-rules-sentence]").textContent()).includes("A DUPR is required."),
+    "strict is said back in plain words");
+  await saveRules(form);
+  t = await enter(slug, CAP, `Cap Strict ${stamp}`, [
+    { name: `Nodupr3 ${stamp}`, phone: phone(23) },
+    { name: `Nodupr4 ${stamp}`, phone: phone(24) },
+  ], { tamper: 'input[name="playerDupr"]' });
+  ok(!accepted(t) && (await underPlayer(0)).includes("Enter your DUPR"),
+    "made strict, the same blank DUPR is refused — even with `required` removed");
+
+  /* Back to the default, which the organiser checks further down rely on. */
+  await p.goto(`${BASE}/t/${slug}/manage`);
+  await p.waitForTimeout(1200);
+  form = await openRules(CAP);
+  await form.locator('select[name="duprStrict"]').selectOption("");
+  await saveRules(form);
+
   console.log("\n-- a category with no rules is untouched --");
   t = await enter(slug, "Main", `Main Pair ${stamp}`, [
     { name: `Plain ${stamp}` },
@@ -269,6 +302,9 @@ try {
   const wdEntry = p.locator(`li:has-text("WD Pair ${stamp}")`);
   ok((await text(p, `li:has-text("WD Pair ${stamp}")`)).includes("Doesn’t fit current rules"),
     "the approvals list warns before Approve is pressed");
+  const blankEntry = await text(p, `li:has-text("Cap Blank ${stamp}")`);
+  ok(blankEntry.includes(`Nodupr ${stamp} has no DUPR.`) && !blankEntry.includes("Doesn’t fit"),
+    "a player let in without a DUPR is flagged for the organiser, not marked as a misfit");
   ok((await text(p, `li:has-text("WD Pair ${stamp}")`)).includes(WD), "and shows the entry's category");
   await wdEntry.locator('button:has-text("Approve")').click();
   await p.waitForTimeout(2000);
@@ -343,7 +379,8 @@ try {
   const capStop = await text(p, `[data-team="Cap Organiser ${stamp}"]`);
   ok(capStop.includes("Rating 1049 and under only"),
     "a player placed above the cap is stopped, on the level being given to them");
-  ok(capStop.includes("DUPR 3.50+ only"), "and on the DUPR the category needs, which was left blank");
+  ok(!capStop.includes("DUPR 3.50+ only"),
+    "but NOT on the DUPR left blank — this category lets players without one in");
   await capTeam.locator('input[name="waive"]').check();
   await capTeam.locator('button:has-text("Add")').first().click();
   await p.waitForTimeout(2000);
@@ -353,6 +390,16 @@ try {
   ok(/Let in by organiser/i.test(capLetIn), "ticked, he is in and the card says the organiser let him in");
   ok(!capLetIn.includes("Doesn’t meet"),
     "and it stays that way once he exists and has the rating that was refused");
+  ok(capLetIn.includes(`Ace ${stamp}: No DUPR`), "and the card flags that he has no DUPR");
+
+  /* A typo is not "no DUPR". Dropped quietly, "35" would have become a player
+     let in with a flag that misstates what the organiser typed. */
+  await capTeam.locator('input[placeholder="Player name"]').fill(`Typo ${stamp}`);
+  await capTeam.locator('input[name="dupr"]').fill("35");
+  await capTeam.locator('button:has-text("Add")').first().click();
+  await p.waitForTimeout(1800);
+  ok((await text(p, `[data-team="Cap Organiser ${stamp}"]`)).includes("DUPR must be a number between 1.00 and 8.00."),
+    "a DUPR that is not a DUPR is refused, not dropped");
 
   /* ══════════════════════════════════════════════════════════════════════ */
   console.log("\n== changing the rules later removes nobody ==");

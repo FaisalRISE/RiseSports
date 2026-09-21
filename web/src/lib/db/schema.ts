@@ -614,6 +614,12 @@ export type Restrictions = {
   duprMin: number | null; duprMax: number | null;
   ageMin: number | null; ageMax: number | null;
   gender: "M" | "F" | null;
+  /** Keep out a player with no DUPR (true), or let them in flagged (absent or
+      false, the default). OPTIONAL on purpose: a game saved before 2026-09-21
+      has no key and reads as the default, and NO_RESTRICTIONS stays as it was —
+      changing it would change the column's stored default and cost a
+      migration for nothing. */
+  duprStrict?: boolean;
 };
 
 export const NO_RESTRICTIONS: Restrictions = {

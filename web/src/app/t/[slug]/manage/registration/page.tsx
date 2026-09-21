@@ -81,7 +81,9 @@ export default async function RegistrationPage({
           fs.filter((f) => f.severity === "note").map((f) =>
             f.code.startsWith("rating:max")
               ? `${squad[i].name} is unrated. Check their level before approving.`
-              : `${squad[i].name}: ${f.text}.`)),
+              : f.code === "dupr:none"
+                ? `${squad[i].name} has no DUPR.`
+                : `${squad[i].name}: ${f.text}.`)),
       }];
     }),
   );

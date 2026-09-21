@@ -25,14 +25,15 @@ import "server-only";
  *  - Missing evidence mostly FAILS, because the organiser set a limit and an
  *    unknown value cannot be shown to meet it:
  *      no date of birth           → fails any age bound
- *      no DUPR                    → fails a DUPR minimum AND maximum
  *      no gender                  → fails a gender rule
  *      no rating, "at least" rule → fails
- *  - The one exception, decided by Faisal 2026-09-17: a player with NO rating
- *    under an "up to" limit is let in with a NOTE for the organiser ("Unrated:
- *    check this player's level"). A newcomer belongs in the beginners'
- *    category; refusing them from it would be absurd. The note is never shown
- *    to the entrant and never blocks.
+ *  - Two exceptions, both Faisal's, both let the player in with a NOTE for the
+ *    organiser. A note is never shown to the entrant and never blocks.
+ *      - 2026-09-17: NO RATING under an "up to" limit ("Unrated: check this
+ *        player's level"). A newcomer belongs in the beginners' category.
+ *      - 2026-09-21: NO DUPR against any DUPR limit, unless the organiser made
+ *        the category Strict ("No DUPR"). "A player can join without DUPR based
+ *        on organiser's discretion." Strict fails both bounds, as it always did.
  *  - Legacy bugs NOT ported (checkEligibility, app.source.js:573): an EMPTY
  *    age rule demanding a date of birth anyway; age measured on "now" rather
  *    than the event; tier matching by `startsWith`, which made "Pro" match
@@ -55,11 +56,14 @@ export type Rules = {
   /** DUPR ×100. */
   duprMin: number | null;
   duprMax: number | null;
+  /** A player with no DUPR, against a DUPR bound: false lets them in with a
+      "No DUPR" note (the default); true refuses them. Nothing without a bound. */
+  duprStrict: boolean;
 };
 
 export const NO_RULES: Rules = {
   gender: null, ageMin: null, ageMax: null, ageOn: null,
-  ratingMin: null, ratingMax: null, duprMin: null, duprMax: null,
+  ratingMin: null, ratingMax: null, duprMin: null, duprMax: null, duprStrict: false,
 };
 
 export type Gender = "M" | "F";
@@ -311,11 +315,19 @@ export function personFailures(
     }
   }
 
-  if (r.duprMin != null && (e.dupr == null || e.dupr < r.duprMin)) {
-    out.push(block(`dupr:min:${r.duprMin}`, `DUPR ${duprLabel(r.duprMin)}+ only`, e.dupr == null));
-  }
-  if (r.duprMax != null && (e.dupr == null || e.dupr > r.duprMax)) {
-    out.push(block(`dupr:max:${r.duprMax}`, `DUPR ${duprLabel(r.duprMax)} and under only`, e.dupr == null));
+  const duprBound = r.duprMin != null || r.duprMax != null;
+  if (duprBound && e.dupr == null && !r.duprStrict) {
+    /* The organiser's discretion (Faisal, 2026-09-21): no DUPR is let in and
+       flagged, ONCE, however many bounds are set. Strict falls through to the
+       blocks below, which fail both bounds exactly as before. */
+    out.push({ code: "dupr:none", text: "No DUPR", missing: true, severity: "note" });
+  } else {
+    if (r.duprMin != null && (e.dupr == null || e.dupr < r.duprMin)) {
+      out.push(block(`dupr:min:${r.duprMin}`, `DUPR ${duprLabel(r.duprMin)}+ only`, e.dupr == null));
+    }
+    if (r.duprMax != null && (e.dupr == null || e.dupr > r.duprMax)) {
+      out.push(block(`dupr:max:${r.duprMax}`, `DUPR ${duprLabel(r.duprMax)} and under only`, e.dupr == null));
+    }
   }
   /* See the date-of-birth note below: the record disagrees, so say so. */
   if ((r.duprMin != null || r.duprMax != null) && e.storedDupr != null) {
@@ -446,8 +458,14 @@ export const waiverLine = (f: Failure, playerId: string | null): string =>
 
 /* ── Reading and describing a category's rules ────────────────────────────*/
 
+/* Strict only means something beside a DUPR bound. Normalised here so every
+   Rules value says `false` rather than carrying a switch with nothing to act on. */
+const strictWith = (strict: boolean | null | undefined, min: number | null, max: number | null) =>
+  !!strict && (min != null || max != null);
+
 export function rulesOfDivision(
-  d: Pick<Division, "genderRule" | "ageMin" | "ageMax" | "ageOn" | "ratingMin" | "ratingMax" | "duprMin" | "duprMax">,
+  d: Pick<Division, "genderRule" | "ageMin" | "ageMax" | "ageOn" | "ratingMin" | "ratingMax" | "duprMin" | "duprMax">
+    & Partial<Pick<Division, "duprStrict">>,
 ): Rules {
   return {
     gender: d.genderRule ?? null,
@@ -458,16 +476,20 @@ export function rulesOfDivision(
     ratingMax: d.ratingMax ?? null,
     duprMin: d.duprMin ?? null,
     duprMax: d.duprMax ?? null,
+    duprStrict: strictWith(d.duprStrict, d.duprMin ?? null, d.duprMax ?? null),
   };
 }
 
-/** A community game's restrictions, in the same terms. Ages count on the day. */
+/** A community game's restrictions, in the same terms. Ages count on the day.
+    `duprStrict` is optional in the stored jsonb: a game saved before it existed
+    reads as lenient, the default. */
 export function rulesOfRestrictions(r: Restrictions): Rules {
   return {
     gender: r.gender,
     ageMin: r.ageMin, ageMax: r.ageMax, ageOn: null,
     ratingMin: r.gsrMin, ratingMax: r.gsrMax,
     duprMin: r.duprMin, duprMax: r.duprMax,
+    duprStrict: strictWith(r.duprStrict, r.duprMin, r.duprMax),
   };
 }
 
@@ -483,12 +505,20 @@ export const hasRules = (r: Rules | null | undefined): boolean =>
  * `phone` is true whenever there is a RATING limit. The phone number is how an
  * entrant is matched to their rating; left optional, leaving it blank would be
  * a way to look unrated and walk into a capped category.
+ *
+ * `dupr` means the DUPR box is SHOWN; `duprRequired` means it must be filled,
+ * which is only so when the organiser made the category Strict. Otherwise a
+ * blank is allowed and flagged "No DUPR" for the organiser.
  */
-export function needsFrom(r: Rules | null | undefined): { gender: boolean; dob: boolean; dupr: boolean; phone: boolean } {
+export function needsFrom(r: Rules | null | undefined): {
+  gender: boolean; dob: boolean; dupr: boolean; duprRequired: boolean; phone: boolean;
+} {
+  const dupr = r?.duprMin != null || r?.duprMax != null;
   return {
     gender: !!r?.gender,
     dob: r?.ageMin != null || r?.ageMax != null,
-    dupr: r?.duprMin != null || r?.duprMax != null,
+    dupr,
+    duprRequired: dupr && !!r?.duprStrict,
     phone: r?.ratingMin != null || r?.ratingMax != null,
   };
 }
@@ -535,6 +565,9 @@ export function rulesSentence(r: Rules | null | undefined): string {
   if (rules.duprMin != null && rules.duprMax != null) parts.push(`DUPR ${duprLabel(rules.duprMin)} to ${duprLabel(rules.duprMax)}.`);
   else if (rules.duprMin != null) parts.push(`DUPR ${duprLabel(rules.duprMin)} or higher.`);
   else if (rules.duprMax != null) parts.push(`DUPR ${duprLabel(rules.duprMax)} or lower.`);
+  if (rules.duprMin != null || rules.duprMax != null) {
+    parts.push(rules.duprStrict ? "A DUPR is required." : "No DUPR? You can still enter.");
+  }
 
   if (rules.ratingMin != null || rules.ratingMax != null) {
     parts.push("A phone number is needed so we can find each player's rating.");
@@ -571,6 +604,7 @@ export function ruleChips(r: Rules | null | undefined): string[] {
   if (rules.duprMin != null && rules.duprMax != null) out.push(`DUPR ${duprLabel(rules.duprMin)}–${duprLabel(rules.duprMax)}`);
   else if (rules.duprMin != null) out.push(`DUPR ${duprLabel(rules.duprMin)}+`);
   else if (rules.duprMax != null) out.push(`DUPR up to ${duprLabel(rules.duprMax)}`);
+  if (rules.duprStrict) out.push("DUPR required");
 
   return out;
 }
@@ -602,6 +636,8 @@ export type RulesInput = {
   ratingMax?: string | null;
   duprMin?: string | null;
   duprMax?: string | null;
+  /** The "Keep them out (strict)" choice: "on", or absent. */
+  duprStrict?: string | null;
 };
 
 export type RulesProblem = { field: keyof RulesInput; message: string };
@@ -678,6 +714,9 @@ export function parseRules(
          stale in the background and surprise somebody later. */
       ageOn: ageMin != null || ageMax != null ? (ageOn as string) : null,
       ratingMin, ratingMax, duprMin, duprMax,
+      /* A checkbox: "on" when ticked, absent when not. Saved false when there
+         is no DUPR bound to be strict about, like `ageOn` without an age. */
+      duprStrict: strictWith(text(input.duprStrict) === "on", duprMin, duprMax),
     },
   };
 }

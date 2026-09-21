@@ -133,6 +133,13 @@ export async function addPlayer(tournamentId: string, teamId: string, formData: 
      a date of birth nothing is going to read is personal data held for nothing.
      The field is only rendered when it is needed; this is for a crafted post. */
   const dob = needsFrom(rules).dob ? dobRaw || null : null;
+  /* A DUPR that is not a DUPR is refused, not quietly dropped. Dropped, "35"
+     became no DUPR at all — which since the "No DUPR" switch is let in with a
+     flag, so a typo would slip a player past a DUPR limit with a note that
+     misstates what was typed. */
+  if (duprRaw && duprToX100(duprRaw) == null) {
+    return { ok: false, message: "DUPR must be a number between 1.00 and 8.00." };
+  }
   const duprX100 = duprRaw ? duprToX100(duprRaw) : null;
 
   /* The rating this add is ABOUT to place, when it is placing one.
@@ -466,6 +473,7 @@ const rulesInputFrom = (formData: FormData) => ({
   ratingMax: formData.get("ratingMax") as string | null,
   duprMin: formData.get("duprMin") as string | null,
   duprMax: formData.get("duprMax") as string | null,
+  duprStrict: formData.get("duprStrict") as string | null,
 });
 
 /**
@@ -490,6 +498,7 @@ export async function setDivisionRules(tournamentId: string, formData: FormData)
     .set({
       genderRule: r.gender, ageMin: r.ageMin, ageMax: r.ageMax, ageOn: r.ageOn,
       ratingMin: r.ratingMin, ratingMax: r.ratingMax, duprMin: r.duprMin, duprMax: r.duprMax,
+      duprStrict: r.duprStrict,
     })
     /* Scoped to this event, so a division id from another cannot be edited. */
     .where(and(eq(divisions.id, divisionId), eq(divisions.tournamentId, t.id)))

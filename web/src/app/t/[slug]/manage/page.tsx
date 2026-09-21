@@ -262,7 +262,7 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                       <AddPlayerForm
                         add={addPlayer.bind(null, t.id, team.id)}
                         search={searchRoster}
-                        needs={{ dob: need.dob, dupr: need.dupr }}
+                        needs={{ dob: need.dob, dupr: need.dupr, duprRequired: need.duprRequired }}
                         hasGenderRule={need.gender}
                         seedBands={SEED_BANDS}
                       />
@@ -366,6 +366,7 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                           ratingMax: str(r.ratingMax),
                           duprMin: r.duprMin == null ? "" : duprLabel(r.duprMin),
                           duprMax: r.duprMax == null ? "" : duprLabel(r.duprMax),
+                          duprStrict: r.duprStrict ? "on" : "",
                         }}
                         eventDay={eventDay}
                         eventDayLabel={eventDay ? dateLabel(eventDay) : null}

@@ -205,6 +205,16 @@ export function HostForm({ sports, error }: { sports: { id: string; name: string
             </p>
             <Pair label="Rating" a="gsrMin" b="gsrMax" aPlace="600" bPlace="900" />
             <Pair label="DUPR" a="duprMin" b="duprMax" aPlace="3.00" bPlace="4.50" />
+            {/* Faisal, 2026-09-21: a player without a DUPR is let in at the
+                host's discretion, and flagged; strict keeps them out. It only
+                means anything beside a DUPR limit, and is saved off without one. */}
+            <Field label="Players without a DUPR">
+              <select name="duprStrict" defaultValue="" className={input}>
+                <option value="">Let them in, flagged for you</option>
+                <option value="on">Keep them out (strict)</option>
+              </select>
+              <span className="block text-[11px] text-neutral-500">Only matters if you set a DUPR limit.</span>
+            </Field>
             <Pair label="Age" a="ageMin" b="ageMax" aPlace="18" bPlace="45" />
             <Field label="Gender">
               <select name="gender" defaultValue="any" className={input}>

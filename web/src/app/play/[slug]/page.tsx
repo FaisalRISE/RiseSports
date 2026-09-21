@@ -9,7 +9,7 @@ import { viewingAsHost } from "@/lib/community/guard";
 import { gameBySlug, sessionView, myEntry, canJoinSessions } from "@/lib/community/store";
 import { openSlotsIn } from "@/lib/community/roster";
 import {
-  capacityOf, eligibilityFailures, prettyDate, prettyDays, priceLabel, restrictionChips, sessionDates,
+  capacityOf, communityVerdict, eligibilityFailures, prettyDate, prettyDays, priceLabel, restrictionChips, sessionDates,
 } from "@/lib/community";
 import { scheduleFor } from "@/lib/community/schedule";
 import { halfHourSlots } from "@/lib/community/rotations";
@@ -90,7 +90,7 @@ export default async function GamePage({
     : { confirmed: [], waitlist: [], roster: [], capacity: capacityOf(game), freedSpots: 0 };
 
   const mine = "roster" in view ? myEntry(view as never, viewer?.id ?? null) : null;
-  const blockers = viewer ? eligibilityFailures(viewer, game.restrictions) : [];
+  const blockers = viewer ? eligibilityFailures(viewer, game.restrictions, { sport: game.sport }) : [];
   const chips = restrictionChips(game.restrictions);
   const capacity = capacityOf(game);
   const courtWord = sport.court.charAt(0).toUpperCase() + sport.court.slice(1);
@@ -167,6 +167,9 @@ export default async function GamePage({
     state: r.state,
     paid: r.paid,
     linkSent: r.paymentLinkSentAt !== null,
+    /* What the host should know and the player need not be told — "No DUPR",
+       "Unrated" — from the same call that decided whether they could join. */
+    notes: communityVerdict(r.person, game.restrictions, { sport: game.sport }).notes,
   }));
 
   /* The counts for the date strip, in one pass rather than a query per date. */

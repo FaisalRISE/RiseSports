@@ -152,11 +152,16 @@ export function entryRuleProblems(rules: Rules, players: TypedPlayer[], normalis
       else if (!parseDobISO(p.dob)) says.push("Enter a real date of birth.");
     }
     if (needs.dupr) {
+      /* A blank is only a problem where the organiser made the category
+         strict. Otherwise it is allowed, and the organiser sees "No DUPR". A
+         DUPR that is not a DUPR is refused either way. */
       if (!p.dupr.trim()) {
-        const bound = rules.duprMin != null
-          ? `DUPR ${duprLabel(rules.duprMin)}+`
-          : `DUPR ${duprLabel(rules.duprMax!)} and under`;
-        says.push(`Enter your DUPR. This category needs ${bound}.`);
+        if (needs.duprRequired) {
+          const bound = rules.duprMin != null
+            ? `DUPR ${duprLabel(rules.duprMin)}+`
+            : `DUPR ${duprLabel(rules.duprMax!)} and under`;
+          says.push(`Enter your DUPR. This category needs ${bound}.`);
+        }
       } else if (duprToX100(p.dupr) == null) {
         says.push("DUPR must be a number between 1.00 and 8.00.");
       }

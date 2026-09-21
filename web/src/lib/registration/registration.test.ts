@@ -225,6 +225,17 @@ describe("what the category still needs from each player", () => {
     expect(says(entryRuleProblems(r, rows({ dob: "0019-05-17" }), norm), 0)).toBe("Enter a real date of birth.");
   });
 
+  it("asks for a DUPR only where the organiser made the category strict", () => {
+    /* Faisal, 2026-09-21: a player without a DUPR enters at the organiser's
+       discretion — let in and flagged, unless the category is strict. */
+    expect(entryRuleProblems(rules({ duprMax: 350 }), rows({ dupr: "" }), norm)).toEqual([]);
+    expect(says(entryRuleProblems(rules({ duprMax: 350, duprStrict: true }), rows({ dupr: "" }), norm), 0))
+      .toBe("Enter your DUPR. This category needs DUPR 3.50 and under.");
+    /* Something typed that is not a DUPR is refused either way. */
+    expect(says(entryRuleProblems(rules({ duprMax: 350 }), rows({ dupr: "35" }), norm), 0))
+      .toBe("DUPR must be a number between 1.00 and 8.00.");
+  });
+
   it("makes each player use their own number where the number IS the evidence", () => {
     const capped = rules({ ratingMax: 1049 });
     const shared = rows({ phone: "98200 11111" }, { phone: "9820011111" });

@@ -38,7 +38,7 @@ import { useRef, useState, useTransition } from "react";
 import type { FormField, Waiver } from "@/lib/db/schema";
 import type { SubmitResult } from "@/app/e/[slug]/actions";
 
-export type EntryNeeds = { gender: boolean; dob: boolean; dupr: boolean; phone: boolean };
+export type EntryNeeds = { gender: boolean; dob: boolean; dupr: boolean; duprRequired: boolean; phone: boolean };
 
 export type EntryDivision = {
   id: string;
@@ -62,7 +62,7 @@ export type EntryFormProps = {
   submit: (slug: string, formData: FormData) => Promise<SubmitResult>;
 };
 
-const NO_NEEDS: EntryNeeds = { gender: false, dob: false, dupr: false, phone: false };
+const NO_NEEDS: EntryNeeds = { gender: false, dob: false, dupr: false, duprRequired: false, phone: false };
 
 export function EntryForm(props: EntryFormProps) {
   const { minTeamSize, maxTeamSize, divisions, formFields, waivers } = props;
@@ -271,8 +271,11 @@ export function EntryForm(props: EntryFormProps) {
                     <input
                       name="playerDupr"
                       inputMode="decimal"
-                      placeholder="e.g. 3.75"
-                      required={i < minTeamSize}
+                      /* Required only where the organiser made the category
+                         strict. Otherwise a blank is allowed, and the organiser
+                         sees "No DUPR" beside the name (Faisal, 2026-09-21). */
+                      placeholder={needs.duprRequired ? "e.g. 3.75" : "e.g. 3.75, if you have one"}
+                      required={needs.duprRequired && i < minTeamSize}
                       maxLength={5}
                       className="mt-1 w-full rounded-lg border border-neutral-700 bg-neutral-950 p-2.5 text-sm"
                     />

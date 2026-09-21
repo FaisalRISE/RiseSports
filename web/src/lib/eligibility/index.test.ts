@@ -158,9 +158,21 @@ describe("one player against the rules", () => {
     expect(entryFailures([who({ rating: null })], rules({ ratingMax: 1049 }), { complete: true, minTeamSize: 2 }).ok).toBe(true);
   });
 
-  it("fails BOTH DUPR bounds when no DUPR is given", () => {
-    expect(blocks(personFailures(who({ dupr: null }), rules({ duprMin: 300 })))).toEqual(["dupr:min:300"]);
-    expect(blocks(personFailures(who({ dupr: null }), rules({ duprMax: 400 })))).toEqual(["dupr:max:400"]);
+  it("lets a player with no DUPR in, with ONE note for the organiser, by default", () => {
+    /* Faisal, 2026-09-21: organiser's discretion, and the default is to let
+       them in, flagged. Once — not once per bound. */
+    const both = rules({ duprMin: 300, duprMax: 400 });
+    expect(blocks(personFailures(who({ dupr: null }), both))).toEqual([]);
+    expect(personFailures(who({ dupr: null }), both)).toEqual([
+      expect.objectContaining({ code: "dupr:none", text: "No DUPR", severity: "note" }),
+    ]);
+    /* A DUPR that IS there is still judged. */
+    expect(blocks(personFailures(who({ dupr: 450 }), both))).toEqual(["dupr:max:400"]);
+  });
+
+  it("fails BOTH DUPR bounds when no DUPR is given and the category is strict", () => {
+    expect(blocks(personFailures(who({ dupr: null }), rules({ duprMin: 300, duprStrict: true })))).toEqual(["dupr:min:300"]);
+    expect(blocks(personFailures(who({ dupr: null }), rules({ duprMax: 400, duprStrict: true })))).toEqual(["dupr:max:400"]);
   });
 
   it("fails a gender rule for a player with no gender chosen", () => {
@@ -350,7 +362,12 @@ describe("where the evidence comes from", () => {
 
 describe("what the entry form must ask for", () => {
   it("asks for nothing new in a category with no rules", () => {
-    expect(needsFrom(NO_RULES)).toEqual({ gender: false, dob: false, dupr: false, phone: false });
+    expect(needsFrom(NO_RULES)).toEqual({ gender: false, dob: false, dupr: false, duprRequired: false, phone: false });
+  });
+
+  it("shows the DUPR box for any DUPR limit, and requires it only when strict", () => {
+    expect(needsFrom(rules({ duprMax: 400 }))).toMatchObject({ dupr: true, duprRequired: false });
+    expect(needsFrom(rules({ duprMax: 400, duprStrict: true }))).toMatchObject({ dupr: true, duprRequired: true });
   });
 
   it("asks for exactly what each rule needs", () => {
@@ -377,8 +394,11 @@ describe("saying the rules back in plain words", () => {
     expect(rulesSentence(rules({ gender: "M", ageMin: 35, ageOn: "2026-10-12" })))
       .toBe("Men only. Age 35 or older on 12 Oct 2026.");
     expect(rulesSentence(rules({ ratingMax: 1049, duprMax: 400 })))
-      .toBe("Rating 1049 or lower (up to Intermediate+). DUPR 4.00 or lower. A phone number is needed so we can find each player's rating.");
+      .toBe("Rating 1049 or lower (up to Intermediate+). DUPR 4.00 or lower. No DUPR? You can still enter. A phone number is needed so we can find each player's rating.");
     expect(ruleChips(rules({ ratingMax: 1049, duprMax: 400 }))).toEqual(["Up to Intermediate+", "DUPR up to 4.00"]);
+    /* Strict says so, in both places an entrant looks. */
+    expect(rulesSentence(rules({ duprMax: 400, duprStrict: true }))).toBe("DUPR 4.00 or lower. A DUPR is required.");
+    expect(ruleChips(rules({ duprMax: 400, duprStrict: true }))).toEqual(["DUPR up to 4.00", "DUPR required"]);
     expect(ruleChips(rules({ gender: "F" }))).toEqual(["Women only"]);
     expect(ruleChips(rules({ gender: "M", ageMin: 35, ageOn: "2026-10-12" }))).toEqual(["Men only", "35+"]);
   });
@@ -443,5 +463,20 @@ describe("reading the organiser's form", () => {
 
   it("drops a counting day that no age rule uses", () => {
     expect(parseRules({ ageOn: "2026-10-12" }, ctx)).toEqual({ ok: true, rules: NO_RULES });
+  });
+
+  it("reads the strict switch, and drops it when there is no DUPR limit to be strict about", () => {
+    const strict = parseRules({ duprMax: "3.5", duprStrict: "on" }, ctx);
+    expect(strict.ok && strict.rules.duprStrict).toBe(true);
+    const lenient = parseRules({ duprMax: "3.5" }, ctx);
+    expect(lenient.ok && lenient.rules.duprStrict).toBe(false);
+    expect(parseRules({ duprStrict: "on" }, ctx)).toEqual({ ok: true, rules: NO_RULES });
+  });
+
+  it("reads a category row the same way, and a switch on its own is no rule", () => {
+    const row = { genderRule: null, ageMin: null, ageMax: null, ageOn: null, ratingMin: null, ratingMax: null };
+    expect(rulesOfDivision({ ...row, duprMin: null, duprMax: 350, duprStrict: true }).duprStrict).toBe(true);
+    expect(rulesOfDivision({ ...row, duprMin: null, duprMax: null, duprStrict: true })).toEqual(NO_RULES);
+    expect(hasRules(rulesOfDivision({ ...row, duprMin: null, duprMax: null, duprStrict: true }))).toBe(false);
   });
 });

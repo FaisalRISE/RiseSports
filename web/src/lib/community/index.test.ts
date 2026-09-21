@@ -1,16 +1,26 @@
 import { describe, it, expect } from "vitest";
 import {
   localISO, fromISO, sessionDates, prettyDate, prettyDays,
-  capacityOf, ageOn, eligibilityFailures, restrictionChips, isUnrestricted,
+  capacityOf, ageOn, communityVerdict, eligibilityFailures, restrictionChips, isUnrestricted,
   priceLabel, slugifyGame,
 } from "./index";
 import { NO_RESTRICTIONS, type Restrictions } from "@/lib/db/schema";
 
 const restrict = (over: Partial<Restrictions>): Restrictions => ({ ...NO_RESTRICTIONS, ...over });
 
-const player = (over: Partial<Parameters<typeof eligibilityFailures>[0]> = {}) => ({
-  gender: "M" as const, dob: null, riseBest: 800, dupr: null, ...over,
-});
+type Entrant = Parameters<typeof eligibilityFailures>[0];
+/* `rating` is a PLAYED pickleball doubles rating — the evidence `sportRating`
+   counts. Anything subtler (another sport, a default seed nobody has played
+   on) is written out in the test that is about it. */
+const player = (over: Partial<Entrant> & { rating?: number | null } = {}): Entrant => {
+  const { rating = 800, ...rest } = over;
+  return {
+    gender: "M", dob: null, dupr: null, seedSource: "default",
+    riseRatings: rating == null ? {} : { "pb:md": rating },
+    matchCount: rating == null ? {} : { "pb:md": 5 },
+    ...rest,
+  };
+};
 
 /* ── The bug that is deliberately not ported ──────────────────────────────
  *
@@ -127,18 +137,18 @@ describe("ageOn", () => {
 });
 
 describe("eligibilityFailures", () => {
-  const on = new Date(2026, 8, 14);
+  const pb = { sport: "pb" as const, on: new Date(2026, 8, 14) };
 
   it("lets anyone into a game with no restrictions", () => {
-    expect(eligibilityFailures(player(), NO_RESTRICTIONS, on)).toEqual([]);
-    expect(eligibilityFailures(player(), null, on)).toEqual([]);
+    expect(eligibilityFailures(player(), NO_RESTRICTIONS, pb)).toEqual([]);
+    expect(eligibilityFailures(player(), null, pb)).toEqual([]);
   });
 
   it("reports every failure at once, not just the first", () => {
     const fails = eligibilityFailures(
-      player({ gender: "F", riseBest: 400 }),
+      player({ gender: "F", rating: 400 }),
       restrict({ gender: "M", gsrMin: 600, ageMin: 18 }),
-      on,
+      pb,
     );
     expect(fails).toHaveLength(3);
     expect(fails.join(" | ")).toContain("Men only");
@@ -149,28 +159,74 @@ describe("eligibilityFailures", () => {
   it("fails an age rule when the date of birth is unknown", () => {
     /* Deliberate: an organiser who set an age limit has not had it verified,
        and failing open admits exactly the people the rule excludes. */
-    expect(eligibilityFailures(player({ dob: null }), restrict({ ageMin: 18 }), on))
+    expect(eligibilityFailures(player({ dob: null }), restrict({ ageMin: 18 }), pb))
       .toEqual(["Age 18+ only"]);
   });
 
   it("passes an age rule once the date of birth satisfies it", () => {
-    expect(eligibilityFailures(player({ dob: "1994-03-21" }), restrict({ ageMin: 18, ageMax: 45 }), on))
+    expect(eligibilityFailures(player({ dob: "1994-03-21" }), restrict({ ageMin: 18, ageMax: 45 }), pb))
       .toEqual([]);
   });
 
-  it("treats an unrated player as 0, so a minimum excludes them", () => {
-    expect(eligibilityFailures(player({ riseBest: null }), restrict({ gsrMin: 600 }), on))
-      .toEqual(["Rating 600+ only"]);
+  it("keeps an unrated player out of a minimum, and lets them under a maximum", () => {
+    /* It used to read an unrated player as 0: the same outcomes, but "0" was a
+       number nobody had. The note under a maximum goes to the host. */
+    expect(eligibilityFailures(player({ rating: null }), restrict({ gsrMin: 600 }), pb))
+      .toEqual(["Rating 600+ only (unrated)"]);
+    expect(eligibilityFailures(player({ rating: null }), restrict({ gsrMax: 700 }), pb)).toEqual([]);
+    expect(communityVerdict(player({ rating: null }), restrict({ gsrMax: 700 }), pb).notes)
+      .toEqual(["Unrated: check this player's level"]);
+  });
+
+  it("judges the rating in THIS game's sport, not the best in any sport", () => {
+    /* Faisal, 2026-09-21: "RiseR rating is specific to each sport." A strong
+       badminton player who has never played pickleball is unrated at it. By
+       `riseBest` they were kept out of a beginners' pickleball game and let
+       into an advanced one. */
+    const shuttler = player({ rating: null, riseRatings: { "bd:md": 1500 }, matchCount: { "bd:md": 20 } });
+    expect(eligibilityFailures(shuttler, restrict({ gsrMin: 1200 }), pb)).toEqual(["Rating 1200+ only (unrated)"]);
+    expect(eligibilityFailures(shuttler, restrict({ gsrMax: 1049 }), pb)).toEqual([]);
+    /* And in a badminton game, their badminton rating is what counts. */
+    expect(eligibilityFailures(shuttler, restrict({ gsrMax: 1049 }), { ...pb, sport: "bd" }))
+      .toEqual(["Rating 1049 and under only"]);
+  });
+
+  it("treats a newcomer on the default starting rating as unrated", () => {
+    /* Every entrant approval creates starts at 750 with no matches. That is a
+       number the app wrote, not a level anybody showed — Faisal, 2026-09-21. It
+       used to pass "600+" and fail "up to 700"; now it is the other way round,
+       which is how tournaments have always treated them. */
+    const newcomer = player({ rating: null, riseRatings: { "pb:md": 750 }, matchCount: {}, seedSource: "default" });
+    expect(eligibilityFailures(newcomer, restrict({ gsrMin: 600 }), pb)).toEqual(["Rating 600+ only (unrated)"]);
+    expect(eligibilityFailures(newcomer, restrict({ gsrMax: 700 }), pb)).toEqual([]);
+    /* An organiser's deliberate placement IS a level, played or not. */
+    const placed = { ...newcomer, seedSource: "organiser" as const };
+    expect(eligibilityFailures(placed, restrict({ gsrMin: 600 }), pb)).toEqual([]);
   });
 
   it("reads DUPR in hundredths", () => {
-    expect(eligibilityFailures(player({ dupr: 350 }), restrict({ duprMin: 400 }), on))
+    expect(eligibilityFailures(player({ dupr: 350 }), restrict({ duprMin: 400 }), pb))
       .toEqual(["DUPR 4.00+ only"]);
-    expect(eligibilityFailures(player({ dupr: 450 }), restrict({ duprMin: 400 }), on)).toEqual([]);
+    expect(eligibilityFailures(player({ dupr: 450 }), restrict({ duprMin: 400 }), pb)).toEqual([]);
+  });
+
+  it("lets a player with no DUPR in, flagged for the host — unless the game is strict", () => {
+    /* Faisal, 2026-09-21: "A player can join without DUPR based on organiser's
+       discretion. we can highlight the same." A missing DUPR used to read as 0,
+       which slipped under every "up to" limit without a word to anybody. */
+    const lenient = restrict({ duprMax: 350 });
+    expect(eligibilityFailures(player({ dupr: null }), lenient, pb)).toEqual([]);
+    expect(communityVerdict(player({ dupr: null }), lenient, pb).notes).toEqual(["No DUPR"]);
+    expect(eligibilityFailures(player({ dupr: null }), restrict({ duprMin: 350 }), pb)).toEqual([]);
+
+    const strict = restrict({ duprMax: 350, duprStrict: true });
+    expect(eligibilityFailures(player({ dupr: null }), strict, pb)).toEqual(["DUPR 3.50 and under only"]);
+    /* A DUPR that is there is judged either way. */
+    expect(eligibilityFailures(player({ dupr: 400 }), lenient, pb)).toEqual(["DUPR 3.50 and under only"]);
   });
 
   it("accepts someone exactly on both bounds", () => {
-    expect(eligibilityFailures(player({ riseBest: 600 }), restrict({ gsrMin: 600, gsrMax: 600 }), on))
+    expect(eligibilityFailures(player({ rating: 600 }), restrict({ gsrMin: 600, gsrMax: 600 }), pb))
       .toEqual([]);
   });
 
@@ -179,13 +235,13 @@ describe("eligibilityFailures", () => {
      in; both are pinned so neither comes back. */
   it("fails an age rule for a date of birth that is not a real date", () => {
     /* `fromISO` used to roll 1994-13-45 over into a real date in 1995. */
-    expect(eligibilityFailures(player({ dob: "1994-13-45" }), restrict({ ageMin: 18 }), on))
+    expect(eligibilityFailures(player({ dob: "1994-13-45" }), restrict({ ageMin: 18 }), pb))
       .toEqual(["Age 18+ only"]);
   });
 
   it("fails an 'and under' rule for a date of birth after the day of play", () => {
     /* That used to give a negative age, and -1 is "16 and under". */
-    expect(eligibilityFailures(player({ dob: "2027-01-01" }), restrict({ ageMax: 16 }), on))
+    expect(eligibilityFailures(player({ dob: "2027-01-01" }), restrict({ ageMax: 16 }), pb))
       .toEqual(["Age 16 and under only"]);
   });
 });
@@ -208,6 +264,14 @@ describe("restrictionChips", () => {
   it("lists gender first, then rating, DUPR and age", () => {
     expect(restrictionChips(restrict({ gender: "F", gsrMin: 600, duprMax: 400, ageMin: 18 })))
       .toEqual(["Women only", "Rating 600+", "DUPR up to 4.00", "Age 18+"]);
+  });
+
+  it("says DUPR is required only where the game is strict AND has a DUPR limit", () => {
+    expect(restrictionChips(restrict({ duprMax: 400, duprStrict: true }))).toEqual(["DUPR up to 4.00", "DUPR required"]);
+    expect(restrictionChips(restrict({ duprMax: 400 }))).toEqual(["DUPR up to 4.00"]);
+    /* Strict with nothing to be strict about is no limit at all. */
+    expect(restrictionChips(restrict({ duprStrict: true }))).toEqual([]);
+    expect(isUnrestricted(restrict({ duprStrict: true }))).toBe(true);
   });
 });
 

@@ -37,7 +37,7 @@ export function AddPlayerForm({
   add: (formData: FormData) => Promise<AddPlayerResult>;
   search: (q: string) => Promise<PickerResult[]>;
   /** What this team's category needs to judge a player. */
-  needs: { dob: boolean; dupr: boolean };
+  needs: { dob: boolean; dupr: boolean; duprRequired: boolean };
   hasGenderRule: boolean;
   seedBands: readonly { label: string; seed: number }[];
 }) {
@@ -96,7 +96,7 @@ export function AddPlayerForm({
             browser would refuse to submit at all, so the organiser would never
             see the reason and never see the "add anyway" tick — the one path
             Faisal asked for. The server refuses it instead, with both. */}
-        <input name="dupr" inputMode="decimal" placeholder={needs.dupr ? "DUPR (needed)" : "DUPR"}
+        <input name="dupr" inputMode="decimal" placeholder={needs.duprRequired ? "DUPR (needed)" : "DUPR"}
           className="w-24 rounded-lg border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-xs" />
         <select name="band" defaultValue=""
           className="min-w-0 flex-1 rounded-lg border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-xs">

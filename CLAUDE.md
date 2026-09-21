@@ -1234,6 +1234,44 @@ proves it — three fail under `TZ=UTC`, and the time tests pass under `TZ=Asia/
   date (`lib/community/localISO`), so between 00:00 and 05:30 in India the live site thinks it
   is yesterday.
 
+**No DUPR: the organiser decides.** Faisal: *"A player can join without DUPR based on
+organiser's discretion. we can highlight the same."* A player with no DUPR, against any DUPR
+limit, is LET IN with a `dupr:none` note ("No DUPR") by default; the organiser can make the
+category or game **Strict**, which refuses them exactly as before. Tournaments and community
+games both (`divisions.dupr_strict`; community `Restrictions.duprStrict`).
+
+- **The default covers "at least" limits too** — deliberately different from an unrated
+  RATING, which "at least" refuses. Two answers to two questions; say so when it comes up.
+- ONE note per player, not one per bound. A DUPR that IS there is judged either way.
+- `needsFrom` says `dupr` (show the box) and `duprRequired` (strict). The public box is
+  `required` only when strict; the organiser's box never is (the waiver rule above).
+- **A blank box is not a way round a DUPR the app KNOWS.** Approval reads the stored record
+  (`useStored: true`), so an entrant whose DUPR on file is below the floor is refused at
+  approval and shown red on the list beforehand. A blank from someone the app has never seen a
+  DUPR for is exactly Faisal's discretion case: in, flagged, and Strict closes it.
+- A malformed DUPR ("35") is refused on the organiser's add rather than quietly becoming "No
+  DUPR" — dropped, the flag would misstate what was typed.
+- `Restrictions.duprStrict` is OPTIONAL and `NO_RESTRICTIONS` did not change. Changing the
+  constant would have changed the jsonb column's stored default, and drizzle-kit would have
+  generated a second migration for nothing. A game saved before the switch existed reads as
+  the default.
+- An old waiver line `dupr:min:350\t<id>` now matches nothing — the player has a note, not a
+  block — which is harmless: there were none in production.
+
+**Community games judge a player in THAT GAME'S SPORT.** `communityVerdict(person, r,
+{ sport, on })` returns `blocks` and `notes` from one call, so the host's "No DUPR" flag and
+the join check cannot read the same person two ways (`eligibilityFailures` is its blocks). The
+rating is `sportRating(person, game.sport)`, no longer `riseBest ?? 0`:
+
+- another sport's rating no longer counts — a strong badminton player was kept out of a
+  beginners' pickleball game, and let into an advanced one;
+- **a newcomer on the default 750 is UNRATED** (Faisal: a starting number is not a level). They
+  used to pass "Rating 600+" and fail "up to 700"; now it is the other way round, which is how
+  tournaments always treated them. Every entrant approval creates starts this way, so this is
+  most newcomers.
+- The host roster shows the notes (`[data-host-note]`). It is the first host-facing note on
+  community: the player sees nothing extra, and joining still blocks on blocks only.
+
 ## Access: the site is deliberately open, and the switch is a trap
 
 `rise-sports.vercel.app` lets any visitor create events, manage them and enter scores that move

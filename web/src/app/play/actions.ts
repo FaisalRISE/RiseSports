@@ -88,6 +88,7 @@ const createSchema = z.object({
   duprMin: optionalDupr, duprMax: optionalDupr,
   ageMin: optionalNumber, ageMax: optionalNumber,
   gender: z.enum(["any", "M", "F"]),
+  duprStrict: z.boolean(),
 });
 
 export async function createCommunityGame(formData: FormData): Promise<never> {
@@ -110,6 +111,7 @@ export async function createCommunityGame(formData: FormData): Promise<never> {
     duprMin: formData.get("duprMin"), duprMax: formData.get("duprMax"),
     ageMin: formData.get("ageMin"), ageMax: formData.get("ageMax"),
     gender: formData.get("gender") ?? "any",
+    duprStrict: formData.get("duprStrict") === "on",
   });
 
   if (!parsed.success) {
@@ -149,6 +151,10 @@ export async function createCommunityGame(formData: FormData): Promise<never> {
       ...NO_RESTRICTIONS,
       gsrMin, gsrMax, duprMin, duprMax, ageMin, ageMax,
       gender: v.gender === "any" ? null : v.gender,
+      /* Only beside a DUPR limit — otherwise there is nothing to be strict
+         about. Left OFF the stored row when false, so a game reads the same
+         whether it was made before this switch existed or after. */
+      ...(v.duprStrict && (duprMin != null || duprMax != null) ? { duprStrict: true } : {}),
     },
     /* Whoever is holding the phone becomes the host. With no identity chosen
        the game is hostless, and open access lets anyone run it — the same

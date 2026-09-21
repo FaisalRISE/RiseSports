@@ -11,7 +11,8 @@ import "server-only";
  */
 
 import type { CommunityGame, Person, Restrictions } from "@/lib/db/schema";
-import { ageOnISO, personFailures, rulesOfRestrictions } from "@/lib/eligibility";
+import { ageOnISO, personFailures, rulesOfRestrictions, sportRating } from "@/lib/eligibility";
+import type { SportId } from "@/lib/sports/registry";
 
 /* ── Dates ────────────────────────────────────────────────────────────────
  *
@@ -98,10 +99,21 @@ export function ageOn(dob: string | null, on: Date): number | null {
   return ageOnISO(dob, localISO(on));
 }
 
-type Entrant = Pick<Person, "gender" | "dob" | "riseBest" | "dupr">;
+type Entrant = Pick<Person, "gender" | "dob" | "dupr" | "riseRatings" | "matchCount" | "seedSource">;
+
+export type CommunityVerdict = {
+  /** Reasons this person may not join, in plain words. Empty means eligible. */
+  blocks: string[];
+  /** Things the HOST should see and the player need not: "No DUPR", "Unrated". */
+  notes: string[];
+};
 
 /**
- * Every reason this person may not join, in plain words. Empty means eligible.
+ * Whether this person may join a game with these limits — and, separately,
+ * anything the host should know about them.
+ *
+ * ONE call for both, so the host's "No DUPR" flag and the join check cannot
+ * come from two different readings of the same person.
  *
  * Returns ALL failures rather than the first, because the player's card lists
  * them — being told "Men only" and then, after asking, "also 18+" is worse than
@@ -114,40 +126,56 @@ type Entrant = Pick<Person, "gender" | "dob" | "riseBest" | "dupr">;
  *
  * ── One checker, not two ─────────────────────────────────────────────────
  * The rules live in lib/eligibility, which tournament categories use as well,
- * so "who may play" cannot be written twice and drift. Community keeps its own
- * EVIDENCE, and deliberately:
- *   - the rating is `riseBest`, the max across formats — the number a game's
- *     "Rating 600+" is written in terms of — and a player with none reads as 0,
- *     so a minimum excludes them and a maximum does not (the legacy behaviour);
- *   - a missing DUPR reads as 0 in the same way;
+ * so "who may play" cannot be written twice and drift. The evidence is the
+ * tournaments' evidence too, since 2026-09-21 (Faisal: "RiseR rating is
+ * specific to each sport"):
+ *   - the rating is `sportRating` — the rating in THIS GAME'S SPORT, counting
+ *     only keys with matches behind them or a deliberate seed. It used to be
+ *     `riseBest`, the best across every sport, so a strong badminton player
+ *     was kept out of a beginners' pickleball game. A newcomer still on the
+ *     default 750 is UNRATED now, not 750: refused by "Rating 600+" (which used
+ *     to let them in) and let in, with a note, under "up to 700" (which used to
+ *     keep them out). Tournaments have always treated them that way.
+ *   - a missing DUPR is MISSING, not 0. It is let in and flagged unless the
+ *     host made the game strict — the organiser's discretion, like
+ *     tournaments. As 0 it slipped under every "DUPR up to" limit silently.
  *   - ages are counted on the day of play.
  *
- * Two behaviours changed with the move, both deliberately, both tested:
+ * Two behaviours changed when the rules moved to lib/eligibility, both tested:
  *   - an invalid date of birth ("1994-13-45") used to roll over into a real
  *     date via `fromISO`; it now counts as unknown and fails an age rule;
  *   - a date of birth AFTER the day of play used to give a negative age, which
  *     passed any "N and under" limit; it now fails both bounds.
  */
-export function eligibilityFailures(
+export function communityVerdict(
   person: Entrant,
   r: Restrictions | null | undefined,
-  on = new Date(),
-): string[] {
-  if (!r) return [];
-  return personFailures(
+  opts: { sport: SportId; on?: Date },
+): CommunityVerdict {
+  if (!r) return { blocks: [], notes: [] };
+  const fs = personFailures(
     {
       name: "",
       gender: person.gender,
       dob: person.dob,
-      rating: person.riseBest ?? 0,
-      dupr: person.dupr ?? 0,
+      rating: sportRating(person, opts.sport),
+      dupr: person.dupr ?? null,
     },
     rulesOfRestrictions(r),
-    { fallbackOn: localISO(on) },
-  )
-    .filter((f) => f.severity === "block")
-    .map((f) => f.text);
+    { fallbackOn: localISO(opts.on ?? new Date()) },
+  );
+  return {
+    blocks: fs.filter((f) => f.severity === "block").map((f) => f.text),
+    notes: fs.filter((f) => f.severity === "note").map((f) => f.text),
+  };
 }
+
+/** Just the reasons a person may not join. See `communityVerdict`. */
+export const eligibilityFailures = (
+  person: Entrant,
+  r: Restrictions | null | undefined,
+  opts: { sport: SportId; on?: Date },
+): string[] => communityVerdict(person, r, opts).blocks;
 
 /** The short red chips on a game's header. Same rules, stated as limits. */
 export function restrictionChips(r: Restrictions | null | undefined): string[] {
@@ -164,6 +192,7 @@ export function restrictionChips(r: Restrictions | null | undefined): string[] {
   if (r.duprMin != null && r.duprMax != null) out.push(`DUPR ${d(r.duprMin)}–${d(r.duprMax)}`);
   else if (r.duprMin != null) out.push(`DUPR ${d(r.duprMin)}+`);
   else if (r.duprMax != null) out.push(`DUPR up to ${d(r.duprMax)}`);
+  if (r.duprStrict && (r.duprMin != null || r.duprMax != null)) out.push("DUPR required");
 
   if (r.ageMin != null && r.ageMax != null) out.push(`Age ${r.ageMin}–${r.ageMax}`);
   else if (r.ageMin != null) out.push(`Age ${r.ageMin}+`);

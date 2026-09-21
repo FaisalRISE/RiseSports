@@ -22,6 +22,8 @@ import type { RulesSaveResult } from "./actions";
 export type RulesFormState = {
   gender: string; ageMin: string; ageMax: string; ageOn: string;
   ratingMin: string; ratingMax: string; duprMin: string; duprMax: string;
+  /** "on" for strict, "" to let players with no DUPR in, flagged. */
+  duprStrict: string;
 };
 
 type Problem = { field: string; message: string };
@@ -218,6 +220,18 @@ export function DivisionRulesForm({
       </div>
       {(problemFor("duprMin") || problemFor("duprMax")) && (
         <p className="text-[11px] font-semibold text-rose-400">{problemFor("duprMin") ?? problemFor("duprMax")}</p>
+      )}
+      {/* Faisal, 2026-09-21: a player without a DUPR is in at the organiser's
+          discretion. Only offered once there is a DUPR limit to apply it to —
+          the server saves it off otherwise. */}
+      {(s.duprMin.trim() !== "" || s.duprMax.trim() !== "") && (
+        <label className="block space-y-1">
+          <span className={label}>Players without a DUPR</span>
+          <select name="duprStrict" value={s.duprStrict} onChange={(e) => set("duprStrict")(e.target.value)} className={field}>
+            <option value="">Let them in, flagged for you</option>
+            <option value="on">Keep them out (strict)</option>
+          </select>
+        </label>
       )}
 
       {sentence && problems.length === 0 && (

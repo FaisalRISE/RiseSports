@@ -75,7 +75,7 @@ export async function actOnMyPlace(
   const [person] = await db.select().from(people).where(eq(people.id, personId)).limit(1);
   if (!person) return fail("Say who you are first.");
 
-  const blockers = eligibilityFailures(person, game.restrictions);
+  const blockers = eligibilityFailures(person, game.restrictions, { sport: game.sport });
   /* Withdrawing is always allowed. Someone whose rating moved out of range
      after they were confirmed must still be able to drop out. */
   if (blockers.length > 0 && action !== "withdraw") return fail(blockers.join(" · "));

@@ -19,6 +19,8 @@ export type RosterRow = {
   state: "confirmed" | "waitlist" | "requested" | "interested" | "withdrawn";
   paid: boolean;
   linkSent: boolean;
+  /** For the host only: "No DUPR", "Unrated: check this player's level". */
+  notes: string[];
 };
 
 type Tab = "requested" | "confirmed" | "waitlist" | "interested" | "withdrawn";
@@ -102,6 +104,11 @@ export function HostRoster({
                   Rating {r.rating ?? "—"}
                   {r.state === "confirmed" && pricePaise > 0 && (r.paid ? " · paid" : r.linkSent ? " · link sent" : " · unpaid")}
                 </p>
+                {r.notes.length > 0 && (
+                  <p className="text-[11px] font-semibold text-amber-400/80" data-host-note>
+                    {r.notes.join(" · ")}
+                  </p>
+                )}
               </div>
 
               <div className="flex flex-wrap gap-1.5">
