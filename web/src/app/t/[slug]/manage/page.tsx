@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { matches, players, teams, tournaments } from "@/lib/db/schema";
 import { viewMatch } from "@/lib/matchState";
+import { matchLine } from "@/lib/results";
 import { sportOf, usesDupr } from "@/lib/sports/registry";
 import { oslLineupIssues } from "@/lib/formats/osl";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
@@ -641,6 +642,9 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
           <ul className="space-y-2">
             {matchRows.map((m) => {
               const v = viewMatch(t, m);
+              /* The shared rule, so a TYPED result reads as one here too — this list
+                 used to print the rally log only, and showed a typed 11–7 as 0–0. */
+              const line = matchLine(t, m, v);
               const a = m.teamAId ? byTeam.get(m.teamAId) : null;
               const b = m.teamBId ? byTeam.get(m.teamBId) : null;
               return (
@@ -649,11 +653,11 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                     <p className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
                       {m.scheduledAt ? `${floatingTime(m.scheduledAt)}${m.court ? ` · court ${m.court}` : ""} · ` : ""}
                       {m.round}
-                      {v.osl && !v.over ? ` · ${v.osl.pairLabel}` : ""}
-                      {v.over ? " · final" : v.rallies > 0 ? " · live" : ""}
+                      {v.osl && !line.finished ? ` · ${v.osl.pairLabel}` : ""}
+                      {line.tag}
                     </p>
                     <p className="truncate text-sm">
-                      {slotLabel(m, "a", a?.name)} <span className="font-mono font-bold">{v.a}–{v.b}</span> {slotLabel(m, "b", b?.name)}
+                      {slotLabel(m, "a", a?.name)} <span className="font-mono font-bold">{line.score}</span> {slotLabel(m, "b", b?.name)}
                     </p>
                     {m.lineupA.length > 0 && (
                       <p className="truncate text-[11px] text-neutral-500">

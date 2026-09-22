@@ -25,7 +25,8 @@ import "server-only";
  * browser, so the bundle-leak guard stays honest. */
 
 import type { Group, Match, Team, Tournament } from "@/lib/db/schema";
-import { viewMatch, rulesFor } from "@/lib/matchState";
+import { rulesFor } from "@/lib/matchState";
+import { matchResult } from "@/lib/results";
 import { sportOf } from "@/lib/sports/registry";
 import { floatingTime } from "@/lib/schedule";
 
@@ -51,9 +52,8 @@ export function toPrintMatch(
   labels: [string, string],
   withData: boolean,
 ): PrintMatch {
-  const v = viewMatch(t, m);
-  const [a, b] = v.typed ? [m.typedScoreA ?? 0, m.typedScoreB ?? 0] : [v.a, v.b];
-  const played = withData && (v.typed || v.over);
+  const r = withData ? matchResult(t, m) : null;
+  const played = r !== null;
   return {
     court: m.court,
     time: m.scheduledAt ? floatingTime(m.scheduledAt) : null,
@@ -61,8 +61,8 @@ export function toPrintMatch(
     bLabel: labels[1],
     aId: m.teamAId,
     bId: m.teamBId,
-    scoreA: played ? a : null,
-    scoreB: played ? b : null,
+    scoreA: r ? r.a : null,
+    scoreB: r ? r.b : null,
     played,
   };
 }

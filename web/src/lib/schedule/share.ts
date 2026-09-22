@@ -19,6 +19,7 @@ import "server-only";
  */
 
 import { viewMatch } from "@/lib/matchState";
+import { matchResult } from "@/lib/results";
 import { resolveSlots, type GroupTable, type LoadedTournament } from "@/lib/tournamentState";
 import type { RefResolver } from "@/lib/brackets";
 import { floatingTime, floatingDay } from "./index";
@@ -57,8 +58,8 @@ export function scheduleRows(loaded: LoadedTournament, opts: RowOptions): Schedu
   const rows = loaded.matches.map((m) => {
     const v = viewMatch(t, m);
     const [a, b] = resolveSlots(m, opts.resolverFor(m.divisionId), nameOf);
-    const played = v.typed || v.over;
-    const [sa, sb] = v.typed ? [m.typedScoreA ?? 0, m.typedScoreB ?? 0] : [v.a, v.b];
+    const r = matchResult(t, m, v);
+    const played = r !== null;
     return {
       row: {
         time: m.scheduledAt ? floatingTime(m.scheduledAt) : "",
@@ -67,7 +68,7 @@ export function scheduleRows(loaded: LoadedTournament, opts: RowOptions): Schedu
         round: m.round,
         aLabel: a.label,
         bLabel: b.label,
-        score: played ? `${sa}–${sb}` : "",
+        score: r ? r.display : "",
         played,
       } satisfies ScheduleRow,
       at: m.scheduledAt ? m.scheduledAt.getTime() : null,

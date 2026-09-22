@@ -12,6 +12,7 @@ import { groups, matches, teams, tournaments, type Group, type Match, type Team,
 import { viewMatch, tieBreakFor, allowsDraws } from "@/lib/matchState";
 import { standings, type Row, type StandingsMatch } from "@/lib/standings";
 import { resolveRef, refLabel, type RefResolver } from "@/lib/brackets";
+import { matchResult } from "@/lib/results";
 
 export type LoadedTournament = {
   tournament: Tournament;
@@ -39,11 +40,10 @@ export async function loadTournament(slug: string): Promise<LoadedTournament | n
 /** A match reduced to what the standings engine needs: a settled score or nothing. */
 function toStandingsMatch(t: Tournament, m: Match): StandingsMatch {
   const v = viewMatch(t, m);
-  const [a, b] = v.typed ? [m.typedScoreA ?? 0, m.typedScoreB ?? 0] : [v.a, v.b];
   /* Only a FINISHED match counts. A match in progress must not move the table,
      or the standings would swing on every rally. */
-  const played = v.typed || v.over;
-  return { teamAId: m.teamAId, teamBId: m.teamBId, scoreA: a, scoreB: b, played };
+  const r = matchResult(t, m, v);
+  return { teamAId: m.teamAId, teamBId: m.teamBId, scoreA: r ? r.a : v.a, scoreB: r ? r.b : v.b, played: r !== null };
 }
 
 export type GroupTable = { group: Group; rows: Row[]; complete: boolean };
@@ -102,11 +102,10 @@ export function refResolver(
   const outcome = (code: string, want: "w" | "l"): string | null => {
     const m = byRound.get(code);
     if (!m) return null;
-    const v = viewMatch(loaded.tournament, m);
-    const [a, b] = v.typed ? [m.typedScoreA ?? 0, m.typedScoreB ?? 0] : [v.a, v.b];
-    if (!(v.typed || v.over) || a === b) return null;
-    const winner = a > b ? m.teamAId : m.teamBId;
-    const loser = a > b ? m.teamBId : m.teamAId;
+    const r = matchResult(loaded.tournament, m);
+    if (!r?.winner) return null;
+    const winner = r.winner === "a" ? m.teamAId : m.teamBId;
+    const loser = r.winner === "a" ? m.teamBId : m.teamAId;
     return want === "w" ? winner : loser;
   };
 

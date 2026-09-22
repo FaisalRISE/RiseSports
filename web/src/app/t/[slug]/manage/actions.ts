@@ -24,6 +24,7 @@ import { reliabilityForPerson } from "@/lib/rating/reliability";
 import type { PickerResult } from "@/components/PersonPicker";
 import { ratingFormatFor, refileSeeds } from "@/lib/rating/tournament";
 import { seedFromDupr } from "@/lib/rating";
+import { hasPlay } from "@/lib/results";
 import { DEFAULT_SPORT, SPORTS, ratingKey, usesDupr } from "@/lib/sports/registry";
 
 /* Same discipline as the scoring actions: load, authorize server-side, write.
@@ -708,7 +709,7 @@ export async function generateSingleElim(tournamentId: string, formData: FormDat
     .from(matches)
     .where(and(eq(matches.tournamentId, t.id), eq(matches.divisionId, divisionId)));
   for (const m of existing) {
-    if ((m.log as unknown[]).length === 0 && m.typedScoreA === null) {
+    if (!hasPlay(m)) {
       await db.delete(matches).where(eq(matches.id, m.id));
     }
   }
@@ -769,7 +770,7 @@ export async function generateKnockout(tournamentId: string, formData: FormData)
     .from(matches)
     .where(and(eq(matches.tournamentId, t.id), eq(matches.divisionId, divisionId)));
   for (const m of existing) {
-    if (m.groupId === null && (m.log as unknown[]).length === 0 && m.typedScoreA === null) {
+    if (m.groupId === null && !hasPlay(m)) {
       await db.delete(matches).where(eq(matches.id, m.id));
     }
   }

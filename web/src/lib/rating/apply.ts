@@ -34,7 +34,8 @@ import {
 } from "@/lib/rating";
 import { phaseOf, ratingFormatFor, refileSeeds } from "@/lib/rating/tournament";
 import { ratingKey } from "@/lib/sports/registry";
-import { viewMatch, rulesFor } from "@/lib/matchState";
+import { rulesFor } from "@/lib/matchState";
+import { matchResult } from "@/lib/results";
 import type { Rules } from "@/lib/scoring/rules";
 import { playedFromHistory, reliabilityForPerson } from "@/lib/rating/reliability";
 import { detectSandbagging, type RatedMatch } from "@/lib/rating/sandbagging";
@@ -446,11 +447,10 @@ type Settled = { winnerTeamId: string; loserTeamId: string; scoreW: number; scor
 
 function settleMatch(t: Tournament, m: Match): Settled | null {
   if (!m.teamAId || !m.teamBId) return null;
-  const v = viewMatch(t, m);
-  const [a, b] = v.typed ? [m.typedScoreA ?? 0, m.typedScoreB ?? 0] : [v.a, v.b];
-  if (!(v.typed || v.over)) return null;
-  if (a === b) return null;
-  const aWon = a > b;
+  const r = matchResult(t, m);
+  if (!r?.winner) return null;
+  const { a, b } = r;
+  const aWon = r.winner === "a";
   return {
     winnerTeamId: aWon ? m.teamAId : m.teamBId,
     loserTeamId: aWon ? m.teamBId : m.teamAId,

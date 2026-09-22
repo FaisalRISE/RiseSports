@@ -6,6 +6,7 @@ import { canView } from "@/lib/auth/policy";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { StandingsTable } from "@/components/StandingsTable";
 import { viewMatch, allowsDraws } from "@/lib/matchState";
+import { matchResult } from "@/lib/results";
 import { floatingTime } from "@/lib/schedule";
 import { loadTournament, groupTables, resolverFactory, resolveSlots } from "@/lib/tournamentState";
 import { podiums, PLACING_MEDAL } from "@/lib/placings";
@@ -44,9 +45,9 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
   const matchRow = (m: (typeof loaded.matches)[number]) => {
     const view = viewMatch(t, m);
     const [a, b] = resolveSlots(m, resolverFor(m.divisionId), nameOf);
-    const [sa, sb] = view.typed ? [m.typedScoreA, m.typedScoreB] : [view.a, view.b];
+    const result = matchResult(t, m, view);
     const live = view.rallies > 0 && !view.over;
-    const decided = view.over || view.typed;
+    const decided = result !== null;
     return (
       <li key={m.id} className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-3">
         <div className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest">
@@ -61,13 +62,13 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
           {view.osl && !view.over && <span className="ml-auto text-amber-400">{view.osl.pairLabel}</span>}
         </div>
         <div className="flex items-center gap-3">
-          <span className={`flex-1 truncate text-sm ${view.winner === "a" ? "font-bold" : a.teamId ? "" : "text-neutral-500"}`}>
+          <span className={`flex-1 truncate text-sm ${result?.winner === "a" ? "font-bold" : a.teamId ? "" : "text-neutral-500"}`}>
             {a.label}
           </span>
           <span className="font-mono text-xl font-black tabular-nums">
-            {decided || live ? `${sa ?? 0}–${sb ?? 0}` : "–"}
+            {result ? result.display : live ? `${view.a}–${view.b}` : "–"}
           </span>
-          <span className={`flex-1 truncate text-right text-sm ${view.winner === "b" ? "font-bold" : b.teamId ? "" : "text-neutral-500"}`}>
+          <span className={`flex-1 truncate text-right text-sm ${result?.winner === "b" ? "font-bold" : b.teamId ? "" : "text-neutral-500"}`}>
             {b.label}
           </span>
         </div>

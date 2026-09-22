@@ -12,6 +12,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { groups, matches, players, tournaments, type Match } from "@/lib/db/schema";
 import { resolveRef, type RefResolver } from "@/lib/brackets";
+import { hasPlay } from "@/lib/results";
 import { buildSchedule, busyKey, type ScheduleMatch, type SchedulePlan } from "./index";
 
 export type ScheduleOptions = {
@@ -97,7 +98,7 @@ export async function loadScheduleMatches(tournamentId: string): Promise<{
       people: [...new Set(people)],
       decided: !!m.teamAId && !!m.teamBId,
       dependsOn: [...new Set(dependsOn)],
-      started: (m.log as unknown[]).length > 0 || m.typedScoreA !== null,
+      started: hasPlay(m),
     };
   });
 

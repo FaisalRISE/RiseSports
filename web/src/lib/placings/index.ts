@@ -21,7 +21,7 @@ import "server-only";
  * champion" is not a thing anybody wants printed.
  */
 
-import { viewMatch } from "@/lib/matchState";
+import { matchResult } from "@/lib/results";
 import type { GroupTable, LoadedTournament } from "@/lib/tournamentState";
 import type { Match, Tournament } from "@/lib/db/schema";
 
@@ -42,12 +42,10 @@ export function settled(
   t: Pick<Tournament, "sport" | "format" | "scoring">,
   m: Match,
 ): { winner: string; loser: string } | null {
-  const v = viewMatch(t, m);
-  const [a, b] = v.typed ? [m.typedScoreA ?? 0, m.typedScoreB ?? 0] : [v.a, v.b];
-  if (!(v.typed || v.over)) return null;
-  if (a === b) return null;
-  const winnerId = a > b ? m.teamAId : m.teamBId;
-  const loserId = a > b ? m.teamBId : m.teamAId;
+  const r = matchResult(t, m);
+  if (!r?.winner) return null;
+  const winnerId = r.winner === "a" ? m.teamAId : m.teamBId;
+  const loserId = r.winner === "a" ? m.teamBId : m.teamAId;
   if (!winnerId || !loserId) return null;
   return { winner: winnerId, loser: loserId };
 }
