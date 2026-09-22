@@ -168,6 +168,33 @@ describe("an event that allows teams of one or two", () => {
     expect((await personOf(newcomerId)).riseRatings).toEqual({ "pb:md": 1000 });
     expect((await rowOf(newcomer.id)).ratings).toEqual({ "pb:mx": 1000 });
   });
+
+  /* The same, where the two events' guesses COINCIDE — found by review, not by
+     a test: the check above is fooled when this event's first guess is the key
+     the other event filed under. Gia is placed at 1000 in a women's singles
+     event nobody has played, then picked as the first entrant of an "one or
+     two" event, which also reads women's singles until her partner arrives.
+     Moving the seed then would leave the singles event's player with no
+     singles seed and an unplayed mixed one counting in her level for ever. */
+  it("leaves another event's seed alone even when this event first guessed the same format", async () => {
+    const singles = await event("singles-first", { min: 1, max: 1 }, ["Solo"]);
+    const gia = await add(singles.id, singles.teamIds[0], { name: "Gia S", gender: "F", band: 1000 });
+    expect((await personOf(gia.personId)).riseRatings).toEqual({ "pb:ws": 1000 });
+
+    const t = await event("coincide-cup", { min: 1, max: 2 }, ["Jays", "Kestrels"]);
+    /* A different display name only so the helper can find this row by name. */
+    const giaHere = await add(t.id, t.teamIds[0], { name: "Gia S (again)", gender: "F", personId: gia.personId! });
+    expect(giaHere.ratings).toEqual({ "pb:ws": 1000 });
+
+    await add(t.id, t.teamIds[0], { name: "Hari S", gender: "M", band: 700 });
+
+    /* Her seed stays where the singles event put it, and that event's row
+       still finds it under the key it will be rated in. */
+    expect((await personOf(gia.personId)).riseRatings).toEqual({ "pb:ws": 1000 });
+    expect((await rowOf(gia.id)).ratings).toEqual({ "pb:ws": 1000 });
+    /* This event is recorded as mixed, and brings her level in the sport. */
+    expect((await rowOf(giaHere.id)).ratings).toEqual({ "pb:mx": 1000 });
+  });
 });
 
 /* Anything else that reshapes a roster — an approval, a removal — is caught at

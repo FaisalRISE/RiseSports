@@ -132,17 +132,28 @@ export function seedToRefile(
  * A row is stale when its `players.ratings` — what this event recorded the
  * player bringing in — is not under `key`; a settled event has none, and costs
  * nothing. The person's seed moves only per `seedToRefile`, and only if THIS
- * event placed it: the row was filed under the very key the seed sits in. A
- * seed placed by another event that has not been played yet is that event's,
- * and moving it would make whichever of the two is played second start from
- * the original seed instead of the level the first one produced. The move is
- * done in SQL on a row that still looks the way it was read, so a match rated
- * at the same moment cannot have its result replaced by the seed.
+ * event placed it. A seed placed by another event that has not been played yet
+ * is that event's, and moving it would make whichever of the two is played
+ * second start from the original seed instead of the level the first one
+ * produced.
+ *
+ * "This event placed it" takes TWO tests, because each alone is fooled:
+ *   - this row was filed under the very key the seed sits in — but a player
+ *     picked as the FIRST entrant of a second event is filed there on that
+ *     event's own first guess, which can be the same guess ("ws" twice);
+ *   - and no OTHER event's row is filed under that key. That is the one fact
+ *     that says another event is holding the seed, so it is asked of the
+ *     database, inside the same UPDATE as the move. Where two unplayed events
+ *     both hold it, it stays put: the cost is the old behaviour for that
+ *     player, never someone else's seed moved from under them.
+ *
+ * The move is done in SQL on a row that still looks the way it was read, so a
+ * match rated at the same moment cannot have its result replaced by the seed.
  *
  * One at a time, never a Promise.all: see db-fanout.test.ts.
  */
 export async function refileSeeds(
-  tournament: Pick<Tournament, "sport">,
+  tournament: Pick<Tournament, "id" | "sport">,
   roster: Player[],
   key: string,
 ): Promise<number> {
@@ -171,6 +182,18 @@ export async function refileSeeds(
           sql`${people.riseRatings} -> ${key}::text is null`,
           sql`${people.riseRatings} -> ${from}::text is not null`,
           sql`coalesce((${people.matchCount} ->> ${from}::text)::int, 0) = 0`,
+          /* "people"."id" is written out in full. A bare "id" inside this
+             subquery would bind to the PLAYERS row's own id and the check would
+             pass for everyone. Drizzle does qualify `${people.id}` in an UPDATE
+             today (checked 2026-09-22 by swapping it in: the tests still pass),
+             but it strips table names in a single-table SELECT, so nothing here
+             leans on which one it does. */
+          sql`not exists (
+            select 1 from ${playersTable} as other
+            where other.person_id = "people"."id"
+              and other.tournament_id <> ${tournament.id}
+              and other.ratings -> ${from}::text is not null
+          )`,
         ))
         .returning();
       /* Nothing matched: somebody else changed this person since the read, so

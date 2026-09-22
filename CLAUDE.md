@@ -1232,7 +1232,7 @@ proves it — three fail under `TZ=UTC`, and the time tests pass under `TZ=Asia/
 - The same class, fixed alongside: the print pack's printed-at time and the approvals list's
   entry date (true instants, now India time), and the public page's event date (floating, now
   `timeZone: "UTC"` like every other schedule render).
-- **Community "today" is India's today — fixed 2026-09-21 (committed, not yet pushed).** It
+- **Community "today" is India's today — fixed 2026-09-21.** It
   used the server's date (`localISO(new Date())`), so from 00:00 to 05:30 in India the session
   strip opened on a day that was over, a Monday game offered Monday after Monday had ended, ages
   were counted a day early, and a new game defaulted to yesterday's weekday.
@@ -1400,10 +1400,19 @@ women's-singles list (verified failing on the old code).
   `refileSeeds` moves what an earlier guess filed, **after each organiser add** and **just before
   a match is rated** — the latter covers approvals and removals without a call in each.
 - **Only a seed nobody has played on moves**, only for someone with no match in the sport
-  (`seedToRefile`), and **only one THIS event placed** — the row's `players.ratings` key equals
-  the seed's key. Moving another event's unplayed seed would make whichever event is played
-  second start from the original placement. The move is conditional SQL, so a match rated at the
-  same moment is never overwritten by the seed.
+  (`seedToRefile`), and **only one THIS event placed**. Moving another event's unplayed seed
+  would make whichever event is played second start from the original placement. The move is
+  conditional SQL, so a match rated at the same moment is never overwritten by the seed.
+- **"This event placed it" takes two tests; the first shipped alone and was fooled.** (1) This
+  row is filed under the very key the seed sits in, and (2) **no other event's `players` row is
+  filed under that key** — asked inside the same UPDATE as a `not exists`. Test 1 alone was
+  found wanting by an adversarial review of the merge, not by a test: a player seeded in an
+  unplayed women's-singles event, then picked as the FIRST entrant of a "one or two" event,
+  is filed "ws" there too on that event's own first guess — so when her partner arrived, the
+  singles event's seed moved to mixed and would have counted in her level for ever. Where two
+  unplayed events both hold a seed it now stays put; that player gets the old behaviour, and
+  nobody's seed moves from under another event. `addPlayer.test.ts` pins it, and fails with
+  test 2 removed.
 - Seeds already misfiled in production are **not** cleaned up: anyone who has since played is
   left alone by design. There is only test data there today.
 
