@@ -6,7 +6,7 @@ import { and, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/lib/db";
-import { divisions, groups, matches, people, players, ratingHistory, teams, tournaments } from "@/lib/db/schema";
+import { divisions, groups, matches, people, players, ratingHistory, teams, tournaments, type GenderRule } from "@/lib/db/schema";
 import {
   NO_RULES, PRESETS, duprToX100, entryFailures, floatingDateISO, hasRules, needsFrom, parseDobISO, parseRules,
   playerEvidence, rulesOfDivision, rulesSentence, squadIsComplete, todayInIndia, waiverLine,
@@ -22,7 +22,7 @@ import { loadTournament, groupTables, resolverFactory } from "@/lib/tournamentSt
 import { findOrCreatePerson, findByPhone, carriedRating, peopleForTournament, searchPeople } from "@/lib/people";
 import { reliabilityForPerson } from "@/lib/rating/reliability";
 import type { PickerResult } from "@/components/PersonPicker";
-import { ratingFormatFor, refileSeeds } from "@/lib/rating/tournament";
+import { categoryFormat, categoryRoster, refileSeeds } from "@/lib/rating/tournament";
 import { seedFromDupr } from "@/lib/rating";
 import { hasPlay } from "@/lib/results";
 import { DEFAULT_SPORT, SPORTS, ratingKey, usesDupr } from "@/lib/sports/registry";
@@ -203,7 +203,7 @@ export async function addPlayer(tournamentId: string, teamId: string, formData: 
       return { ok: false, reasons: blocking.map((b) => b.text), canWaive: true };
     }
 
-    const added = await insertPlayer(t, team.id, parsed.data, gender, { pickedId, phone, duprRaw, bandRaw, dob, duprX100 });
+    const added = await insertPlayer(t, team, division?.genderRule ?? null, parsed.data, gender, { pickedId, phone, duprRaw, bandRaw, dob, duprX100 });
 
     /* Let in anyway: what was waived is recorded on the team, so the card can
        say so — and a rule tightened later, which is a different rule, still
@@ -220,7 +220,7 @@ export async function addPlayer(tournamentId: string, teamId: string, formData: 
     return { ok: true, notes: mine.filter((f) => f.severity === "note").map((f) => `${parsed.data}: ${f.text}`) };
   }
 
-  await insertPlayer(t, team.id, parsed.data, gender, { pickedId, phone, duprRaw, bandRaw, dob, duprX100 });
+  await insertPlayer(t, team, division?.genderRule ?? null, parsed.data, gender, { pickedId, phone, duprRaw, bandRaw, dob, duprX100 });
   revalidatePath(`/t/${t.slug}/manage`);
   return { ok: true, notes: [] };
 }
@@ -229,18 +229,21 @@ export async function addPlayer(tournamentId: string, teamId: string, formData: 
    with no rules: link or create the person by phone, carry their rating in. */
 async function insertPlayer(
   t: typeof tournaments.$inferSelect,
-  teamId: string,
+  team: { id: string; divisionId: string },
+  genderRule: GenderRule | null,
   playerName: string,
   gender: "M" | "F",
   form: { pickedId: string; phone: string; duprRaw: string; bandRaw: string; dob: string | null; duprX100: number | null },
 ): Promise<string> {
-  const roster = await db.select().from(players).where(eq(players.tournamentId, t.id));
+  /* THIS CATEGORY's roster — a Men's Doubles add must not be filed as mixed
+     because the event also runs Women's Doubles. */
+  const roster = await categoryRoster(team.divisionId);
   /* ONE format for everything this add writes — the seed's key, the rating
-     carried in, and the key it is recorded under — decided by the roster as it
-     will be with this player on it, and the event's team size. The carried
-     rating used to be read for the roster WITHOUT them, which for the first
-     player of an event is no roster at all. */
-  const format = ratingFormatFor([...roster, { gender, teamId } as never], t.minTeamSize);
+     carried in, and the key it is recorded under — decided by the category as
+     it will be with this player in it, its rule, and the event's team size.
+     The carried rating used to be read for the roster WITHOUT them, which for
+     the first player of an event is no roster at all. */
+  const format = categoryFormat([...roster, { gender, teamId: team.id }], t, genderRule);
   const formatKey = ratingKey(t.sport, format);
 
   let personId: string | null = null;
@@ -275,7 +278,7 @@ async function insertPlayer(
   await db.insert(players).values({
     id,
     tournamentId: t.id,
-    teamId,
+    teamId: team.id,
     personId,
     name: playerName,
     gender,
@@ -322,13 +325,22 @@ export async function seedByRating(tournamentId: string) {
   const rows = await db.select().from(players).where(eq(players.tournamentId, t.id));
   const roster = await peopleForTournament(t.id);
   const teamRows = await db.select().from(teams).where(eq(teams.tournamentId, t.id));
+  const divisionRows = await db.select().from(divisions).where(eq(divisions.tournamentId, t.id));
 
-  /* Seeded on each player's rating in THIS event's sport and format — the
-     number the event carries in. It was `riseBest`, the best across every
-     sport, so a pickleball star topped the seeding of their first badminton
-     event (Faisal, 2026-09-21: "RiseR rating is specific to each sport"). */
-  const format = ratingFormatFor(rows, t.minTeamSize);
+  /* Seeded on each player's rating in THIS event's sport and in THEIR
+     CATEGORY's format — the number that category carries in. It was `riseBest`,
+     the best across every sport, so a pickleball star topped the seeding of
+     their first badminton event (Faisal, 2026-09-21: "RiseR rating is specific
+     to each sport"); and then one format for the whole event, so a Men's
+     Doubles team was seeded on mixed whenever women were entered elsewhere.
+     Worked out in memory: two queries, however many categories. */
+  const divisionOfTeam = new Map(teamRows.map((tm) => [tm.id, tm.divisionId]));
+  const formatOf = new Map(divisionRows.map((d) => [
+    d.id,
+    categoryFormat(rows.filter((p) => p.teamId && divisionOfTeam.get(p.teamId) === d.id), t, d.genderRule),
+  ]));
   const strengthOf = (teamId: string): number | null => {
+    const format = formatOf.get(divisionOfTeam.get(teamId) ?? "") ?? "gn";
     const ids = rows.filter((p) => p.teamId === teamId && p.personId).map((p) => p.personId!);
     const ratings = ids
       .map((id) => roster.get(id))

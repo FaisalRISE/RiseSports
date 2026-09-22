@@ -50,42 +50,42 @@ export const DEFAULT_SPORT: SportId = "pb";
 export const SPORTS: Record<SportId, Sport> = {
   pb: {
     id: "pb", name: "Pickleball", emoji: "\u{1F3D3}", court: "court", dupr: true,
-    playersPerCourt: 4, targets: [11, 15, 21], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
+    playersPerCourt: 4, targets: [11, 15, 21], formats: ["ms", "ws", "md", "wd", "mx", "od", "gn"],
     scoring: { target: 11, winBy: 2, cap: null, golden: null }, serveModel: "sideout",
     skills: ["Serve", "Return", "Dink", "Drive", "Volley", "Drop Shot", "Lob", "Positioning", "Smash", "Reset", "Poach", "Backhand", "Speed Ups"],
     tags: ["Spin Server", "Power Player", "Dink Master", "Net Rusher", "Lob Specialist", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Hands", "Soft Game", "Hard Hitter", "Great Partner", "Court General", "Comeback Artist"],
   },
   bd: {
     id: "bd", name: "Badminton", emoji: "\u{1F3F8}", court: "court",
-    playersPerCourt: 4, targets: [15, 21, 30], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
+    playersPerCourt: 4, targets: [15, 21, 30], formats: ["ms", "ws", "md", "wd", "mx", "od", "gn"],
     scoring: { target: 21, winBy: 2, cap: 30, golden: 29 }, serveModel: "rally",
     skills: ["Serve", "Return", "Clear", "Drop", "Smash", "Net Kill", "Drive", "Lift", "Defence", "Footwork", "Deception", "Backhand", "Positioning"],
     tags: ["Big Smash", "Net Killer", "Deceptive", "Retriever", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Tireless", "Soft Touch", "Hard Hitter", "Great Partner", "Court General", "Comeback Artist"],
   },
   tt: {
     id: "tt", name: "Table Tennis", emoji: "\u{1F3D3}", court: "table",
-    playersPerCourt: 4, targets: [11, 21], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
+    playersPerCourt: 4, targets: [11, 21], formats: ["ms", "ws", "md", "wd", "mx", "od", "gn"],
     scoring: { target: 11, winBy: 2, cap: null, golden: null }, serveModel: "alt2",
     skills: ["Serve", "Return", "Topspin", "Backspin", "Block", "Smash", "Loop", "Push", "Flick", "Footwork", "Placement", "Backhand", "Spin Reading"],
     tags: ["Spin Server", "Looper", "Blocker", "Chopper", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Feet", "Soft Touch", "Hard Hitter", "Great Partner", "Table General", "Comeback Artist"],
   },
   pd: {
     id: "pd", name: "Padel", emoji: "\u{1F3BE}", court: "court",
-    playersPerCourt: 4, targets: [], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
+    playersPerCourt: 4, targets: [], formats: ["ms", "ws", "md", "wd", "mx", "od", "gn"],
     scoring: null, setBased: true, serveModel: "games",
     skills: ["Serve", "Return", "Volley", "Bandeja", "Vibora", "Smash", "Wall Play", "Lob", "Drop", "Positioning", "Defence", "Backhand", "Court Coverage"],
     tags: ["Big Smash", "Wall Master", "Bandeja Specialist", "Retriever", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Feet", "Soft Touch", "Hard Hitter", "Great Partner", "Court General", "Comeback Artist"],
   },
   tn: {
     id: "tn", name: "Tennis", emoji: "\u{1F3BE}", court: "court",
-    playersPerCourt: 4, targets: [], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
+    playersPerCourt: 4, targets: [], formats: ["ms", "ws", "md", "wd", "mx", "od", "gn"],
     scoring: null, setBased: true, serveModel: "games",
     skills: ["Serve", "Return", "Forehand", "Backhand", "Volley", "Smash", "Slice", "Topspin", "Drop Shot", "Lob", "Footwork", "Positioning", "Mental"],
     tags: ["Big Server", "Baseliner", "Serve & Volley", "Retriever", "Fast Hands", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Feet", "Soft Touch", "Hard Hitter", "Great Partner", "Court General", "Comeback Artist"],
   },
   cr: {
     id: "cr", name: "Carrom", emoji: "\u{1F7E4}", court: "board", board: true,
-    playersPerCourt: 4, targets: [21, 25, 29], formats: ["ms", "ws", "md", "wd", "mx", "gn"],
+    playersPerCourt: 4, targets: [21, 25, 29], formats: ["ms", "ws", "md", "wd", "mx", "od", "gn"],
     scoring: { target: 25, winBy: 1, cap: null, golden: null }, serveModel: "turns",
     skills: ["Strike", "Thumb Shot", "Cut", "Rebound", "Board Control", "Queen Cover", "Defence", "Placement", "Angles", "Break", "Consistency", "Pocketing", "Focus"],
     tags: ["Sharp Shooter", "Queen Hunter", "Thumb Specialist", "Defender", "Steady Hand", "Wall", "Consistent", "Clutch Player", "Smart Placer", "Quick Break", "Soft Touch", "Power Striker", "Great Partner", "Board General", "Comeback Artist"],
@@ -158,6 +158,10 @@ export const FORMAT_LABELS: Record<string, string> = {
   md: "Men's doubles",
   wd: "Women's doubles",
   mx: "Mixed doubles",
+  /* A category with no men's/women's/mixed rule that men AND women entered
+     (Faisal, 2026-09-22): its own rating, so an open event of men's pairs and
+     mixed pairs moves nobody's mixed. See lib/rating/tournament categoryFormat. */
+  od: "Open doubles",
   gn: "Open",
 };
 

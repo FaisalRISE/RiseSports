@@ -1416,6 +1416,48 @@ women's-singles list (verified failing on the old code).
 - Seeds already misfiled in production are **not** cleaned up: anyone who has since played is
   left alone by design. There is only test data there today.
 
+### Fixing the live formats (from 2026-09-22)
+
+Faisal chose to fix the formats already live before building new ones (Cup/Plate next). The
+full plan — 14 steps, studied by six readers, attacked by two critics, with his answers — is
+`C:\Users\khanf\.claude\plans\fix-live-formats.md`. Decisions: typing the final score is the
+default; organisers build an uneven knockout BY HAND (no automatic byes, no "best runners-up");
+walkovers count in the table and move no rating; a correction that would change who is in a
+match already under way is refused; an open category of mixed-up pairs gets its own rating.
+
+**Step 1 — one definition of a result** (`lib/results`). `matchResult` (typed pair when both
+boxes are filled, else the replayed score once over), `hasPlay` (the single "started" test —
+EITHER typed box counts; the old three checks looked at box A only) and `matchLine`. Seven
+copies used it by hand; the manage list got it wrong and showed a typed 11–7 as 0–0.
+
+**Step 2 — each CATEGORY moves its own rating.** The type was decided once per EVENT from
+everybody on it, so Men's Doubles beside Women's Doubles moved everybody's MIXED, and the seed
+refile moved their starting levels to mixed too. `categoryFormat(players, event, genderRule)`
+in `lib/rating/tournament` decides per category, and every caller hands it ONE category
+(`categoryRoster(divisionId)`): the engine, `insertPlayer`, `seedByRating`, approval, and the
+ratings page, which is now one table per category (`[data-category]`).
+
+- Order: OSL → `gn`; teams bigger than a pair → `gn` whatever the rule; the RULE (M → ms/md,
+  F → ws/wd, MX → mx; a woman let into Men's Doubles is rated men's doubles there); no rule →
+  singles by who entered, pairs by **`pairsFormat`** in `lib/rating`.
+- **`pairsFormat` reads what the PAIRS are**: all men's md, all women's wd, all mixed mx, a
+  MIXTURE `od` — **Open doubles**, a new key in every doubles sport's `formats`. Faisal was
+  asked about "an open category where some pairs are two men and some are mixed". The first
+  version rated ANY no-rule category with men and women as `od` — which would have moved every
+  wizard-made mixed event (its "Main" category has no rule) off the mixed rating. An
+  adversarial review caught it; two e2e suites failed on it too. **All-mixed pairs are mixed.**
+- Community courts use the same `pairsFormat`: a men's pair against a mixed pair is `od`, not
+  mixed. Tournament and community rate the same four people the same way.
+- The refile guard's "somebody else holds this seed" is now ANY other players row — another
+  event OR another category of this one (`other.id <> row.id`).
+- A person on both sides of a match is skipped with a reason; it used to throw on the unique
+  index inside a swallowed catch.
+- The ratings page's Start is the rating BEFORE the first match in that category, counting
+  only history under the category's own key. Worked backwards from today's number it was wrong
+  whenever two categories share a key (Men's Doubles and Men's Doubles 40+).
+- Production had 24 events, one category each, and no rated matches (checked by query), so
+  nothing was ever rated under the wrong key and nothing needed repairing.
+
 ## Access: the site is deliberately open, and the switch is a trap
 
 `rise-sports.vercel.app` lets any visitor create events, manage them and enter scores that move

@@ -15,31 +15,48 @@ import "server-only";
  * player is actually carrying, which is the one thing a reference must never
  * do.
  *
- * So this reads what was applied. `phaseOf` and `ratingFormatFor` stay pure:
+ * So this reads what was applied. `phaseOf` and `categoryFormat` stay pure:
  * they are decisions, not lookups, and apply.ts uses them too. */
 
-import { getTier, DEFAULT_SEED, startingRating, type Phase, type Tier } from "@/lib/rating";
+import { getTier, DEFAULT_SEED, pairsFormat, startingRating, type Phase, type RatedGender, type Tier } from "@/lib/rating";
 import { reliabilityForPerson } from "@/lib/rating/reliability";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
-  matches as matchesTable, people, players as playersTable, ratingHistory,
-  type Person, type Player, type Tournament,
+  divisions, matches as matchesTable, people, players as playersTable, ratingHistory, teams,
+  type GenderRule, type Person, type Player, type Tournament,
 } from "@/lib/db/schema";
 
 /**
- * Which rating bucket this tournament's results belong in — "pb:md" and so on.
+ * Which rating a CATEGORY's results move — "md", "wd", "mx" and so on; the
+ * caller prefixes the sport to make the key ("pb:md").
+ *
+ * ── Per category, never per event ────────────────────────────────────────
+ * This used to be decided once for the whole tournament, from everybody on
+ * it. An event running Men's Doubles and Women's Doubles has men and women on
+ * its roster, so every match in it — both categories — moved everyone's MIXED
+ * rating, and the seed refile then moved their starting levels into mixed as
+ * well. Every caller now hands in ONE category's players and that category's
+ * gender rule (`divisions.gender_rule`), so filing a seed, refiling it and
+ * rating the match are one decision about one category.
  *
  * `tournament.format` is NOT this. That field holds the match format
- * ("standard" / "osl"); the rating key wants a category (men's doubles, mixed,
- * singles), and the schema has no column for it. So it is inferred from who is
- * actually on the teams, which is real data rather than a guess:
+ * ("standard" / "osl" / "pickleboss"). The type comes from, in order:
  *
- *   one player per team    -> singles      two per team -> doubles
- *   all men -> m…   all women -> w…   mixed -> mx (or "gn" for singles)
+ *   1. an OSL event is "gn": its six-player squads are none of the usual types;
+ *   2. teams bigger than a pair are "gn", whatever the rule — a Mixed category
+ *      with a reserve is still not a pairs event;
+ *   3. the category's gender rule: Men's gives ms/md, Women's ws/wd, Mixed mx.
+ *      The RULE wins over who happens to be in it, so a woman the organiser
+ *      let into Men's Doubles is rated as men's doubles there;
+ *   4. no rule: who actually entered. Singles: all men ms, all women ws,
+ *      both "gn" (open singles). Pairs: what the pairs ARE (`pairsFormat` in
+ *      lib/rating) — all men's pairs md, all women's wd, all mixed mx, and a
+ *      MIXTURE is **"od", Open doubles** (Faisal, 2026-09-22: an open category
+ *      of men's pairs and mixed pairs gets its own Open rating rather than
+ *      moving anyone's mixed). Singles and doubles are never one key (§2).
  *
- * Anything larger than a pair — OSL runs six-player teams — is "gn", the
- * general bucket, because it is not any of the conventional categories.
+ *   one player per team -> singles      two per team -> doubles
  *
  * ── `minTeamSize`: a team still being filled ─────────────────────────────
  * Players are added one at a time, so while a roster is filling the teams are
@@ -59,27 +76,62 @@ import {
  * wizard never asks. That case is settled later, by `refileSeeds`, once the
  * roster itself says what the event is.
  *
- * If a category field is added later, prefer it over this.
+ * The Mixed rule counts as at least pairs: one-player teams are refused while a
+ * Mixed category exists (`setRegistration`), so a lone first entrant of Mixed
+ * is still mixed.
  */
-export function ratingFormatFor(players: Player[], minTeamSize: number): string {
-  const byTeam = new Map<string, Player[]>();
+export function categoryFormat(
+  players: Pick<Player, "teamId" | "gender">[],
+  event: { minTeamSize: number; format?: string | null },
+  genderRule: GenderRule | null | undefined,
+): string {
+  if (event.format === "osl") return "gn";
+  const size = teamSizeOf(players, event.minTeamSize);
+  if (size > 2) return "gn";
+  if (genderRule === "MX") return "mx";
+  if (genderRule === "M") return size === 1 ? "ms" : "md";
+  if (genderRule === "F") return size === 1 ? "ws" : "wd";
+
+  /* No rule and nobody in it: nothing to go on. */
+  if (!players.some((p) => p.teamId)) return "gn";
+  if (size === 1) {
+    const men = players.some((p) => p.gender === "M");
+    const women = players.some((p) => p.gender === "F");
+    return men && women ? "gn" : women ? "ws" : "ms";
+  }
+  /* Pairs with no rule: read off what the PAIRS are (`pairsFormat`). */
+  const byTeam = new Map<string, RatedGender[]>();
   for (const p of players) {
     if (!p.teamId) continue;
-    const list = byTeam.get(p.teamId) ?? [];
-    list.push(p);
-    byTeam.set(p.teamId, list);
+    byTeam.set(p.teamId, [...(byTeam.get(p.teamId) ?? []), p.gender]);
   }
-  if (byTeam.size === 0) return "gn";
+  return pairsFormat([...byTeam.values()]);
+}
 
+/**
+ * How big a team is in this category: the median team, each counted as at
+ * least the event's minimum (see above). With nobody in it yet, the minimum.
+ */
+export function teamSizeOf(players: Pick<Player, "teamId">[], minTeamSize: number): number {
+  const byTeam = new Map<string, number>();
+  for (const p of players) {
+    if (!p.teamId) continue;
+    byTeam.set(p.teamId, (byTeam.get(p.teamId) ?? 0) + 1);
+  }
   const floor = Math.max(1, minTeamSize);
-  const sizes = [...byTeam.values()].map((v) => Math.max(v.length, floor)).sort((a, b) => a - b);
-  const size = sizes[Math.floor(sizes.length / 2)]; // median: one odd team should not decide it
-  if (size > 2) return "gn";
+  if (byTeam.size === 0) return floor;
+  const sizes = [...byTeam.values()].map((n) => Math.max(n, floor)).sort((a, b) => a - b);
+  return sizes[Math.floor(sizes.length / 2)]; // median: one odd team should not decide it
+}
 
-  const men = players.some((p) => p.gender === "M");
-  const women = players.some((p) => p.gender === "F");
-  if (size === 1) return men && women ? "gn" : women ? "ws" : "ms";
-  return men && women ? "mx" : women ? "wd" : "md";
+/** One category's players: everyone on a team in that category. One query. */
+export async function categoryRoster(divisionId: string): Promise<Player[]> {
+  const rows = await db
+    .select({ player: playersTable })
+    .from(playersTable)
+    .innerJoin(teams, eq(playersTable.teamId, teams.id))
+    .where(eq(teams.divisionId, divisionId));
+  return rows.map((r) => r.player);
 }
 
 /**
@@ -119,7 +171,7 @@ export function seedToRefile(
  * later singles event starts them from that stale 1000 rather than where they
  * now stand, because `startingRating` prefers the format's own key.
  *
- * `ratingFormatFor` cannot always know the format while the roster fills: an
+ * `categoryFormat` cannot always know the format while the roster fills: an
  * event created by the wizard allows teams of one or two, so its first player
  * is a team of one until a partner arrives. So this runs whenever the answer
  * may have become clear, and moves what was filed on the earlier guess:
@@ -141,10 +193,12 @@ export function seedToRefile(
  *   - this row was filed under the very key the seed sits in — but a player
  *     picked as the FIRST entrant of a second event is filed there on that
  *     event's own first guess, which can be the same guess ("ws" twice);
- *   - and no OTHER event's row is filed under that key. That is the one fact
- *     that says another event is holding the seed, so it is asked of the
- *     database, inside the same UPDATE as the move. Where two unplayed events
- *     both hold it, it stays put: the cost is the old behaviour for that
+ *   - and no OTHER players row is filed under that key — another event's,
+ *     or another CATEGORY of this one (a player in Men's Doubles and Mixed is
+ *     two rows here, and each category now files its own key). That is the
+ *     one fact that says somebody else is holding the seed, so it is asked of
+ *     the database, inside the same UPDATE as the move. Where two holders
+ *     both have it, it stays put: the cost is the old behaviour for that
  *     player, never someone else's seed moved from under them.
  *
  * The move is done in SQL on a row that still looks the way it was read, so a
@@ -153,7 +207,7 @@ export function seedToRefile(
  * One at a time, never a Promise.all: see db-fanout.test.ts.
  */
 export async function refileSeeds(
-  tournament: Pick<Tournament, "id" | "sport">,
+  tournament: Pick<Tournament, "sport">,
   roster: Player[],
   key: string,
 ): Promise<number> {
@@ -191,7 +245,7 @@ export async function refileSeeds(
           sql`not exists (
             select 1 from ${playersTable} as other
             where other.person_id = "people"."id"
-              and other.tournament_id <> ${tournament.id}
+              and other.id <> ${row.id}
               and other.ratings -> ${from}::text is not null
           )`,
         ))
@@ -216,6 +270,10 @@ export type PlayerRating = {
   personId: string | null;
   name: string;
   teamId: string | null;
+  /** The category this row is about, and the rating type it moves. A player
+      in two categories has two rows, each showing only what moved there. */
+  divisionId: string | null;
+  format: string;
   start: number;
   delta: number;
   current: number;
@@ -250,6 +308,22 @@ export async function tournamentRatings(
 ): Promise<PlayerRating[]> {
   const personIds = players.map((p) => p.personId).filter((x): x is string => !!x);
 
+  /* Which category each team is in, and each category's gender rule: the
+     rating type is decided per category, never once for the whole event. One
+     query, before the fan-out below and never inside it. */
+  const teamRows = await db
+    .select({ teamId: teams.id, divisionId: teams.divisionId, genderRule: divisions.genderRule })
+    .from(teams)
+    .innerJoin(divisions, eq(teams.divisionId, divisions.id))
+    .where(eq(teams.tournamentId, tournament.id));
+  const divisionOfTeam = new Map(teamRows.map((r) => [r.teamId, r.divisionId]));
+  const ruleOf = new Map(teamRows.map((r) => [r.divisionId, r.genderRule]));
+  const divisionOf = (p: Player) => (p.teamId ? divisionOfTeam.get(p.teamId) ?? null : null);
+  const formatOf = new Map<string | null, string>();
+  for (const d of new Set(players.map(divisionOf))) {
+    formatOf.set(d, categoryFormat(players.filter((p) => divisionOf(p) === d), tournament, d ? ruleOf.get(d) : null));
+  }
+
   const [roster, history, allHistory] = await Promise.all([
     personIds.length
       ? db.select().from(people).where(inArray(people.id, personIds))
@@ -261,6 +335,9 @@ export async function tournamentRatings(
       ? db
           .select({
             personId: ratingHistory.personId,
+            divisionId: matchesTable.divisionId,
+            format: ratingHistory.format,
+            createdAt: ratingHistory.createdAt,
             before: ratingHistory.ratingBefore,
             delta: ratingHistory.deltaApplied,
           })
@@ -300,20 +377,35 @@ export async function tournamentRatings(
   }
 
   const byPerson = new Map(roster.map((p) => [p.id, p]));
-  const moved = new Map<string, { delta: number; played: number; first: number | null }>();
+  /* Keyed by person AND category, and counting only history under the
+     category's OWN rating key: somebody in Men's Doubles and Mixed sees each
+     category's movement against the rating it moved. A row under some other
+     key (an event rated before categories had their own, a category whose
+     rule was changed) is not this category's movement, and adding it in would
+     subtract one rating's change from another's number. */
+  const movedKey = (personId: string, divisionId: string | null) => `${personId}	${divisionId ?? ""}`;
+  const moved = new Map<string, { delta: number; played: number; first: number | null; at: number }>();
   for (const h of history) {
-    const cur = moved.get(h.personId) ?? { delta: 0, played: 0, first: null };
+    if (h.format !== `${tournament.sport}:${formatOf.get(h.divisionId) ?? ""}`) continue;
+    const k = movedKey(h.personId, h.divisionId);
+    const cur = moved.get(k) ?? { delta: 0, played: 0, first: null, at: Infinity };
     cur.delta += h.delta;
     cur.played += 1;
-    cur.first = cur.first ?? h.before;
-    moved.set(h.personId, cur);
+    /* Start is what they had BEFORE their first match here, read off that
+       match. Worked backwards from today's number it came out wrong whenever
+       two categories share a key (Men's Doubles and Men's Doubles 40+): the
+       other category's movement sits in the same number. */
+    const at = h.createdAt.getTime();
+    if (at < cur.at) { cur.at = at; cur.first = h.before; }
+    moved.set(k, cur);
   }
 
-  const format = ratingFormatFor(players, tournament.minTeamSize);
   return players
     .map((p) => {
+      const divisionId = divisionOf(p);
+      const format = formatOf.get(divisionId) ?? "gn";
       const person = p.personId ? byPerson.get(p.personId) : undefined;
-      const m = p.personId ? moved.get(p.personId) : undefined;
+      const m = p.personId ? moved.get(movedKey(p.personId, divisionId)) : undefined;
       /* The rating in THIS event's sport and format — the number the event
          actually carries in and moves. It was `riseBest`, the best across every
          sport and format, under a header naming this sport and format. */
@@ -324,7 +416,9 @@ export async function tournamentRatings(
         personId: p.personId ?? null,
         name: p.name,
         teamId: p.teamId,
-        start: current - delta,
+        divisionId,
+        format,
+        start: m?.first ?? current,
         delta,
         current,
         played: m?.played ?? 0,

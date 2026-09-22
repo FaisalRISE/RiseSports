@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { phaseOf, ratingFormatFor, seedToRefile } from "./tournament";
+import { phaseOf, categoryFormat, seedToRefile } from "./tournament";
+import { pairsFormat } from "@/lib/rating";
 import type { Player } from "@/lib/db/schema";
 
 /* `tournamentRatings` itself now READS `rating_history` rather than deriving,
@@ -37,57 +38,121 @@ describe("phaseOf", () => {
   });
 });
 
-describe("ratingFormatFor", () => {
+/* The rating a CATEGORY's results move. `ev(n)` is an ordinary event with a
+   minimum team size of n; the third argument is the category's gender rule. */
+const ev = (minTeamSize: number, format = "standard") => ({ minTeamSize, format });
+
+describe("categoryFormat", () => {
   it("reads doubles categories off the team composition", () => {
     const men = [player("a", "A"), player("b", "A"), player("c", "B"), player("d", "B")];
-    expect(ratingFormatFor(men, 1)).toBe("md");
+    expect(categoryFormat(men, ev(1), null)).toBe("md");
 
     const women = men.map((p) => ({ ...p, gender: "F" as const }));
-    expect(ratingFormatFor(women, 1)).toBe("wd");
+    expect(categoryFormat(women, ev(1), null)).toBe("wd");
+  });
 
-    const mixed = [
+  /* Faisal, 2026-09-22: an open category (no rule) whose PAIRS differ — some
+     two men, some mixed — gets its own Open rating. It used to be mixed — and
+     it used to be decided for the whole EVENT, so Men's Doubles beside
+     Women's Doubles moved everybody's mixed. */
+  it("gives an open category with a mixture of pairs its own Open doubles rating", () => {
+    const mixedUp = [
+      player("a", "A"), player("b", "A"),
+      player("c", "B"), player("d", "B", { gender: "F" }),
+    ];
+    expect(categoryFormat(mixedUp, ev(1), null)).toBe("od");
+    /* Every pair mixed is simply mixed doubles — how the wizard's untouched
+       "Main" category runs a mixed event. */
+    const allMixed = [
       player("a", "A"), player("b", "A", { gender: "F" }),
       player("c", "B"), player("d", "B", { gender: "F" }),
     ];
-    expect(ratingFormatFor(mixed, 1)).toBe("mx");
+    expect(categoryFormat(allMixed, ev(1), null)).toBe("mx");
+    /* Men's pairs and women's pairs together are a mixture too. */
+    expect(categoryFormat([
+      player("a", "A"), player("b", "A"),
+      player("c", "B", { gender: "F" }), player("d", "B", { gender: "F" }),
+    ], ev(1), null)).toBe("od");
+    /* Open SINGLES stays the general bucket: singles and doubles are never one key. */
+    expect(categoryFormat([player("a", "A"), player("b", "B", { gender: "F" })], ev(1), null)).toBe("gn");
+  });
+
+  it("lets the category's rule decide over who happens to be in it", () => {
+    const pairs = [player("a", "A"), player("b", "A", { gender: "F" }), player("c", "B"), player("d", "B", { gender: "F" })];
+    expect(categoryFormat(pairs, ev(1), "MX")).toBe("mx");
+    /* A woman the organiser let into Men's Doubles is rated as men's doubles THERE. */
+    expect(categoryFormat(pairs, ev(1), "M")).toBe("md");
+    expect(categoryFormat(pairs, ev(1), "F")).toBe("wd");
+  });
+
+  it("reads a Mixed category as pairs even while its first team has one player", () => {
+    expect(categoryFormat([player("a", "A")], ev(1), "MX")).toBe("mx");
+    expect(categoryFormat([player("a", "A")], ev(1), "M")).toBe("ms");
   });
 
   it("reads singles off one-player teams", () => {
-    expect(ratingFormatFor([player("a", "A"), player("b", "B")], 1)).toBe("ms");
-    expect(ratingFormatFor([
+    expect(categoryFormat([player("a", "A"), player("b", "B")], ev(1), null)).toBe("ms");
+    expect(categoryFormat([
       player("a", "A", { gender: "F" }), player("b", "B", { gender: "F" }),
-    ], 1)).toBe("ws");
+    ], ev(1), null)).toBe("ws");
   });
 
-  /* The bug this parameter exists for: the first player of an empty doubles
-     event is a team of one, and was filed as singles. */
+  /* The first player of an empty doubles event is a team of one, and was filed
+     as singles. */
   it("counts a team still being filled as the event's minimum size", () => {
-    expect(ratingFormatFor([player("a", "A")], 2)).toBe("md");
-    expect(ratingFormatFor([player("a", "A", { gender: "F" })], 2)).toBe("wd");
+    expect(categoryFormat([player("a", "A")], ev(2), null)).toBe("md");
+    expect(categoryFormat([player("a", "A", { gender: "F" })], ev(2), null)).toBe("wd");
     /* Half-filled pairs: every team is one short. */
-    expect(ratingFormatFor([player("a", "A"), player("b", "B"), player("c", "C")], 2)).toBe("md");
+    expect(categoryFormat([player("a", "A"), player("b", "B"), player("c", "C")], ev(2), null)).toBe("md");
   });
 
   it("changes nothing at the default minimum of one, or for a complete roster", () => {
-    expect(ratingFormatFor([player("a", "A")], 1)).toBe("ms");
-    const pairs = [player("a", "A"), player("b", "A", { gender: "F" }), player("c", "B"), player("d", "B", { gender: "F" })];
-    expect(ratingFormatFor(pairs, 1)).toBe(ratingFormatFor(pairs, 2));
+    expect(categoryFormat([player("a", "A")], ev(1), null)).toBe("ms");
+    const pairs = [player("a", "A"), player("b", "A"), player("c", "B"), player("d", "B")];
+    expect(categoryFormat(pairs, ev(1), null)).toBe(categoryFormat(pairs, ev(2), null));
     /* A nonsense minimum is read as one, not as "no teams". */
-    expect(ratingFormatFor([player("a", "A")], 0)).toBe("ms");
+    expect(categoryFormat([player("a", "A")], ev(0), null)).toBe("ms");
   });
 
-  it("reads a minimum above a pair as the general bucket", () => {
-    expect(ratingFormatFor([player("a", "A")], 6)).toBe("gn");
+  it("reads a minimum above a pair as the general bucket, whatever the rule", () => {
+    expect(categoryFormat([player("a", "A")], ev(6), null)).toBe("gn");
+    /* A Mixed category with a reserve is still not a pairs event. */
+    const squads = ["a", "b", "c"].map((n) => player(n, "A"));
+    expect(categoryFormat(squads, ev(1), "MX")).toBe("gn");
   });
 
-  /* OSL runs six-player teams, which is none of the conventional categories. */
-  it("falls back to the general bucket for larger teams", () => {
-    expect(ratingFormatFor(["a", "b", "c", "d", "e", "f"].map((n) => player(n, "A")), 1)).toBe("gn");
+  /* OSL runs six-player teams. Its first player used to be filed as singles. */
+  it("rates an OSL event in the general bucket from its first player", () => {
+    expect(categoryFormat([player("a", "A")], ev(1, "osl"), null)).toBe("gn");
+    expect(categoryFormat(["a", "b", "c", "d", "e", "f"].map((n) => player(n, "A")), ev(1), null)).toBe("gn");
   });
 
   it("does not crash on players with no team", () => {
-    expect(ratingFormatFor([player("a", null)], 1)).toBe("gn");
-    expect(ratingFormatFor([], 1)).toBe("gn");
+    expect(categoryFormat([player("a", null)], ev(1), null)).toBe("gn");
+    expect(categoryFormat([], ev(1), null)).toBe("gn");
+  });
+});
+
+describe("pairsFormat", () => {
+  it("reads what the pairs are", () => {
+    expect(pairsFormat([["M", "M"], ["M", "M"]])).toBe("md");
+    expect(pairsFormat([["F", "F"], ["F", "F"]])).toBe("wd");
+    expect(pairsFormat([["M", "F"], ["F", "M"]])).toBe("mx");
+    expect(pairsFormat([["M", "M"], ["M", "F"]])).toBe("od");
+  });
+
+  /* A team of one says nothing about its pair yet: judged only while nothing
+     fuller exists. */
+  it("judges full pairs once there are any", () => {
+    expect(pairsFormat([["M", "F"], ["M"]])).toBe("mx");
+    expect(pairsFormat([["F"]])).toBe("wd");
+    expect(pairsFormat([])).toBe("md");
+  });
+
+  /* An unknown gender never makes a pair mixed or women's on its own. */
+  it("counts an unknown gender as it always has", () => {
+    expect(pairsFormat([[null, "F"], ["F", "F"]])).toBe("wd");
+    expect(pairsFormat([[null, null]])).toBe("md");
   });
 });
 

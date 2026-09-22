@@ -402,6 +402,24 @@ try {
     "a DUPR that is not a DUPR is refused, not dropped");
 
   /* ══════════════════════════════════════════════════════════════════════ */
+  console.log("\n== each category moves its own rating ==");
+
+  /* The ratings page was one table under one label for the whole event, and
+     the engine rated every category as that one type: an event with men and
+     women in it moved everybody's MIXED, Women's Doubles included. It is one
+     section per category now, each labelled with the rating it moves. */
+  await p.goto(`${BASE}/t/${slug}/ratings`);
+  await p.waitForTimeout(1500);
+  const sections = await p.locator("[data-category]").evaluateAll((els) =>
+    els.map((e) => [e.getAttribute("data-category"), e.querySelector("h2")?.textContent ?? ""]));
+  const heading = Object.fromEntries(sections);
+  ok(sections.length >= 2, `the ratings page has a section per category (${sections.length})`);
+  ok((heading[WD] ?? "").includes("Women's doubles"), `Women's Doubles is rated as women's doubles (${heading[WD]})`);
+  ok((heading[MX] ?? "").includes("Mixed doubles"), `the Mixed category as mixed doubles (${heading[MX]})`);
+  /* Back to the manage screen, where the next section expects to be. */
+  await p.goto(`${BASE}/t/${slug}/manage`);
+  await p.waitForTimeout(1500);
+
   console.log("\n== changing the rules later removes nobody ==");
 
   form = await openRules(MX);

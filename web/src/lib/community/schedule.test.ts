@@ -77,11 +77,15 @@ beforeEach(async () => {
 });
 
 describe("communityRatingKey", () => {
-  const g = new Map<string, "M" | "F">([["a", "M"], ["b", "F"], ["c", "M"], ["d", "M"]]);
+  const g = new Map<string, "M" | "F">([["a", "M"], ["b", "F"], ["c", "M"], ["d", "M"], ["e", "F"]]);
 
   it("reads the category off the court, not off the game", () => {
     expect(communityRatingKey("pb", ["a", "c"], ["d", "a"], g)).toBe("pb:md");
-    expect(communityRatingKey("pb", ["a", "b"], ["c", "d"], g)).toBe("pb:mx");
+    /* Two mixed pairs are mixed doubles. */
+    expect(communityRatingKey("pb", ["a", "b"], ["c", "e"], g)).toBe("pb:mx");
+    /* A mixed pair against a men's pair is Open doubles (Faisal, 2026-09-22).
+       It used to be mixed, which moved both men's MIXED rating. */
+    expect(communityRatingKey("pb", ["a", "b"], ["c", "d"], g)).toBe("pb:od");
     expect(communityRatingKey("pb", ["a"], ["c"], g)).toBe("pb:ms");
   });
 

@@ -255,3 +255,40 @@ export function formatRating(person: Rated | null | undefined, key: string): num
 export function startingRating(person: Rated | null | undefined, sport: string, format: string): number {
   return person?.riseRatings?.[`${sport}:${format}`] ?? sportRating(person, sport) ?? DEFAULT_SEED;
 }
+
+/** A player's gender as the rating reads it. An unknown one never makes a
+    pair mixed or women's on its own; a pair with nobody known reads as men's,
+    as it always has. */
+export type RatedGender = "M" | "F" | null | undefined;
+
+/**
+ * The rating type of PAIRS play with no rule to say what it is — a tournament
+ * category with no men's, women's or mixed rule, or a community court — read
+ * off the pairs themselves:
+ *
+ *   every pair two men   -> "md"      every pair two women -> "wd"
+ *   every pair one of each -> "mx"    a mixture of those   -> "od", Open doubles
+ *
+ * Faisal, 2026-09-22, asked about "an open category where some pairs are two
+ * men and some are mixed": its own Open rating, so nobody's mixed moves. A
+ * category whose pairs are ALL mixed is simply mixed doubles — it is how the
+ * event wizard's untouched "Main" category runs a mixed event, and reading
+ * that as Open would have moved every such event off the mixed rating.
+ *
+ * While a roster is filling, a team of one says nothing about its pair yet, so
+ * only teams with two or more players are judged once any exist.
+ */
+export function pairsFormat(teams: RatedGender[][]): "md" | "wd" | "mx" | "od" {
+  const known = teams.filter((t) => t.length > 0);
+  const full = known.filter((t) => t.length >= 2);
+  const judged = full.length > 0 ? full : known;
+  const kinds = new Set(
+    judged.map((t) => {
+      const m = t.some((g) => g === "M");
+      const f = t.some((g) => g === "F");
+      return m && f ? "mx" : f ? "wd" : "md";
+    }),
+  );
+  if (kinds.size > 1) return "od";
+  return ([...kinds][0] as "md" | "wd" | "mx" | undefined) ?? "md";
+}

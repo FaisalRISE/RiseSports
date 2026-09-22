@@ -25,14 +25,14 @@ import { randomUUID } from "node:crypto";
 import { and, eq, gte, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
-  matches, people, players, ratingHistory, ratingLedger, tournaments,
+  divisions, matches, people, ratingHistory, ratingLedger, tournaments,
   type Match, type Person, type Tournament,
 } from "@/lib/db/schema";
 import {
   calcRtgChange, calcExp, marginMultiplier, phaseMultiplier, verificationWeight,
   provisionalMultiplier, DEFAULT_SEED, startingRating, type Phase, type Verification,
 } from "@/lib/rating";
-import { phaseOf, ratingFormatFor, refileSeeds } from "@/lib/rating/tournament";
+import { phaseOf, categoryFormat, categoryRoster, refileSeeds } from "@/lib/rating/tournament";
 import { ratingKey } from "@/lib/sports/registry";
 import { rulesFor } from "@/lib/matchState";
 import { matchResult } from "@/lib/results";
@@ -156,14 +156,15 @@ export async function applyMatchRatings(
   const verification: Verification = opts.verification ?? "organiser";
 
   const [row] = await db
-    .select({ match: matches, tournament: tournaments })
+    .select({ match: matches, tournament: tournaments, genderRule: divisions.genderRule })
     .from(matches)
     .innerJoin(tournaments, eq(matches.tournamentId, tournaments.id))
+    .innerJoin(divisions, eq(matches.divisionId, divisions.id))
     .where(eq(matches.id, matchId))
     .limit(1);
   if (!row) return { status: "skipped", reason: "no such match" };
 
-  const { match: m, tournament: t } = row;
+  const { match: m, tournament: t, genderRule } = row;
 
   /* Already applied. Checked before any work so a re-save cannot double-move a
      rating even if the unique index were somehow dropped. */
@@ -182,8 +183,12 @@ export async function applyMatchRatings(
     return { status: "skipped", reason: `invalid score ${settled.scoreW}-${settled.scoreL}` };
   }
 
-  const roster = await db.select().from(players).where(eq(players.tournamentId, t.id));
-  const key = ratingKey(t.sport, ratingFormatFor(roster, t.minTeamSize));
+  /* THIS CATEGORY's players, and its rule: a Men's Doubles match moves
+     men's-doubles ratings even when the event also runs Women's Doubles. It
+     was the whole event's roster, so any event with men and women in it moved
+     everybody's mixed. See `categoryFormat`. */
+  const roster = await categoryRoster(m.divisionId);
+  const key = ratingKey(t.sport, categoryFormat(roster, t, genderRule));
   /* The roster is complete by now, so this is the format for certain. A seed
      filed under an earlier guess — the first player of an event that did not
      yet know it was doubles, or a roster reshaped since by an approval or a
@@ -192,10 +197,16 @@ export async function applyMatchRatings(
   await refileSeeds(t, roster, key);
 
   const personIdsOf = (teamId: string) =>
-    roster.filter((p) => p.teamId === teamId && p.personId).map((p) => p.personId!);
+    [...new Set(roster.filter((p) => p.teamId === teamId && p.personId).map((p) => p.personId!))];
 
   const winnerIds = personIdsOf(settled.winnerTeamId);
   const loserIds = personIdsOf(settled.loserTeamId);
+  /* One person on both sides cannot beat themselves. It used to reach the
+     unique index on (match, person, format), throw, and be swallowed by the
+     score save's catch — no rating moved and nothing said why. */
+  if (winnerIds.some((id) => loserIds.includes(id))) {
+    return { status: "skipped", reason: "the same person is on both sides" };
+  }
   /* Nobody linked to a person: the event still works, the rating just cannot
      follow anyone out of it. Not an error. */
   if (winnerIds.length === 0 || loserIds.length === 0) {

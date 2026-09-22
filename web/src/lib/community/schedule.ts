@@ -17,7 +17,7 @@ import {
 } from "@/lib/db/schema";
 import { applyResult } from "@/lib/rating/apply";
 import { ratingKey } from "@/lib/sports/registry";
-import { DEFAULT_SEED, sportRating } from "@/lib/rating";
+import { DEFAULT_SEED, pairsFormat, sportRating } from "@/lib/rating";
 import { buildSchedule, type Entrant } from "./pairings";
 import { ensureSession, findSession } from "./store";
 
@@ -28,9 +28,11 @@ export type ScheduleResult = { ok: true; games: number } | { ok: false; error: s
 /**
  * "pb:md" and so on, from who is actually on the court.
  *
- * The same inference the tournament path makes (lib/rating/tournament
- * ratingFormatFor) and for the same reason: there is no category field, so the
- * lineup is the only real evidence. Deliberately computed PER GAME rather than
+ * The same inference the tournament path makes for a category with no rule
+ * (lib/rating `pairsFormat`), and for the same reason: there is no category
+ * field, so the lineup is the only real evidence. A men's pair against a mixed
+ * pair is Open doubles, not mixed — it used to move both men's MIXED rating,
+ * which is what Faisal ruled out on 2026-09-22. Deliberately computed PER GAME rather than
  * per session — a mixed evening genuinely produces some men's doubles and some
  * mixed, and bucketing the whole night as one category would put results in a
  * rating the player does not play.
@@ -49,7 +51,7 @@ export function communityRatingKey(
   const women = all.some((id) => genderOf.get(id) === "F");
 
   if (size === 1) return ratingKey(sport, men && women ? "gn" : women ? "ws" : "ms");
-  return ratingKey(sport, men && women ? "mx" : women ? "wd" : "md");
+  return ratingKey(sport, pairsFormat([lineupA.map((id) => genderOf.get(id)), lineupB.map((id) => genderOf.get(id))]));
 }
 
 /* ── Generating the evening ───────────────────────────────────────────────*/

@@ -2,9 +2,9 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { players as playersTable } from "@/lib/db/schema";
+import { divisions, players as playersTable } from "@/lib/db/schema";
 import { loadTournament } from "@/lib/tournamentState";
-import { tournamentRatings, ratingFormatFor } from "@/lib/rating/tournament";
+import { tournamentRatings } from "@/lib/rating/tournament";
 import { principalFor } from "@/lib/auth/guard";
 import { canView } from "@/lib/auth/policy";
 import { sportOf, formatLabel, usesDupr } from "@/lib/sports/registry";
@@ -40,8 +40,98 @@ export default async function RatingsPage({ params }: { params: Promise<{ slug: 
      as that player's badminton level. */
   const showDupr = usesDupr(t.sport);
 
+  /* One table per CATEGORY: each moves its own rating (Men's Doubles men's
+     doubles, Women's women's), so one table under one format label — as this
+     page had — named a rating half the rows never touched. A player in two
+     categories appears in each, showing only what moved there. */
+  const divisionRows = (await db.select().from(divisions).where(eq(divisions.tournamentId, t.id)))
+    .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+  const sections = [
+    ...divisionRows.map((d) => ({ key: d.id, name: d.name, rows: rows.filter((r) => r.divisionId === d.id) })),
+    { key: "none", name: "Not in a category", rows: rows.filter((r) => !r.divisionId) },
+  ]
+    .filter((sec) => sec.rows.length > 0)
+    .map((sec) => ({ ...sec, format: sec.rows[0].format }));
+
   const anyPlayed = rows.some((r) => r.played > 0);
   const unlinked = rows.filter((r) => !r.carried).length;
+
+  const table = (list: typeof rows) => (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[46rem] border-collapse text-sm">
+        <thead>
+          <tr className="border-b border-neutral-800 text-[10px] uppercase tracking-widest text-neutral-500">
+            <th className="p-2 text-left font-bold">Player</th>
+            <th className="p-2 text-left font-bold">Team</th>
+            <th className="p-2 text-center font-bold">P</th>
+            <th className="p-2 text-right font-bold">Start</th>
+            <th className="p-2 text-right font-bold">Change</th>
+            <th className="p-2 text-right font-bold">RISE</th>
+            <th className="p-2 text-left font-bold">Tier</th>
+            {/* §7: shown wherever the rating is, because a rating without
+                it looks authoritative when it isn't. */}
+            <th className="p-2 text-left font-bold">Reliability</th>
+            {showDupr && <th className="p-2 text-right font-bold">DUPR</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {list.map((r) => (
+            <tr key={r.playerId} className="border-b border-neutral-900">
+              <td className="p-2 font-semibold">
+                {r.personId ? (
+                  <Link href={`/people/${r.personId}`} className="hover:text-amber-400 hover:underline">
+                    {r.name}
+                  </Link>
+                ) : (
+                  <span title="Not linked to a RISE profile">
+                    {r.name} <span className="text-neutral-600">·</span>
+                  </span>
+                )}
+              </td>
+              <td className="truncate p-2 text-neutral-400">{teamName(r.teamId)}</td>
+              <td className="p-2 text-center tabular-nums text-neutral-400">{r.played}</td>
+              <td className="p-2 text-right tabular-nums text-neutral-500">{r.start}</td>
+              <td
+                className={`p-2 text-right font-bold tabular-nums ${
+                  r.delta > 0 ? "text-emerald-400" : r.delta < 0 ? "text-rose-400" : "text-neutral-600"
+                }`}
+              >
+                {r.delta > 0 ? "+" : ""}
+                {r.delta || "—"}
+              </td>
+              <td className="p-2 text-right font-black tabular-nums">{r.current}</td>
+              <td className="whitespace-nowrap p-2 text-neutral-300">
+                {r.tier.emoji} {r.tier.name}
+              </td>
+              <td className={`whitespace-nowrap p-2 text-xs font-bold ${bandClass(r.reliability)}`}>
+                {band(r.reliability) ?? "—"}
+                {r.reliability != null && (
+                  <span className="ml-1 font-normal text-neutral-600">{r.reliability}</span>
+                )}
+              </td>
+              {/* Dated, because the premise of RiseR is that DUPR goes stale. */}
+              {showDupr && (
+                <td className="whitespace-nowrap p-2 text-right text-xs text-neutral-400">
+                  {r.dupr == null ? (
+                    "—"
+                  ) : (
+                    <>
+                      {r.dupr.toFixed(2)}
+                      {r.duprEnteredAt && (
+                        <span className="ml-1 text-neutral-600">
+                          {r.duprEnteredAt.toLocaleDateString("en-GB", { month: "short", year: "2-digit" })}
+                        </span>
+                      )}
+                    </>
+                  )}
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 
   return (
     <>
@@ -53,7 +143,8 @@ export default async function RatingsPage({ params }: { params: Promise<{ slug: 
           </Link>
           <h1 className="mt-2 text-2xl font-black tracking-tight">RISE Ratings</h1>
           <p className="text-[11px] font-bold uppercase tracking-widest text-neutral-500">
-            {sport.name} · {formatLabel(ratingFormatFor(people, t.minTeamSize))}
+            {sport.name}
+            {sections.length === 1 ? ` · ${formatLabel(sections[0].format)}` : ""}
           </p>
         </header>
 
@@ -73,82 +164,19 @@ export default async function RatingsPage({ params }: { params: Promise<{ slug: 
           </p>
         )}
 
-        {rows.length > 0 && (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[46rem] border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-neutral-800 text-[10px] uppercase tracking-widest text-neutral-500">
-                  <th className="p-2 text-left font-bold">Player</th>
-                  <th className="p-2 text-left font-bold">Team</th>
-                  <th className="p-2 text-center font-bold">P</th>
-                  <th className="p-2 text-right font-bold">Start</th>
-                  <th className="p-2 text-right font-bold">Change</th>
-                  <th className="p-2 text-right font-bold">RISE</th>
-                  <th className="p-2 text-left font-bold">Tier</th>
-                  {/* §7: shown wherever the rating is, because a rating without
-                      it looks authoritative when it isn't. */}
-                  <th className="p-2 text-left font-bold">Reliability</th>
-                  {showDupr && <th className="p-2 text-right font-bold">DUPR</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.playerId} className="border-b border-neutral-900">
-                    <td className="p-2 font-semibold">
-                      {r.personId ? (
-                        <Link href={`/people/${r.personId}`} className="hover:text-amber-400 hover:underline">
-                          {r.name}
-                        </Link>
-                      ) : (
-                        <span title="Not linked to a RISE profile">
-                          {r.name} <span className="text-neutral-600">·</span>
-                        </span>
-                      )}
-                    </td>
-                    <td className="truncate p-2 text-neutral-400">{teamName(r.teamId)}</td>
-                    <td className="p-2 text-center tabular-nums text-neutral-400">{r.played}</td>
-                    <td className="p-2 text-right tabular-nums text-neutral-500">{r.start}</td>
-                    <td
-                      className={`p-2 text-right font-bold tabular-nums ${
-                        r.delta > 0 ? "text-emerald-400" : r.delta < 0 ? "text-rose-400" : "text-neutral-600"
-                      }`}
-                    >
-                      {r.delta > 0 ? "+" : ""}
-                      {r.delta || "—"}
-                    </td>
-                    <td className="p-2 text-right font-black tabular-nums">{r.current}</td>
-                    <td className="whitespace-nowrap p-2 text-neutral-300">
-                      {r.tier.emoji} {r.tier.name}
-                    </td>
-                    <td className={`whitespace-nowrap p-2 text-xs font-bold ${bandClass(r.reliability)}`}>
-                      {band(r.reliability) ?? "—"}
-                      {r.reliability != null && (
-                        <span className="ml-1 font-normal text-neutral-600">{r.reliability}</span>
-                      )}
-                    </td>
-                    {/* Dated, because the premise of RiseR is that DUPR goes stale. */}
-                    {showDupr && (
-                      <td className="whitespace-nowrap p-2 text-right text-xs text-neutral-400">
-                        {r.dupr == null ? (
-                          "—"
-                        ) : (
-                          <>
-                            {r.dupr.toFixed(2)}
-                            {r.duprEnteredAt && (
-                              <span className="ml-1 text-neutral-600">
-                                {r.duprEnteredAt.toLocaleDateString("en-GB", { month: "short", year: "2-digit" })}
-                              </span>
-                            )}
-                          </>
-                        )}
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {sections.length === 1 && table(sections[0].rows)}
+        {sections.length > 1 &&
+          sections.map((sec) => (
+            <section key={sec.key} data-category={sec.name} className="space-y-2">
+              <h2 className="text-sm font-black">
+                {sec.name}{" "}
+                <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-500">
+                  · {formatLabel(sec.format)}
+                </span>
+              </h2>
+              {table(sec.rows)}
+            </section>
+          ))}
 
         <p className="text-xs leading-relaxed text-neutral-600">
           Change is what moved at this event. RISE is the player&apos;s current rating across every

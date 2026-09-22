@@ -23,7 +23,7 @@ import { divisionsOf, resolveDivisionId } from "@/lib/divisions";
 import { findOrCreatePerson, carriedRating, normalisePhone, peopleByPhones } from "@/lib/people";
 import { entryFailures, hasRules, rulesOfDivision } from "@/lib/eligibility";
 import { entrantEvidence } from "@/lib/registration";
-import { ratingFormatFor } from "@/lib/rating/tournament";
+import { categoryFormat, categoryRoster } from "@/lib/rating/tournament";
 import { ratingKey } from "@/lib/sports/registry";
 
 const TEAM_COLOURS = [
@@ -123,15 +123,18 @@ export async function approveRegistration(
   }
 
   const existingTeams = await db.select({ id: teams.id }).from(teams).where(eq(teams.tournamentId, t.id));
-  const roster = await db.select().from(players).where(eq(players.tournamentId, t.id));
+  /* The CATEGORY this entry goes into, with its rule: approving a pair into
+     Women's Doubles files them as women's doubles even when the event also
+     runs Men's. */
+  const roster = await categoryRoster(divisionId);
 
   /* The rating bucket is decided by the squad this entry would ADD, not by the
      roster as it stands — approving the first doubles pair into an empty event
      would otherwise be filed as singles. */
-  const format = ratingFormatFor([
+  const format = categoryFormat([
     ...roster,
-    ...entrants.map((e) => ({ teamId: "pending", gender: e.gender }) as never),
-  ], t.minTeamSize);
+    ...entrants.map((e) => ({ teamId: "pending", gender: e.gender })),
+  ], t, division?.genderRule ?? null);
   const formatKey = ratingKey(t.sport, format);
 
   const teamId = randomUUID();

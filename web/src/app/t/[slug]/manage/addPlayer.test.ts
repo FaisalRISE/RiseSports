@@ -8,8 +8,8 @@ import { randomUUID } from "node:crypto";
  * against a real database and through the real `addPlayer`.
  *
  * The bug: the first player added to an empty event is a team of one, so
- * `ratingFormatFor` read the event as SINGLES and their seed went under "pb:ws"
- * while every match of the event moved "pb:mx". The first match hid it — the
+ * the old `ratingFormatFor` read the event as SINGLES and their seed went under
+ * "pb:ws" while every match of the event moved "pb:mx". The first match hid it — the
  * seed carries across formats of one sport — and what was left behind was a
  * seed nobody had played on, counting in their pickleball rating for ever.
  *
@@ -100,8 +100,9 @@ describe("an event whose team size says doubles", () => {
     expect(anya.ratings).toEqual({ "pb:wd": 1000 });
   });
 
-  /* Team size said doubles; only the partner can say MIXED. */
-  it("moves it again when her partner makes the event mixed", async () => {
+  /* Team size said doubles; only the partner can say what KIND. With no
+     category rule, a pair of one man and one woman is mixed doubles. */
+  it("moves it again when her partner makes the pair mixed", async () => {
     const [t] = await db.select().from(schema.tournaments).where(eq(schema.tournaments.slug, "doubles-cup"));
     const teamId = (await db.select().from(schema.teams).where(eq(schema.teams.tournamentId, t.id)))
       .find((x) => x.name === "Falcons")!.id;
@@ -240,5 +241,183 @@ describe("just before a match is rated", () => {
        1000, and a category capped at 950 would have kept her out. */
     expect(rating.sportRating(person, "pb")).toBeLessThan(1000);
     expect(rating.sportRating(person, "pb")).toBe(person.riseRatings["pb:mx"]);
+  });
+});
+
+/* ── Each category moves its OWN rating ───────────────────────────────────
+ * The type used to be decided once for the whole event, from everybody in it.
+ * Men's Doubles beside Women's Doubles is men and women on one roster, so the
+ * first woman added refiled every man's seed to mixed and every match of both
+ * categories moved everyone's mixed rating. */
+
+/** An event with several categories, each with its own rule and teams. */
+async function multiEvent(
+  slug: string,
+  sizes: { min: number; max: number },
+  cats: { name: string; rule: "M" | "F" | "MX" | null; teams: string[] }[],
+) {
+  const id = randomUUID();
+  await db.insert(schema.tournaments).values({
+    id, slug, name: slug, sport: "pb", format: "standard", ownerId: owner, status: "draft",
+    minTeamSize: sizes.min, maxTeamSize: sizes.max,
+  });
+  const out: Record<string, { divisionId: string; teamIds: string[] }> = {};
+  for (const [i, c] of cats.entries()) {
+    const divisionId = randomUUID();
+    await db.insert(schema.divisions).values({ id: divisionId, tournamentId: id, name: c.name, position: i, genderRule: c.rule });
+    const teamIds = c.teams.map(() => randomUUID());
+    await db.insert(schema.teams).values(
+      c.teams.map((name, k) => ({ id: teamIds[k], tournamentId: id, divisionId, name, seed: k + 1 })),
+    );
+    out[c.name] = { divisionId, teamIds };
+  }
+  return { id, cats: out };
+}
+
+describe("an event with more than one category", () => {
+  it("files each category's players under that category's rating", async () => {
+    const t = await multiEvent("two-cats", { min: 2, max: 2 }, [
+      { name: "Men's Doubles", rule: "M", teams: ["MD1", "MD2"] },
+      { name: "Women's Doubles", rule: "F", teams: ["WD1", "WD2"] },
+    ]);
+    const md = t.cats["Men's Doubles"].teamIds;
+    const wd = t.cats["Women's Doubles"].teamIds;
+    const arun = await add(t.id, md[0], { name: "Arun C", gender: "M", band: 1000 });
+    await add(t.id, md[0], { name: "Bala C", gender: "M", band: 1000 });
+    await add(t.id, md[1], { name: "Chet C", gender: "M", band: 800 });
+    await add(t.id, md[1], { name: "Dinu C", gender: "M", band: 800 });
+    /* The first woman in the event: the old code read the whole event as mixed
+       from here and refiled every man above. */
+    const esha = await add(t.id, wd[0], { name: "Esha C", gender: "F", band: 900 });
+    await add(t.id, wd[0], { name: "Fara C", gender: "F", band: 900 });
+    await add(t.id, wd[1], { name: "Gita C", gender: "F", band: 700 });
+    await add(t.id, wd[1], { name: "Hema C", gender: "F", band: 700 });
+
+    expect((await personOf(arun.personId)).riseRatings).toEqual({ "pb:md": 1000 });
+    expect((await rowOf(arun.id)).ratings).toEqual({ "pb:md": 1000 });
+    expect((await personOf(esha.personId)).riseRatings).toEqual({ "pb:wd": 900 });
+  });
+
+  it("moves men's doubles for a Men's Doubles match and women's for a Women's", async () => {
+    const [t] = await db.select().from(schema.tournaments).where(eq(schema.tournaments.slug, "two-cats"));
+    const divs = await db.select().from(schema.divisions).where(eq(schema.divisions.tournamentId, t.id));
+    const teams = await db.select().from(schema.teams).where(eq(schema.teams.tournamentId, t.id));
+    const teamsOf = (name: string) => {
+      const d = divs.find((x) => x.name === name)!;
+      return teams.filter((x) => x.divisionId === d.id).sort((a, b) => a.seed - b.seed);
+    };
+    const play = async (name: string) => {
+      const [a, b] = teamsOf(name);
+      const id = randomUUID();
+      await db.insert(schema.matches).values({
+        id, tournamentId: t.id, divisionId: a.divisionId, round: "Round 1",
+        teamAId: a.id, teamBId: b.id, log: [], lineupA: [], lineupB: [], ackedGates: [],
+        typedScoreA: 11, typedScoreB: 3, rev: 1,
+      });
+      expect((await apply.applyMatchRatings(id)).status).toBe("applied");
+      return id;
+    };
+    const mdMatch = await play("Men's Doubles");
+    const wdMatch = await play("Women's Doubles");
+
+    const formats = async (matchId: string) =>
+      [...new Set((await db.select().from(schema.ratingHistory).where(eq(schema.ratingHistory.matchId, matchId))).map((h) => h.format))];
+    expect(await formats(mdMatch)).toEqual(["pb:md"]);
+    expect(await formats(wdMatch)).toEqual(["pb:wd"]);
+
+    /* And nobody has a mixed rating out of an event with no mixed category. */
+    const inThisEvent = (await db.select().from(schema.people)).filter((p) => / C$/.test(p.name));
+    expect(inThisEvent.length).toBe(8);
+    expect(inThisEvent.some((p) => "pb:mx" in p.riseRatings)).toBe(false);
+  });
+
+  /* An open category judges who is IN IT, not who is in the event. Men-only
+     Open beside Women's Doubles is men's doubles; read off the whole event it
+     was men and women, so it moved mixed (and, since the Open decision, would
+     move Open doubles). */
+  it("rates an all-men open category as men's doubles beside a women's category", async () => {
+    const t = await multiEvent("open-and-wd", { min: 2, max: 2 }, [
+      { name: "Open", rule: null, teams: ["OA", "OB"] },
+      { name: "Women's Doubles", rule: "F", teams: ["WA", "WB"] },
+    ]);
+    const o = t.cats["Open"].teamIds;
+    const w = t.cats["Women's Doubles"].teamIds;
+    for (const [team, names] of [[o[0], ["Ov1", "Ov2"]], [o[1], ["Ov3", "Ov4"]]] as const) {
+      for (const n of names) await add(t.id, team, { name: `${n} W`, gender: "M", band: 900 });
+    }
+    for (const [team, names] of [[w[0], ["Wv1", "Wv2"]], [w[1], ["Wv3", "Wv4"]]] as const) {
+      for (const n of names) await add(t.id, team, { name: `${n} W`, gender: "F", band: 900 });
+    }
+    const id = randomUUID();
+    await db.insert(schema.matches).values({
+      id, tournamentId: t.id, divisionId: t.cats["Open"].divisionId, round: "Round 1",
+      teamAId: o[0], teamBId: o[1], log: [], lineupA: [], lineupB: [], ackedGates: [],
+      typedScoreA: 11, typedScoreB: 5, rev: 1,
+    });
+    expect((await apply.applyMatchRatings(id)).status).toBe("applied");
+    const history = await db.select().from(schema.ratingHistory).where(eq(schema.ratingHistory.matchId, id));
+    expect([...new Set(history.map((h) => h.format))]).toEqual(["pb:md"]);
+  });
+
+  it("files a Mixed category's first player as mixed straight away", async () => {
+    const t = await multiEvent("mixed-only", { min: 1, max: 2 }, [
+      { name: "Mixed", rule: "MX", teams: ["X1", "X2"] },
+    ]);
+    const ira = await add(t.id, t.cats["Mixed"].teamIds[0], { name: "Ira X", gender: "F", band: 950 });
+    expect((await personOf(ira.personId)).riseRatings).toEqual({ "pb:mx": 950 });
+  });
+
+  /* The refile guard's other half: another CATEGORY of the same event holds
+     the seed. Rahul is placed in Men's Doubles, then picked into an open
+     category of the same event, which reads "men's doubles" too until a woman
+     joins it — teams of two, so BOTH his rows are filed "pb:md" and the first
+     half of the guard (this row is filed where the seed sits) is satisfied.
+     Only the second half stands between his seed and Open doubles. */
+  it("leaves a seed another category of this event is holding", async () => {
+    const t = await multiEvent("md-and-open", { min: 2, max: 2 }, [
+      { name: "Men's Doubles", rule: "M", teams: ["M1", "M2"] },
+      { name: "Open", rule: null, teams: ["O1", "O2"] },
+    ]);
+    const rahul = await add(t.id, t.cats["Men's Doubles"].teamIds[0], { name: "Rahul O", gender: "M", band: 1000 });
+    await add(t.id, t.cats["Men's Doubles"].teamIds[0], { name: "Sunil O", gender: "M", band: 900 });
+    expect((await personOf(rahul.personId)).riseRatings).toEqual({ "pb:md": 1000 });
+
+    /* Open is a MIXTURE of pairs, which is what makes it Open doubles: a men's
+       pair in O2, and Rahul's pair about to become mixed. */
+    await add(t.id, t.cats["Open"].teamIds[1], { name: "Uday O", gender: "M", band: 850 });
+    await add(t.id, t.cats["Open"].teamIds[1], { name: "Vijay O", gender: "M", band: 850 });
+    const rahulOpen = await add(t.id, t.cats["Open"].teamIds[0], { name: "Rahul O (open)", gender: "M", personId: rahul.personId! });
+    expect(rahulOpen.ratings).toEqual({ "pb:md": 1000 });
+    await add(t.id, t.cats["Open"].teamIds[0], { name: "Tara O", gender: "F", band: 800 });
+
+    expect((await personOf(rahul.personId)).riseRatings).toEqual({ "pb:md": 1000 });
+    expect((await rowOf(rahul.id)).ratings).toEqual({ "pb:md": 1000 });
+    expect((await rowOf(rahulOpen.id)).ratings).toEqual({ "pb:od": 1000 });
+  });
+
+  it("seeds each category on its own rating", async () => {
+    const t = await multiEvent("seed-cats", { min: 2, max: 2 }, [
+      { name: "Men's Doubles", rule: "M", teams: ["Low", "High"] },
+      { name: "Women's Doubles", rule: "F", teams: ["WLow", "WHigh"] },
+    ]);
+    const md = t.cats["Men's Doubles"].teamIds;
+    await add(t.id, md[0], { name: "Low1 S", gender: "M", band: 700 });
+    await add(t.id, md[0], { name: "Low2 S", gender: "M", band: 700 });
+    await add(t.id, md[1], { name: "High1 S", gender: "M", band: 1100 });
+    await add(t.id, md[1], { name: "High2 S", gender: "M", band: 1100 });
+    const wd = t.cats["Women's Doubles"].teamIds;
+    await add(t.id, wd[0], { name: "WLow1 S", gender: "F", band: 650 });
+    await add(t.id, wd[0], { name: "WLow2 S", gender: "F", band: 650 });
+    await add(t.id, wd[1], { name: "WHigh1 S", gender: "F", band: 1000 });
+    await add(t.id, wd[1], { name: "WHigh2 S", gender: "F", band: 1000 });
+
+    await actions.seedByRating(t.id);
+    const teams = await db.select().from(schema.teams).where(eq(schema.teams.tournamentId, t.id));
+    const seedOf = (name: string) => teams.find((x) => x.name === name)!.seed;
+    expect(seedOf("High")).toBeLessThan(seedOf("Low"));
+    expect(seedOf("WHigh")).toBeLessThan(seedOf("WLow"));
+    /* Every team was rated on a key its players hold: read on the wrong key a
+       women's team would have no evidence and sort to the bottom. */
+    expect(seedOf("WHigh")).toBeLessThan(seedOf("Low"));
   });
 });
