@@ -4,9 +4,12 @@ import { notFound } from "next/navigation";
 import { eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { matches, players, teams, tournaments } from "@/lib/db/schema";
+import { matches, players, ratingHistory, teams, tournaments } from "@/lib/db/schema";
+import { DrawButton } from "./DrawButton";
+import { drawSignature } from "@/lib/draw/guard";
+import { ProblemNotice } from "./ProblemNotice";
 import { viewMatch } from "@/lib/matchState";
-import { matchLine } from "@/lib/results";
+import { hasPlay, matchLine } from "@/lib/results";
 import { sportOf, usesDupr } from "@/lib/sports/registry";
 import { oslLineupIssues } from "@/lib/formats/osl";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
@@ -33,8 +36,15 @@ import { TIERS } from "@/lib/rating";
 
 export const dynamic = "force-dynamic";
 
-export default async function ManagePage({ params }: { params: Promise<{ slug: string }> }) {
+export default async function ManagePage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ slug: string }>;
+  searchParams: Promise<{ problem?: string; category?: string }>;
+}) {
   const { slug } = await params;
+  const { problem, category: problemCategory } = await searchParams;
   const [t] = await db.select().from(tournaments).where(eq(tournaments.slug, slug)).limit(1);
   if (!t) notFound();
 
@@ -53,6 +63,64 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
     teamRows.filter((x) => x.divisionId === divisionId).length;
 
   const divisionName = new Map(divisionRows.map((d) => [d.id, d.name]));
+
+  /* Matches whose rating change is still on record. The server's guard counts
+     them as played (a result that was undone after its rating moved still
+     locks the draw), so the page must too — or it offers a redraw the server
+     then refuses with no match named. One query, AFTER the fixed Promise.all. */
+  const rated = new Set(
+    (await db.selectDistinct({ id: ratingHistory.matchId }).from(ratingHistory)
+      .innerJoin(matches, eq(ratingHistory.matchId, matches.id))
+      .where(eq(matches.tournamentId, t.id))).map((r) => r.id),
+  );
+  const recorded = (m: (typeof matchRows)[number]) => hasPlay(m) || rated.has(m.id);
+
+  /* What each draw would replace, and whether any of it has a result. A draw
+     with a result in it is refused on the server (lib/draw/guard), so the page
+     says why instead of offering a button that will not work, and a redraw that
+     replaces unplayed fixtures asks twice (`DrawButton`). */
+  const drawState = (divisionId: string) => {
+    const mine = matchRows.filter((m) => m.divisionId === divisionId);
+    const whole = mine.filter((m) => m.groupId !== null || m.bracket !== null);
+    const bracketRows = mine.filter((m) => m.bracket !== null);
+    /* The fingerprint the server checks (drawSignature). It also keys the
+       button, so a redraw — new rows, new fingerprint — remounts it closed. */
+    const sig = (rows: typeof mine) => drawSignature(rows.map((m) => m.id));
+    return {
+      wholePlayed: whole.filter(recorded).map((m) => m.round),
+      wholeCount: whole.length,
+      wholeSig: sig(whole),
+      bracketPlayed: bracketRows.filter(recorded).map((m) => m.round),
+      bracketCount: bracketRows.length,
+      bracketSig: sig(bracketRows),
+    };
+  };
+
+  /* The submit end of a draw form. With a result in what it would replace: no
+     button, the reason. Otherwise `DrawButton`: one tap for a first draw, two
+     for a redraw, and the server refuses a redraw that did not confirm. */
+  const drawControl = (token: string, label: string, played: string[], count: number, replaces: string) =>
+    played.length > 0 ? (
+      <p data-draw-locked className="self-center text-[11px] font-semibold text-amber-300">
+        Can’t redraw — {played.length === 1 ? "a match here has a result" : `${played.length} matches here have results`}{" "}
+        ({played.slice(0, 3).join(", ")}{played.length > 3 ? ", …" : ""}), and a redraw would throw{" "}
+        {played.length === 1 ? "it" : "them"} away.
+      </p>
+    ) : (
+      <DrawButton key={`${label}:${token}`} token={token} label={label} replaces={count > 0 ? replaces : null} />
+    );
+  const fixtures = (n: number) => `${n} ${n === 1 ? "match" : "matches"}`;
+
+  /* A refusal comes back as a CODE (see runDraw); the sentence is built here,
+     from the database, never carried in the URL. */
+  const problemName = (problemCategory && divisionName.get(problemCategory)) || "This category";
+  const problemText =
+    problem === "draw-locked" ? `${problemName} already has results, so it was not redrawn: a redraw would throw them away.`
+    : problem === "draw-changed" ? `A result came in for ${problemName} while the draw was being made, so nothing was changed.`
+    : problem === "unknown-category" ? "That category is not part of this event, so nothing was drawn."
+    : problem === "confirm-needed" ? `Nothing in ${problemName} was redrawn: a redraw replaces its fixtures, so it needs “Yes, redraw”.`
+    : problem === "draw-stale" ? `${problemName} changed since this page was opened, so nothing was redrawn. Look at it again, then redraw if you still want to.`
+    : null;
 
   /* ── Who can enter each category ──────────────────────────────────────
      Loaded AFTER the page's fixed Promise.all, never inside it: it is a fixed
@@ -147,6 +215,7 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
             {sportOf(t.sport).name}{isOsl ? " · OSL team format" : ""} ·{" "}
             <Link href={`/t/${slug}`} className="text-amber-400 underline">public page</Link>
           </p>
+          {problemText && <ProblemNotice code={problem ?? ""} text={problemText} />}
 
           {/* Where entries are configured and decided on. Split out rather than
               added to this page, which is already long. */}
@@ -405,9 +474,11 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                     <>
                       <form action={generateSingleElim.bind(null, t.id)} className="border-t border-neutral-800 pt-3">
                         <input type="hidden" name="divisionId" value={d.id} />
-                        <button className="rounded-lg bg-neutral-200 px-4 py-2 text-xs font-black text-neutral-900">
-                          Draw the bracket
-                        </button>
+                        {(() => {
+                          const st = drawState(d.id);
+                          return drawControl(st.wholeSig, "Draw the bracket", st.wholePlayed, st.wholeCount,
+                            `this category's ${fixtures(st.wholeCount)} — its bracket, and any groups and fixtures from before`);
+                        })()}
                       </form>
                       <p className="text-[11px] text-neutral-500">
                         Teams are seeded so the strongest meets the weakest first and the top two can only
@@ -442,14 +513,17 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                         )}
                         <input name="courts" placeholder="Court names, comma separated (optional)"
                           className="min-w-0 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm" />
-                        <button className="rounded-lg bg-neutral-200 px-4 py-2 text-xs font-black text-neutral-900">
-                          {d.shape === "league" ? "Draw league fixtures" : "Draw groups & fixtures"}
-                        </button>
+                        {(() => {
+                          const st = drawState(d.id);
+                          return drawControl(st.wholeSig, d.shape === "league" ? "Draw league fixtures" : "Draw groups & fixtures",
+                            st.wholePlayed, st.wholeCount,
+                            `this category's ${fixtures(st.wholeCount)} — its groups, their fixtures${st.bracketCount ? " and the knockout drawn from them" : ""}`);
+                        })()}
                       </form>
                       <p className="text-[11px] text-neutral-500">
                         {d.shape === "league"
                           ? "Everyone plays everyone once, in one table, with the rounds spread so a team rarely plays twice in a row. No knockout."
-                          : "Teams are snaked across the groups so the strong ones do not all land in group A, and each group plays a full round robin. Redrawing replaces this category’s groups and their matches."}
+                          : "Teams are snaked across the groups so the strong ones do not all land in group A, and each group plays a full round robin. A redraw replaces this category’s groups, their fixtures and any knockout drawn from them — only while none of it has been played."}
                       </p>
 
                       {d.shape === "groups_ko" && (
@@ -461,9 +535,11 @@ export default async function ManagePage({ params }: { params: Promise<{ slug: s
                               <input name="qualify" type="number" min={1} max={4} defaultValue={2}
                                 className="w-16 rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm" />
                             </label>
-                            <button className="rounded-lg bg-neutral-200 px-4 py-2 text-xs font-black text-neutral-900">
-                              Draw knockout
-                            </button>
+                            {(() => {
+                              const st = drawState(d.id);
+                              return drawControl(st.bracketSig, "Draw knockout", st.bracketPlayed, st.bracketCount,
+                                `the ${fixtures(st.bracketCount)} of the knockout drawn before`);
+                            })()}
                           </form>
                           <p className="text-[11px] text-neutral-500">
                             Knockout places are stored as references — A1, B2, W:Semi-Final 1 — and resolve

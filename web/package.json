@@ -25,7 +25,8 @@
     "e2e:schedule": "node e2e/schedule.mjs",
     "e2e:skills": "node e2e/skills.mjs",
     "e2e:registration": "node e2e/registration.mjs",
-    "e2e:eligibility": "node e2e/eligibility.mjs"
+    "e2e:eligibility": "node e2e/eligibility.mjs",
+    "e2e:redraw": "node e2e/redraw.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

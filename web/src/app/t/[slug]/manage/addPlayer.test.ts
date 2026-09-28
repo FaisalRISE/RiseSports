@@ -18,6 +18,9 @@ import { randomUUID } from "node:crypto";
  * different files, and only the path through both proves anything. */
 
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
+/* The draws in the same file redirect with a refusal code; loading the real
+   module outside a request fails. Nothing here draws. */
+vi.mock("next/navigation", () => ({ redirect: (url: string) => { throw new Error(`REDIRECT ${url}`); } }));
 
 const dir = path.join(os.tmpdir(), `rise-addplayer-${randomUUID()}`);
 process.env.DATABASE_URL = `pglite://${dir.replace(/\\/g, "/")}`;

@@ -179,7 +179,8 @@ export async function seed(db: Db) {
       teamAId: oslTeams[0].id, teamBId: oslTeams[2].id,
       lineupA: oslSix(oslTeams[0].id), lineupB: oslSix(oslTeams[2].id),
       log: buildLog(24, 24), server: "a", ackedGates: [7, 14] },
-    { id: id(), tournamentId: oslId, divisionId: oslDivisionId, round: "Final", court: 1,
+    /* In the drawn bracket, where the podium and the round-label rule look. */
+    { id: id(), tournamentId: oslId, divisionId: oslDivisionId, round: "Final", court: 1, bracket: "main",
       teamAId: null, teamBId: null, lineupA: [], lineupB: [], log: [], server: "a" },
   ]);
 

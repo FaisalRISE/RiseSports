@@ -2,11 +2,12 @@
 
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { redirect } from "next/navigation";
+import { and, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/lib/db";
-import { divisions, groups, matches, people, players, ratingHistory, teams, tournaments, type GenderRule } from "@/lib/db/schema";
+import { divisions, groups, matches, people, players, ratingHistory, teams, tournaments, type Division, type GenderRule } from "@/lib/db/schema";
 import {
   NO_RULES, PRESETS, duprToX100, entryFailures, floatingDateISO, hasRules, needsFrom, parseDobISO, parseRules,
   playerEvidence, rulesOfDivision, rulesSentence, squadIsComplete, todayInIndia, waiverLine,
@@ -24,7 +25,7 @@ import { reliabilityForPerson } from "@/lib/rating/reliability";
 import type { PickerResult } from "@/components/PersonPicker";
 import { categoryFormat, categoryRoster, refileSeeds } from "@/lib/rating/tournament";
 import { seedFromDupr } from "@/lib/rating";
-import { hasPlay } from "@/lib/results";
+import { DrawChanged, deleteUnplayed, drawSignature, lockedIds, requireDivision } from "@/lib/draw/guard";
 import { DEFAULT_SPORT, SPORTS, ratingKey, usesDupr } from "@/lib/sports/registry";
 
 /* Same discipline as the scoring actions: load, authorize server-side, write.
@@ -416,7 +417,9 @@ export async function addMatch(tournamentId: string, formData: FormData) {
 
 export async function removeMatch(tournamentId: string, matchId: string) {
   const t = await requireManager(tournamentId);
-  await db.delete(matches).where(eq(matches.id, matchId));
+  /* Only a match of THIS event: deleting by id alone let a manager of one event
+     delete another's matches. (What a delete may do to a PLAYED match is step 8.) */
+  await db.delete(matches).where(and(eq(matches.id, matchId), eq(matches.tournamentId, t.id)));
   revalidatePath(`/t/${t.slug}/manage`);
   revalidatePath(`/t/${t.slug}`);
 }
@@ -425,7 +428,8 @@ export async function removeMatch(tournamentId: string, matchId: string) {
  *  which Rules 3.2 fixes once play begins — so it is refused mid-match. */
 export async function setLineup(tournamentId: string, matchId: string, side: "a" | "b", playerIds: string[]) {
   const t = await requireManager(tournamentId);
-  const [m] = await db.select().from(matches).where(eq(matches.id, matchId)).limit(1);
+  /* Scoped to THIS event, like every other match action. */
+  const [m] = await db.select().from(matches).where(and(eq(matches.id, matchId), eq(matches.tournamentId, t.id))).limit(1);
   if (!m) return { ok: false as const, error: "Match not found." };
   if ((m.log ?? []).length > 0) {
     return { ok: false as const, error: "The order cannot change once play has begun (Rules 3.2)." };
@@ -434,7 +438,7 @@ export async function setLineup(tournamentId: string, matchId: string, side: "a"
   await db
     .update(matches)
     .set(side === "a" ? { lineupA: playerIds } : { lineupB: playerIds })
-    .where(eq(matches.id, matchId));
+    .where(and(eq(matches.id, matchId), eq(matches.tournamentId, t.id)));
 
   revalidatePath(`/t/${t.slug}/manage`);
   return { ok: true as const };
@@ -606,12 +610,80 @@ export async function setDivisionShape(tournamentId: string, formData: FormData)
 
 /* ---------- group stage and knockout ---------- */
 
+/* ── Every draw is refused while anything it would replace has a result ─────
+ * The three draws below each run in ONE transaction that starts by locking the
+ * category row (a double tap waits for the first to finish rather than drawing
+ * twice), refuses while any row it would replace has a result or a moved
+ * rating (`lockedIds`), and deletes through `deleteUnplayed`, which re-checks
+ * each row inside the DELETE and rolls the draw back if one was played after it
+ * was read. A match an organiser added by hand (no group, no bracket) is never
+ * touched by any of them. See lib/draw/guard.
+ *
+ * A refusal is a CODE carried back to the manage page, which builds the
+ * sentence from the database — never a message in the URL, which anyone could
+ * craft. */
+type DrawProblem = "unknown-category" | "draw-locked" | "draw-changed" | "confirm-needed" | "draw-stale";
+
+/* A draw that replaces fixtures must have been asked for by a page that SAW
+   them. The draw's submit button carries `drawSignature` of the rows the page
+   showed (DrawButton); pressing Enter before the second tap sends nothing,
+   and a page opened before somebody else drew sends the signature of what it
+   saw then. Either way the server compares it with what it would actually
+   replace, and refuses on any difference. Nothing to replace, nothing to ask. */
+function seenBy(formData: FormData, replaced: { id: string }[]): DrawProblem | null {
+  if (replaced.length === 0) return null;
+  const sent = String(formData.get("confirm") ?? "");
+  if (!sent) return "confirm-needed";
+  return sent === drawSignature(replaced.map((m) => m.id)) ? null : "draw-stale";
+}
+
+async function runDraw(
+  t: { id: string; slug: string },
+  formData: FormData,
+  body: (tx: Tx, division: Division) => Promise<DrawProblem | void>,
+): Promise<void> {
+  const wanted = String(formData.get("divisionId") ?? "").trim() || null;
+  let problem: DrawProblem | void = undefined;
+  let divisionId = wanted ?? "";
+  try {
+    problem = await db.transaction(async (tx) => {
+      const division = await requireDivision(t.id, wanted, tx);
+      if (!division) return "unknown-category";
+      divisionId = division.id;
+      /* Serialise draws of one category: the second tap waits here. */
+      await tx.select({ id: divisions.id }).from(divisions).where(eq(divisions.id, division.id)).for("update");
+      return body(tx, division);
+    });
+  } catch (e) {
+    if (!(e instanceof DrawChanged)) throw e;
+    problem = "draw-changed";
+  }
+
+  revalidatePath(`/t/${t.slug}/manage`);
+  revalidatePath(`/t/${t.slug}`);
+  /* Outside the try: redirect() works by throwing. */
+  if (problem) redirect(`/t/${t.slug}/manage?problem=${problem}&category=${encodeURIComponent(divisionId)}`);
+}
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** A category's group fixtures and drawn bracket rows — what a groups or
+    straight-knockout draw replaces. Hand-added matches are neither. */
+const drawnRows = (tx: Tx, tournamentId: string, divisionId: string) =>
+  tx.select().from(matches).where(and(
+    eq(matches.tournamentId, tournamentId),
+    eq(matches.divisionId, divisionId),
+    or(isNotNull(matches.groupId), isNotNull(matches.bracket)),
+  ));
+
 /**
  * Draw the teams into groups and generate every group fixture.
  *
- * Destructive by design: it clears any existing groups and their matches, so an
- * organiser who mis-set the group count can simply redraw. Knockout matches
- * (which have no groupId) are left alone.
+ * It replaces the category's groups, their fixtures AND any knockout drawn from
+ * them (whose "A1"/"B2" slots point at the old groups) — but only while none of
+ * it has been played. Once anything has a result the draw is refused: it used
+ * to delete played group matches outright, taking their rating history with
+ * them while the players' ratings stayed moved.
  *
  * A LEAGUE is this with exactly one group: every team plays every other, one
  * table, no knockout. That is not a special case in the draw, only a constraint
@@ -623,68 +695,62 @@ export async function generateGroups(tournamentId: string, formData: FormData) {
   const courtNames = String(formData.get("courts") ?? "")
     .split(",").map((c) => c.trim()).filter(Boolean);
 
-  const divisionId = await divisionFrom(t.id, formData);
-  const [division] = await db.select().from(divisions).where(eq(divisions.id, divisionId));
+  await runDraw(t, formData, async (tx, division) => {
+    /* A league is one group by definition. Enforced here rather than left to
+       the form, so the shape cannot be contradicted by a stale field or a
+       crafted post. */
+    const count = division.shape === "league" ? 1 : asked;
 
-  /* A league is one group by definition. Enforced here rather than left to the
-     form, so the shape cannot be contradicted by a stale field or a crafted
-     post. */
-  const count = division?.shape === "league" ? 1 : asked;
+    const teamRows = await tx
+      .select()
+      .from(teams)
+      .where(and(eq(teams.tournamentId, t.id), eq(teams.divisionId, division.id)));
+    if (teamRows.length < 2) return;
 
-  const teamRows = await db
-    .select()
-    .from(teams)
-    .where(and(eq(teams.tournamentId, t.id), eq(teams.divisionId, divisionId)));
-  if (teamRows.length < 2) return;
+    /* Redraw THIS category only. Drawing Mixed must not wipe the Men's Doubles
+       groups that were drawn an hour ago and may already have results in them. */
+    const replaced = await drawnRows(tx, t.id, division.id);
+    if ((await lockedIds(replaced, tx)).size > 0) return "draw-locked";
+    const unseen = seenBy(formData, replaced);
+    if (unseen) return unseen;
+    await deleteUnplayed(tx, replaced.map((m) => m.id));
+    await tx.delete(groups).where(and(eq(groups.tournamentId, t.id), eq(groups.divisionId, division.id)));
 
-  const squads = await db.select().from(players).where(eq(players.tournamentId, t.id));
-  const six = (teamId: string) => squads.filter((p) => p.teamId === teamId).slice(0, 6).map((p) => p.id);
+    const squads = await tx.select().from(players).where(eq(players.tournamentId, t.id));
+    const six = (teamId: string) => squads.filter((p) => p.teamId === teamId).slice(0, 6).map((p) => p.id);
 
-  /* Redraw THIS category only. Drawing Mixed must not wipe the Men's Doubles
-     groups that were drawn an hour ago and may already have results in them. */
-  const existing = await db
-    .select({ id: groups.id })
-    .from(groups)
-    .where(and(eq(groups.tournamentId, t.id), eq(groups.divisionId, divisionId)));
-  for (const g of existing) {
-    await db.delete(matches).where(eq(matches.groupId, g.id));
-  }
-  await db.delete(groups).where(and(eq(groups.tournamentId, t.id), eq(groups.divisionId, divisionId)));
+    const seeded = [...teamRows].sort((a, b) => a.seed - b.seed);
+    const plans = planGroups(seeded, count, courtNames);
 
-  const seeded = [...teamRows].sort((a, b) => a.seed - b.seed);
-  const plans = planGroups(seeded, count, courtNames);
+    for (const [i, plan] of plans.entries()) {
+      if (plan.entrants.length < 2) continue;
+      const groupId = randomUUID();
+      await tx.insert(groups).values({
+        id: groupId, tournamentId: t.id, divisionId: division.id, key: plan.key,
+        name: `Group ${plan.key}`, court: plan.court, position: i,
+      });
 
-  for (const [i, plan] of plans.entries()) {
-    if (plan.entrants.length < 2) continue;
-    const groupId = randomUUID();
-    await db.insert(groups).values({
-      id: groupId, tournamentId: t.id, divisionId, key: plan.key,
-      name: `Group ${plan.key}`, court: plan.court, position: i,
-    });
-
-    const rows = plan.rounds.flatMap((round, ri) =>
-      round.map(([a, b]) => {
-        const teamA = plan.entrants[a], teamB = plan.entrants[b];
-        return {
-          id: randomUUID(),
-          tournamentId: t.id,
-          divisionId,
-          groupId,
-          round: `Group ${plan.key} · R${ri + 1}`,
-          teamAId: teamA.id,
-          teamBId: teamB.id,
-          lineupA: six(teamA.id),
-          lineupB: six(teamB.id),
-          log: [] as never,
-          server: "a" as const,
-        };
-      }),
-    );
-    if (rows.length) await db.insert(matches).values(rows);
-  }
-
-  revalidatePath(`/t/${t.slug}/manage`);
-  revalidatePath(`/t/${t.slug}`);
+      const rows = plan.rounds.flatMap((round, ri) =>
+        round.map(([a, b]) => {
+          const teamA = plan.entrants[a], teamB = plan.entrants[b];
+          return {
+            id: randomUUID(),
+            tournamentId: t.id,
+            divisionId: division.id,
+            groupId,
+            round: `Group ${plan.key} · R${ri + 1}`,
+            teamAId: teamA.id,
+            teamBId: teamB.id,
+            lineupA: six(teamA.id),
+            lineupB: six(teamB.id),
+            log: [] as never,
+            server: "a" as const,
+          };
+        }),
+      );
+      if (rows.length) await tx.insert(matches).values(rows);
+    }
+  });
 }
 
 /**
@@ -697,60 +763,57 @@ export async function generateGroups(tournamentId: string, formData: FormData) {
  * Byes produce no match row (see lib/formats/singleElim): a bye is not a
  * fixture, and the team that got one appears in the next round as a real team
  * rather than waiting on a match nobody can play.
+ *
+ * It replaces the category's groups (a category switched from groups to a
+ * straight knockout used to keep its group tables, empty) and any earlier
+ * draw — refused, like the others, once any of that has a result.
  */
 export async function generateSingleElim(tournamentId: string, formData: FormData) {
   const t = await requireManager(tournamentId);
-  const divisionId = await divisionFrom(t.id, formData);
-  const [division] = await db.select().from(divisions).where(eq(divisions.id, divisionId));
 
-  const teamRows = await db
-    .select()
-    .from(teams)
-    .where(and(eq(teams.tournamentId, t.id), eq(teams.divisionId, divisionId)));
-  if (teamRows.length < 2) return;
+  await runDraw(t, formData, async (tx, division) => {
+    const teamRows = await tx
+      .select()
+      .from(teams)
+      .where(and(eq(teams.tournamentId, t.id), eq(teams.divisionId, division.id)));
+    if (teamRows.length < 2) return;
 
-  const drawn = singleElimMatches(
-    [...teamRows].map((x) => ({ id: x.id, name: x.name, strength: -x.seed })),
-  );
-  if (!drawn) return;
+    const drawn = singleElimMatches(
+      [...teamRows].map((x) => ({ id: x.id, name: x.name, strength: -x.seed })),
+    );
+    if (!drawn) return;
 
-  /* Replace the unplayed draw in THIS category only, and leave anything with a
-     result alone — redrawing over a played match destroys it. */
-  const existing = await db
-    .select()
-    .from(matches)
-    .where(and(eq(matches.tournamentId, t.id), eq(matches.divisionId, divisionId)));
-  for (const m of existing) {
-    if (!hasPlay(m)) {
-      await db.delete(matches).where(eq(matches.id, m.id));
-    }
-  }
+    const replaced = await drawnRows(tx, t.id, division.id);
+    if ((await lockedIds(replaced, tx)).size > 0) return "draw-locked";
+    const unseen = seenBy(formData, replaced);
+    if (unseen) return unseen;
+    await deleteUnplayed(tx, replaced.map((m) => m.id));
+    await tx.delete(groups).where(and(eq(groups.tournamentId, t.id), eq(groups.divisionId, division.id)));
 
-  const squads = await db.select().from(players).where(eq(players.tournamentId, t.id));
-  const six = (teamId: string | null) =>
-    teamId ? squads.filter((p) => p.teamId === teamId).slice(0, 6).map((p) => p.id) : [];
+    const squads = await tx.select().from(players).where(eq(players.tournamentId, t.id));
+    const six = (teamId: string | null) =>
+      teamId ? squads.filter((p) => p.teamId === teamId).slice(0, 6).map((p) => p.id) : [];
 
-  const third = division?.thirdPlace ? thirdPlaceMatch(drawn) : null;
+    const third = division.thirdPlace ? thirdPlaceMatch(drawn) : null;
 
-  const rows = [...drawn, ...(third ? [third] : [])].map((m) => ({
-    id: randomUUID(),
-    tournamentId: t.id,
-    divisionId,
-    groupId: null,
-    round: m.round,
-    teamAId: m.teamAId,
-    teamBId: m.teamBId,
-    slotA: m.slotA,
-    slotB: m.slotB,
-    lineupA: six(m.teamAId) as never,
-    lineupB: six(m.teamBId) as never,
-    log: [] as never,
-    server: "a" as const,
-  }));
-  if (rows.length) await db.insert(matches).values(rows);
-
-  revalidatePath(`/t/${t.slug}/manage`);
-  revalidatePath(`/t/${t.slug}`);
+    const rows = [...drawn, ...(third ? [third] : [])].map((m) => ({
+      id: randomUUID(),
+      tournamentId: t.id,
+      divisionId: division.id,
+      groupId: null,
+      bracket: "main",
+      round: m.round,
+      teamAId: m.teamAId,
+      teamBId: m.teamBId,
+      slotA: m.slotA,
+      slotB: m.slotB,
+      lineupA: six(m.teamAId) as never,
+      lineupB: six(m.teamBId) as never,
+      log: [] as never,
+      server: "a" as const,
+    }));
+    if (rows.length) await tx.insert(matches).values(rows);
+  });
 }
 
 /**
@@ -760,91 +823,67 @@ export async function generateSingleElim(tournamentId: string, formData: FormDat
  * fill themselves as each group finishes. That way a knockout can be drawn
  * before the group stage is over, and it can never be seeded from a half-played
  * table by mistake.
+ *
+ * It replaces an earlier knockout draw of this category, and is refused once
+ * any of it has a result. It used to keep the played rows and insert a whole
+ * new set beside them, so a second "Semi-Final 1" and a second "Final"
+ * appeared, and the resolver and the podium each believed a different one.
  */
 export async function generateKnockout(tournamentId: string, formData: FormData) {
   const t = await requireManager(tournamentId);
   const perGroup = z.coerce.number().int().min(1).max(4).catch(2).parse(formData.get("qualify"));
 
-  const divisionId = await divisionFrom(t.id, formData);
+  await runDraw(t, formData, async (tx, division) => {
+    const groupRows = await tx
+      .select()
+      .from(groups)
+      .where(and(eq(groups.tournamentId, t.id), eq(groups.divisionId, division.id)));
+    if (groupRows.length < 1) return;
 
-  const groupRows = await db
-    .select()
-    .from(groups)
-    .where(and(eq(groups.tournamentId, t.id), eq(groups.divisionId, divisionId)));
-  if (groupRows.length < 1) return;
+    /* The bracket rows only — the group stage it is drawn from stays. */
+    const replaced = await tx.select().from(matches).where(and(
+      eq(matches.tournamentId, t.id),
+      eq(matches.divisionId, division.id),
+      isNotNull(matches.bracket),
+    ));
+    if ((await lockedIds(replaced, tx)).size > 0) return "draw-locked";
+    const unseen = seenBy(formData, replaced);
+    if (unseen) return unseen;
+    await deleteUnplayed(tx, replaced.map((m) => m.id));
 
-  /* Replace any previous, unplayed knockout draw IN THIS CATEGORY. A played one
-     is left alone: redrawing over results would destroy them. Scoping to the
-     division also stops a Mixed redraw deleting the Men's Doubles semi-finals,
-     which share a tournament and nothing else. */
-  const existing = await db
-    .select()
-    .from(matches)
-    .where(and(eq(matches.tournamentId, t.id), eq(matches.divisionId, divisionId)));
-  for (const m of existing) {
-    if (m.groupId === null && !hasPlay(m)) {
-      await db.delete(matches).where(eq(matches.id, m.id));
+    const pairs = knockoutRefsFromGroups(groupRows.length, perGroup);
+    const label = pairs.length === 1 ? "Final" : pairs.length === 2 ? "Semi-Final" : "Quarter-Final";
+    const knockoutRow = (round: string, slotA: string, slotB: string) => ({
+      id: randomUUID(),
+      tournamentId: t.id,
+      divisionId: division.id,
+      groupId: null,
+      bracket: "main",
+      round,
+      teamAId: null,
+      teamBId: null,
+      slotA,
+      slotB,
+      lineupA: [] as never,
+      lineupB: [] as never,
+      log: [] as never,
+      server: "a" as const,
+    });
+
+    const rows = pairs.map((pair, i) => knockoutRow(pairs.length === 1 ? "Final" : `${label} ${i + 1}`, pair[0], pair[1]));
+    if (rows.length) await tx.insert(matches).values(rows);
+
+    /* A third-place playoff costs one row, because `L:` references resolve just
+       as `W:` ones do — the losing semi-finalists fill it themselves. */
+    if (pairs.length === 2 && division.thirdPlace) {
+      await tx.insert(matches).values(knockoutRow("Third Place", "L:Semi-Final 1", "L:Semi-Final 2"));
     }
-  }
 
-  const pairs = knockoutRefsFromGroups(groupRows.length, perGroup);
-  const label = pairs.length === 1 ? "Final" : pairs.length === 2 ? "Semi-Final" : "Quarter-Final";
-
-  const rows = pairs.map((pair, i) => ({
-    id: randomUUID(),
-    tournamentId: t.id,
-    divisionId,
-    groupId: null,
-    round: pairs.length === 1 ? "Final" : `${label} ${i + 1}`,
-    teamAId: null,
-    teamBId: null,
-    slotA: pair[0],
-    slotB: pair[1],
-    lineupA: [] as never,
-    lineupB: [] as never,
-    log: [] as never,
-    server: "a" as const,
-  }));
-  if (rows.length) await db.insert(matches).values(rows);
-
-  /* A third-place playoff costs one row, because `L:` references resolve just
-     as `W:` ones do — the losing semi-finalists fill it themselves. */
-  const [division] = await db.select().from(divisions).where(eq(divisions.id, divisionId));
-  if (pairs.length === 2 && division?.thirdPlace) {
-    await db.insert(matches).values({
-      id: randomUUID(),
-      tournamentId: t.id,
-      divisionId,
-      groupId: null,
-      round: "Third Place",
-      slotA: "L:Semi-Final 1",
-      slotB: "L:Semi-Final 2",
-      lineupA: [] as never,
-      lineupB: [] as never,
-      log: [] as never,
-      server: "a",
-    });
-  }
-
-  /* A final fed by the two semi-final winners, so the bracket is complete. */
-  if (pairs.length === 2) {
-    await db.insert(matches).values({
-      id: randomUUID(),
-      tournamentId: t.id,
-      divisionId,
-      groupId: null,
-      round: "Final",
-      slotA: "W:Semi-Final 1",
-      slotB: "W:Semi-Final 2",
-      lineupA: [] as never,
-      lineupB: [] as never,
-      log: [] as never,
-      server: "a",
-    });
-  }
-
-  revalidatePath(`/t/${t.slug}/manage`);
-  revalidatePath(`/t/${t.slug}`);
+    /* A final fed by the two semi-final winners, so the bracket is complete. */
+    if (pairs.length === 2) {
+      await tx.insert(matches).values(knockoutRow("Final", "W:Semi-Final 1", "W:Semi-Final 2"));
+    }
+  });
 }
 
 /** Lock a resolved seed reference into a real team once its group has finished. */

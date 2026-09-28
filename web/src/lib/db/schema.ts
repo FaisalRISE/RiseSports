@@ -201,6 +201,19 @@ export const matches = pgTable(
     slotA: text("slot_a"),
     slotB: text("slot_b"),
 
+    /* Which DRAWN bracket this knockout row belongs to: "main" for the one the
+       app draws, "plate" later for a second bracket in the same category. NULL
+       for a group fixture and for a match an organiser added by hand.
+
+       Round labels are identifiers — `W:Semi-Final 1` points at a label, the
+       podium reads "Final" exactly — and nothing kept them unique, so a redraw
+       over a played semi-final left two "Final" rows and the resolver and the
+       podium each picked a different one. The unique index below makes that
+       impossible inside a bracket; group fixtures (which legitimately share
+       "Group A · R1") and hand-added matches are outside it. A CHECK in 0020
+       keeps a group fixture out of every bracket. */
+    bracket: text("bracket"),
+
     /** THE source of truth. One entry per rally: "a" or "b" for whoever won it. */
     log: jsonb("log").$type<Side[]>().notNull().default([]),
     /** Which side served first. */
@@ -236,6 +249,15 @@ export const matches = pgTable(
     index("matches_tournament_idx").on(t.tournamentId),
     index("matches_division_idx").on(t.divisionId),
     index("matches_group_idx").on(t.groupId),
+    /* On (category, round), NOT (category, bracket, round): a later Plate
+       bracket prefixes its labels ("Plate Final"), because `W:`/`L:` refs and the
+       resolver look a match up by its label within the category — two brackets
+       each with a "Final" would be one label pointing at two rows. Literal SQL,
+       like registrations_one_live_per_phone: drizzle-kit writes the predicate
+       into the migration as text. */
+    uniqueIndex("matches_division_bracket_round_idx")
+      .on(t.divisionId, t.round)
+      .where(sql`bracket is not null`),
   ],
 );
 

@@ -121,7 +121,10 @@ try {
   const mainCard = await card("Main").textContent();
   ok(!mainCard.includes("Draw knockout"), "no knockout step is offered for a league");
 
+  /* Main already has group fixtures, so this is a REDRAW: two taps. */
   await card("Main").locator('button:has-text("Draw league fixtures")').click();
+  await p.waitForTimeout(300);
+  await card("Main").locator('[data-draw-confirm-open] button:has-text("Yes, redraw")').click();
   await p.waitForTimeout(1400);
 
   const leagueRounds = await rounds();

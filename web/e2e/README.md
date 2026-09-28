@@ -15,6 +15,7 @@ Ten scripts, all driving the real app in a real browser (`npm run …` works the
 | `pnpm e2e:registration` | players entering from the public page, approval turning an entry into a team and people |
 | `pnpm e2e:skills` | peer ratings: who may rate whom, and rating twice replaces rather than stacks |
 | `pnpm e2e:eligibility` | category rules: every refusal has an accepted twin — gender, Mixed, age on the day, DUPR, a capped rating by phone, approval re-checking, "add anyway", flags that remove nobody, and a category with no rules unchanged |
+| `pnpm e2e:redraw` | a first draw is one tap, a redraw asks twice and replaces the fixtures, and one scored point locks the draw with the reason shown |
 
 Playwright is a devDependency. Once per machine:
 
