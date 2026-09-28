@@ -11,7 +11,7 @@ import "server-only";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { groups, matches, players, tournaments, type Match } from "@/lib/db/schema";
-import { resolveRef, type RefResolver } from "@/lib/brackets";
+import { resolveRef, rowsByLabel, type RefResolver } from "@/lib/brackets";
 import { hasPlay } from "@/lib/results";
 import { buildSchedule, busyKey, type ScheduleMatch, type SchedulePlan } from "./index";
 
@@ -75,8 +75,16 @@ export async function loadScheduleMatches(tournamentId: string): Promise<{
   for (const m of rows) {
     const g = m.groupId ? groupById.get(m.groupId) : null;
     if (g) add(`group:${g.divisionId}:${g.key}`, m.id);
-    /* Ties are addressed by their round label, which is what `W:`/`L:` carry. */
-    add(`tie:${m.divisionId}:${m.round}`, m.id);
+  }
+  /* Ties are addressed by their round label, which is what `W:`/`L:` carry, and
+     each label means ONE row per category — the same row the resolver fills the
+     next round from (`rowsByLabel`): the drawn one, or a hand-added one only
+     where there is no drawn one. A hand-added replacement for a deleted
+     semi-final is what the final really waits on, so it must be a tie here. */
+  for (const divisionId of new Set(rows.map((m) => m.divisionId))) {
+    for (const [label, m] of rowsByLabel(rows.filter((x) => x.divisionId === divisionId))) {
+      add(`tie:${divisionId}:${label}`, m.id);
+    }
   }
 
   const items: ScheduleMatch[] = rows.map((m) => {

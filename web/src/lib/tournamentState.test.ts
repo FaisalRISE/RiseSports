@@ -91,6 +91,8 @@ beforeAll(async () => {
     tournamentId: ids.tournament,
     divisionId,
     groupId,
+    /* A knockout row is part of the drawn bracket; only those answer to W:/L:. */
+    bracket: groupId ? null : "main",
     round,
     teamAId: winner,
     teamBId: loser,
@@ -108,6 +110,10 @@ beforeAll(async () => {
     /* And BOTH categories get a Semi-Final 1 — the second collision. */
     settled(ids.md, "Semi-Final 1", ids.mdWinner, ids.mdLoser, null),
     settled(ids.mx, "Semi-Final 1", ids.mxWinner, ids.mxLoser, null),
+    /* A match an organiser ADDED BY HAND and typed "Semi-Final 1", inserted after
+       the drawn one, with the result the other way round. It must not take
+       over W:Semi-Final 1 — the old Map kept whichever row came last. */
+    { ...settled(ids.md, "Semi-Final 1", ids.mdLoser, ids.mdWinner, null), bracket: null },
   ]);
 }, 60_000);
 
@@ -154,6 +160,42 @@ describe("seed references stay inside their own category", () => {
 
     expect(resolverFor(ids.md).tieLoser("Semi-Final 1")).toBe(ids.mdLoser);
     expect(resolverFor(ids.mx).tieLoser("Semi-Final 1")).toBe(ids.mxLoser);
+  });
+
+  it("answers W: from the DRAWN bracket, never from a hand-added match of the same name", async () => {
+    const { loaded, tables } = await load();
+    const resolverFor = state.resolverFactory(loaded, tables);
+    /* The hand-added row says the loser won; the drawn one says the winner did. */
+    expect(resolverFor(ids.md).tieWinner("Semi-Final 1")).toBe(ids.mdWinner);
+  });
+
+  /* The other half of the rule. Deleting a drawn semi-final and adding it back by
+     hand is today the only way to change who plays it — and with no fallback
+     the Final waited on the deleted row for ever, and the scheduler let the
+     Final be timed alongside the semi that feeds it. */
+  it("answers W: from a hand-added match when the category has no drawn one", async () => {
+    const { divisions, teams, matches } = schema;
+    const div = randomUUID(), x = randomUUID(), y = randomUUID(), semi = randomUUID(), final = randomUUID();
+    await db.insert(divisions).values({ id: div, tournamentId: ids.tournament, name: "Rebuilt", position: 2 });
+    await db.insert(teams).values([
+      { id: x, tournamentId: ids.tournament, divisionId: div, name: "X", seed: 1 },
+      { id: y, tournamentId: ids.tournament, divisionId: div, name: "Y", seed: 2 },
+    ]);
+    await db.insert(matches).values([
+      /* The drawn Final still points at the semi by its label… */
+      { id: final, tournamentId: ids.tournament, divisionId: div, bracket: "main", round: "Final",
+        slotA: "W:Semi-Final 1", slotB: "W:Semi-Final 2", log: [], lineupA: [], lineupB: [], ackedGates: [] },
+      /* …which now exists only as a match added by hand, and has been played. */
+      { id: semi, tournamentId: ids.tournament, divisionId: div, bracket: null, round: "Semi-Final 1",
+        teamAId: x, teamBId: y, typedScoreA: 11, typedScoreB: 6, log: [], lineupA: [], lineupB: [], ackedGates: [] },
+    ]);
+
+    const { loaded, tables } = await load();
+    expect(state.resolverFactory(loaded, tables)(div).tieWinner("Semi-Final 1")).toBe(x);
+
+    const { loadScheduleMatches } = await import("@/lib/schedule/store");
+    const { items } = await loadScheduleMatches(ids.tournament);
+    expect(items.find((i) => i.id === final)?.dependsOn).toContain(semi);
   });
 
   it("knows nothing of a group that belongs to another category only", async () => {

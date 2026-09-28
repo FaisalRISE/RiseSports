@@ -7,6 +7,7 @@ import { PrintButton } from "@/components/PrintButton";
 import { GroupSheet, KnockoutSheet, OrderOfPlaySheet, toPrintMatch, type OrderRow, type PrintMatch } from "@/lib/print/sheets";
 import { scheduleRows, scheduleDay } from "@/lib/schedule/share";
 import { divisionsOf } from "@/lib/divisions";
+import { bracketRounds } from "@/lib/brackets";
 import type { Team } from "@/lib/db/schema";
 
 /* The printable pack.
@@ -81,15 +82,26 @@ export default async function PrintPage({
     }));
   const day = scheduleDay(loaded);
 
-  /* Knockout rounds named from the END, so the last round is the Final whatever
-     the data happens to call it. */
-  const knockout = loaded.matches.filter((m) => m.groupId === null);
-  const roundKeys = [...new Set(knockout.map((m) => m.round))];
-  const names = ["Final", "Semi-finals", "Quarter-finals"];
-  const rounds = roundKeys.map((key, i) => ({
-    label: names[roundKeys.length - 1 - i] ?? key,
-    matches: knockout.filter((m) => m.round === key).map(asPrint),
-  }));
+  /* The knockout, per CATEGORY and per bracket, each round named for where it
+     sits in the draw (`bracketRounds` reads the W: feeders). It used to lump
+     every category's knockout onto one sheet and name the distinct labels
+     counting back from the end, so "Semi-Final 1" printed under
+     "Quarter-finals" and two categories' finals shared one section. A match
+     added by hand is in no bracket, and prints under "Other matches". */
+  const many = divisionRows.length > 1;
+  const rounds: { label: string; matches: PrintMatch[] }[] = [];
+  for (const d of divisionRows) {
+    const mine = loaded.matches.filter((m) => m.divisionId === d.id && m.groupId === null);
+    const prefix = many ? `${d.name} · ` : "";
+    for (const b of [...new Set(mine.map((m) => m.bracket).filter((x): x is string => !!x))].sort()) {
+      const tag = b === "main" ? "" : `${b[0].toUpperCase()}${b.slice(1)} · `;
+      for (const r of bracketRounds(mine.filter((m) => m.bracket === b))) {
+        rounds.push({ label: `${prefix}${tag}${r.name}`, matches: r.matches.map(asPrint) });
+      }
+    }
+    const other = mine.filter((m) => !m.bracket);
+    if (other.length) rounds.push({ label: `${prefix}Other matches`, matches: other.map(asPrint) });
+  }
 
   return (
     <>

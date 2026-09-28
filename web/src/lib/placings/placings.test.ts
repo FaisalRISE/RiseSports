@@ -37,6 +37,7 @@ const match = (over: Partial<Match>): Match => ({
   rev: 0,
   updatedAt: new Date(),
   createdAt: new Date(),
+  bracket: null,
   ...over,
 } as unknown as Match);
 
@@ -118,6 +119,28 @@ describe("a knockout decides the podium", () => {
   it("is not fooled by a semi-final, which also contains the word", () => {
     const p = podiumFor(loaded([result("Semi-Final 1", "A", "B", 11, 7)]), [], "d1");
     expect(p).toBeNull();
+  });
+
+  /* A match added by hand and typed "Final", made BEFORE the drawn final: the
+     old lookup took the first "Final" it found. */
+  it("takes the drawn final over a hand-added match with the same name", () => {
+    const handMade = { ...result("Final", "X", "Y", 11, 2), createdAt: new Date(0) } as Match;
+    const drawn = { ...result("Final", "A", "B", 11, 7), bracket: "main" } as Match;
+    const p = podiumFor(loaded([handMade, drawn]), [], "d1")!;
+    expect(p.gold).toBe("A");
+  });
+
+  /* The workaround kept on purpose: a draw that stopped at quarter-finals can
+     only be finished by adding a Final by hand, and that Final must decide. */
+  it("lets a hand-added final decide a category whose draw has none", () => {
+    const qf = (n: number, a: string, b: string) =>
+      ({ ...result(`Quarter-Final ${n}`, a, b, 11, 5), bracket: "main" }) as Match;
+    const p = podiumFor(
+      loaded([qf(1, "A", "E"), qf(2, "B", "F"), qf(3, "C", "G"), qf(4, "D", "H"), result("Final", "A", "B", 11, 9)]),
+      [], "d1",
+    )!;
+    expect(p.gold).toBe("A");
+    expect(p.silver).toBe("B");
   });
 });
 

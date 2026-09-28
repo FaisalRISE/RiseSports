@@ -192,6 +192,13 @@ ok(perSheet.length===3,'one sheet per group plus the knockout, got '+perSheet.le
    ONCE, not under each round. */
 const koSheet=perSheet.find(s=>/Knockout/.test(s.head));
 ok(koSheet&&koSheet.fx>1,'knockout has a table per round ('+(koSheet&&koSheet.fx)+')');
+/* Named for where each round sits in the draw. The old grouping named labels
+   counting back from the end, and printed Semi-Final 1 under "Quarter-finals". */
+const koHeads=await p.$$eval('.psheet',ss=>{
+  const ko=ss.find(s=>/Knockout/.test(s.querySelector('.sport')?.textContent||''));
+  return ko?[...ko.querySelectorAll('.sub')].map(x=>x.textContent.trim()):[];
+});
+ok(JSON.stringify(koHeads)===JSON.stringify(['Semi-finals','Final']),'knockout rounds are Semi-finals then Final: '+JSON.stringify(koHeads));
 ok(koSheet&&koSheet.caps===1,'knockout caption appears once, not per round (got '+(koSheet&&koSheet.caps)+')');
 const groupSheets=perSheet.filter(s=>/Group/.test(s.head));
 ok(groupSheets.length===2,'two group sheets: '+groupSheets.map(s=>s.head).join(', '));

@@ -1458,6 +1458,102 @@ ratings page, which is now one table per category (`[data-category]`).
 - Production had 24 events, one category each, and no rated matches (checked by query), so
   nothing was ever rated under the wrong key and nothing needed repairing.
 
+**Step 3 — a redraw never destroys a result** (migration `0020`, `lib/draw/guard`).
+
+- The three draws used to check, then delete, outside any transaction: "Draw groups &
+  fixtures" deleted PLAYED group matches (their `rating_history` cascaded away, the players'
+  ratings stayed moved); "Draw knockout" kept a played row and inserted a whole new set beside
+  it, so two "Final" rows existed and the resolver and the podium each believed a different
+  one; a straight-knockout draw left the old groups behind and deleted hand-added matches.
+- **`matches.bracket`**: NULL for a group fixture or a hand-added match, `"main"` for the drawn
+  knockout (Cup/Plate will add `"plate"`). A partial unique index on (category, round) WHERE
+  bracket IS NOT NULL — on the ROUND, not (bracket, round), because `W:`/`L:` refs and the
+  resolver find a match by its label within the category, so a Plate bracket must prefix its
+  labels ("Plate Final") rather than reuse them. A hand-written CHECK keeps group fixtures out
+  of every bracket. Group fixtures legitimately share labels and are outside the index.
+- `0020` backfills existing drawn rows to `"main"` BEFORE building the index. Where a label is
+  duplicated: the PLAYED copy wins, then the one with seed slots (the draw's, not a match an
+  organiser typed "Final" into), then the newest. Only SLOTTED unplayed losers with no rating
+  history are deleted; a row without slots may be hand-added and is left alone. **Never re-run
+  it once the new code is live** — hand-added matches keep `bracket` NULL, and a re-run would
+  pull them into the bracket or delete them. `migration-0020.test.ts` builds the mess at 0019
+  and upgrades it. Production had no matches at all when it was written.
+- Every draw goes through `runDraw`: ONE transaction that locks the category row `FOR UPDATE`
+  (a double tap waits), `requireDivision` REFUSES an unknown or foreign category (the old path
+  quietly redrew the first one), `lockedIds` refuses while anything the draw would replace has
+  play or rating history, and `deleteUnplayed` re-checks every row INSIDE the DELETE and throws
+  `DrawChanged` — rolling the draw back — if one gained a result after it was read.
+- A refusal is a code (`?problem=draw-locked|draw-changed|draw-stale|unknown-category|
+  confirm-needed&category=…`); the manage page builds the sentence, and `ProblemNotice` says it
+  ONCE — it takes the code off the address, or it stayed on screen through every later action,
+  including a redraw of the same category that worked.
+- The page shows the reason in place of a draw button the server would refuse
+  (`[data-draw-locked]`), counting a match with rating history as played exactly as the server
+  does. A redraw is two taps (`DrawButton`): **the confirming submit button does not exist
+  until the first tap.** A button hidden inside a closed `<details>` is still the form's default
+  button, so the first version let Enter in "Qualify per group" redraw with no second tap. The
+  button is keyed on the rows it would replace, so after a redraw it comes back closed rather
+  than one tap from the next.
+- **The confirmation is a FINGERPRINT of what the page saw, not a flag.** The confirming button
+  submits `confirm=<drawSignature of the rows it would replace>` (`lib/draw/guard`, FNV-1a over
+  the sorted ids), and `seenBy` in `runDraw` compares it with the rows in the database: nothing
+  to replace → no confirmation needed; no token → `confirm-needed`; a different one →
+  `draw-stale`. The first version accepted a fixed `confirm=replace`, so a phone left open on
+  the manage page from BEFORE the first draw, or before a colleague's redraw, replaced a draw
+  its owner had never seen with one tap — the two-tap rule protected only the page that was
+  up to date.
+- The podium and honours pick the same Final: honours' one query applies "earliest hand-added
+  only" too (created_at, then id `collate "C"`, matching the podium's sort). Two hand-added
+  Finals used to give two golds on profiles against one champion on the event page.
+- Step 3 was reviewed adversarially: 8 findings, 6 confirmed and fixed above, 1 refuted (a
+  match being scored with no signal cannot be protected server-side — the page says "nothing
+  in it has a recorded result" rather than "has been played" for that reason).
+- What each draw replaces: groups → the category's groups, fixtures AND the knockout drawn from
+  them; straight knockout → the same; knockout → its bracket rows only. A hand-added match is
+  never touched. `removeMatch` and `setLineup` are scoped to their event.
+- `manage/actions.ts` now imports `redirect`, so any test loading it must mock
+  `next/navigation` — the real module fails outside a request (`createContext is not a
+  function`).
+- Tests: `draws.test.ts` (through the real actions, each against its old behaviour),
+  `migration-0020.test.ts`, `e2e/redraw.mjs`. Three of the rules were checked by putting the
+  old code back; each fails its test.
+
+**Step 4 — the knockout is read from the drawn bracket, not from names.**
+
+- **ONE rule for what a knockout label means: `rowsByLabel`** (`lib/brackets`). Within a
+  category, the DRAWN row with that label; only where there is none, the EARLIEST hand-added
+  row (bracket null, group null; `createdAt`, then id). Four readers use it and nothing else
+  decides: `W:`/`L:` resolution (`refResolver`), the scheduler's tie keys, the podium's
+  `decider`, and — in SQL, with `collate "C"` on the id so it sorts the same — `honours.ts`.
+  - The drawn half stops a hand-added match typed "Semi-Final 1" taking over
+    `W:Semi-Final 1` — the Map kept whichever row came last.
+  - The hand-added half is load-bearing too, and the first version of step 4 left it out of
+    the resolver and the scheduler: deleting a drawn semi-final and adding it back by hand is
+    today the only way to change who plays it, and without the fallback the Final waited on
+    the deleted row for ever while the scheduler timed it alongside the semi feeding it.
+  - **A hand-added "Final" still decides a category with no drawn one**: until step 11 builds
+    complete brackets, it is the only way to finish a category whose draw stopped at
+    quarter-finals. Rating weight (`phaseOf`) still reads the label, deliberately unchanged.
+- **`bracketRounds`** (`lib/brackets`) groups rows by depth in the `W:` feeder graph and names
+  each round by its WIDTH: the top round's row count rounded up to a power of two, doubling per
+  round down — 1 is the Final, 2 Semi-finals, 4 Quarter-finals, then "Round of N". Third Place
+  (fed only by `L:`) sits with the top round, listed last. Naming by depth alone called the top
+  round "Final" whatever it was, so a quarter-final-only draw (4 groups × 2, possible until
+  step 11) or a category whose drawn Final was deleted printed its quarter- or semi-finals
+  under "Final". The print pack used to name distinct labels counting back from the end across
+  ALL categories, so "Semi-Final 1" printed under "Quarter-finals" and two categories' finals
+  shared a section. It prints per category, per bracket, per round now, with hand-added
+  matches under "Other matches".
+- A second adversarial review, of steps 3 and 4 together: 4 findings, all confirmed, all fixed
+  — the stale-page redraw (the fingerprint above), the round naming, and the missing hand-added
+  fallback in the resolver and in the scheduler. Each fix was checked by putting the old code
+  back and watching its test fail.
+- `e2e/event.mjs` asserts the exact headings. Its first run happened to be against the OLD
+  print code (the build predated the change; the test file did not) and failed with
+  `["Quarter-finals","Semi-finals","Final"]` — the bug, on record.
+- Test fixtures that build `Match` objects without `bracket` get `undefined`, not null: the
+  podium's rule compares loosely (`== null`) so a fixture and a database row read the same.
+
 ## Access: the site is deliberately open, and the switch is a trap
 
 `rise-sports.vercel.app` lets any visitor create events, manage them and enter scores that move

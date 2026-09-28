@@ -11,7 +11,7 @@ import { db } from "@/lib/db";
 import { groups, matches, teams, tournaments, type Group, type Match, type Team, type Tournament } from "@/lib/db/schema";
 import { viewMatch, tieBreakFor, allowsDraws } from "@/lib/matchState";
 import { standings, type Row, type StandingsMatch } from "@/lib/standings";
-import { resolveRef, refLabel, type RefResolver } from "@/lib/brackets";
+import { resolveRef, refLabel, rowsByLabel, type RefResolver } from "@/lib/brackets";
 import { matchResult } from "@/lib/results";
 
 export type LoadedTournament = {
@@ -97,7 +97,11 @@ export function refResolver(
   const byKey = new Map(
     tables.filter((tb) => tb.group.divisionId === divisionId).map((tb) => [tb.group.key, tb]),
   );
-  const byRound = new Map(mine.map((m) => [m.round, m]));
+  /* The DRAWN bracket's row answers to a `W:`/`L:` label; a hand-added one only
+     where the category has no drawn row of that label (`rowsByLabel`). A match
+     added by hand and typed "Semi-Final 1" used to take over the reference — the
+     Map kept whichever row came last — and fill the final from the wrong match. */
+  const byRound = rowsByLabel(mine);
 
   const outcome = (code: string, want: "w" | "l"): string | null => {
     const m = byRound.get(code);

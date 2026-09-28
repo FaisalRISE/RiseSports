@@ -254,3 +254,113 @@ export function refLabel(ref: SeedRef): string {
 
 export const isSeedRef = (ref: string): boolean =>
   GROUP_REF.test(ref) || ref.startsWith("W:") || ref.startsWith("L:");
+
+/* ── Which row answers to a knockout label ─────────────────────────────── */
+
+export type LabelledRow = {
+  id: string;
+  round: string;
+  bracket?: string | null;
+  groupId?: string | null;
+  createdAt: Date;
+};
+
+/**
+ * In ONE category, the row each knockout label means — for `W:`/`L:`
+ * references, the scheduler's ties, and the podium's Final and Third Place.
+ *
+ * The DRAWN bracket's row wins (0020's unique index keeps its labels one per
+ * category). Only where the category has no drawn row of that label does a
+ * match added by hand answer to it — the EARLIEST (created_at, then id), so the
+ * answer is stable. That fallback is load-bearing, not a nicety: deleting a
+ * drawn semi-final and adding it back by hand is today the only way to change
+ * who plays it, and without the fallback the Final waited on it for ever and
+ * the scheduler let the Final be timed alongside it.
+ *
+ * One definition, because three readers used to keep their own: the resolver
+ * and the scheduler had no fallback while the podium did, so the three
+ * disagreed about the same category. `honours.ts` repeats the rule in SQL.
+ */
+export function rowsByLabel<R extends LabelledRow>(rows: R[]): Map<string, R> {
+  const drawn = new Map<string, R>();
+  const byHand = new Map<string, R>();
+  const earlier = (a: R, b: R) =>
+    (a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) < 0;
+  for (const r of rows) {
+    if (r.bracket != null) drawn.set(r.round, r);
+    else if (r.groupId == null) {
+      const seen = byHand.get(r.round);
+      if (!seen || earlier(r, seen)) byHand.set(r.round, r);
+    }
+  }
+  for (const [label, r] of byHand) if (!drawn.has(label)) drawn.set(label, r);
+  return drawn;
+}
+
+/* ── Which round each knockout row is in, read off the draw ────────────── */
+
+export type BracketRow = { id: string; round: string; slotA: string | null; slotB: string | null };
+
+/**
+ * The rounds of ONE bracket, earliest first, each named for where it sits.
+ *
+ * Read from the draw itself, not from the labels: the top round is the rows
+ * nothing feeds from, the rows their `W:` slots name are one round earlier, and
+ * so on — and each round is named by its WIDTH (one match: Final; two:
+ * Semi-finals; four: Quarter-finals), not by counting down from a final that an
+ * incomplete draw may not have.
+ * The print pack used to take every distinct label across the whole event and
+ * name them counting back from the end — so with two semi-finals and a final,
+ * "Semi-Final 1" printed under "Quarter-finals", and two categories' finals
+ * shared one section. A Third Place (fed by `L:`, fed into nothing) sits with
+ * the Final, where it is played.
+ */
+export function bracketRounds<R extends BracketRow>(rows: R[]): { name: string; matches: R[] }[] {
+  const byLabel = new Map(rows.map((r) => [r.round, r]));
+  /* A row's parent is the row whose slot says W:<this row's label>. */
+  const parentOf = new Map<string, R>();
+  for (const r of rows) {
+    for (const slot of [r.slotA, r.slotB]) {
+      const m = slot?.match(/^W:(.+)$/);
+      const fed = m ? byLabel.get(m[1]) : undefined;
+      if (fed) parentOf.set(fed.id, r);
+    }
+  }
+  const depth = (r: R, seen = new Set<string>()): number => {
+    const p = parentOf.get(r.id);
+    if (!p || seen.has(p.id)) return 1; // a cycle cannot happen in a draw; guard anyway
+    seen.add(r.id);
+    return depth(p, seen) + 1;
+  };
+
+  const byDepth = new Map<number, R[]>();
+  for (const r of rows) {
+    const d = depth(r);
+    byDepth.set(d, [...(byDepth.get(d) ?? []), r]);
+  }
+
+  /* The top round is not always a final. A draw that stopped at quarter-finals
+     (possible until the draw builds complete brackets) has four rows that feed
+     nothing, and so does a category whose drawn Final was deleted; named by
+     depth alone, those printed under "Final". So the top round is named by how
+     WIDE it is, and each round below it is twice as wide. A third-place match —
+     fed only by losers — sits with the top round but does not widen it. */
+  const losersOnly = (r: R) =>
+    [r.slotA, r.slotB].some((s) => s?.startsWith("L:")) && ![r.slotA, r.slotB].some((s) => s?.startsWith("W:"));
+  const top = (byDepth.get(1) ?? []).filter((r) => !losersOnly(r));
+  const base = 2 ** Math.ceil(Math.log2(Math.max(1, top.length))); // matches in the top round
+  const nameOf = (d: number) => {
+    const m = base * 2 ** (d - 1); // matches in this round
+    return m === 1 ? "Final" : m === 2 ? "Semi-finals" : m === 4 ? "Quarter-finals" : `Round of ${2 * m}`;
+  };
+  /* The Final first, the third-place match last, the rest 1, 2, 10 in numeric
+     order between them. */
+  const order = (a: R, b: R) => {
+    const rank = (r: R) => (r.round === "Final" ? 0 : r.round === "Third Place" ? 2 : 1);
+    const num = (r: R) => Number(r.round.match(/(\d+)$/)?.[1] ?? 0);
+    return rank(a) - rank(b) || num(a) - num(b) || a.round.localeCompare(b.round);
+  };
+  return [...byDepth.entries()]
+    .sort((a, b) => b[0] - a[0])
+    .map(([d, list]) => ({ name: nameOf(d), matches: [...list].sort(order) }));
+}

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  seedOrder, seedBracket, buildLoserBracket, advanceDE, resolveRef, refLabel, isSeedRef,
+  seedOrder, seedBracket, buildLoserBracket, advanceDE, resolveRef, refLabel, isSeedRef, bracketRounds,
   type Entrant, type Round, type BracketMatch,
 } from "./index";
 
@@ -192,5 +192,69 @@ describe("seed references", () => {
     expect(refLabel("A1")).toContain("group A");
     expect(refLabel("W:SF1")).toBe("Winner SF1");
     expect(refLabel("L:SF1")).toBe("Loser SF1");
+  });
+});
+
+/* ── Rounds read off the draw ─────────────────────────────────────────── */
+
+describe("bracketRounds", () => {
+  const row = (round: string, slotA: string | null, slotB: string | null) => ({ id: round, round, slotA, slotB });
+  const eight = [
+    row("Quarter-Final 1", "A1", "D2"), row("Quarter-Final 2", "B1", "C2"),
+    row("Quarter-Final 3", "C1", "B2"), row("Quarter-Final 4", "D1", "A2"),
+    row("Semi-Final 1", "W:Quarter-Final 1", "W:Quarter-Final 2"),
+    row("Semi-Final 2", "W:Quarter-Final 3", "W:Quarter-Final 4"),
+    row("Final", "W:Semi-Final 1", "W:Semi-Final 2"),
+    row("Third Place", "L:Semi-Final 1", "L:Semi-Final 2"),
+  ];
+
+  it("names each round by where it sits, earliest first", () => {
+    const rounds = bracketRounds(eight);
+    expect(rounds.map((r) => r.name)).toEqual(["Quarter-finals", "Semi-finals", "Final"]);
+    expect(rounds[0].matches.map((m) => m.round)).toEqual(["Quarter-Final 1", "Quarter-Final 2", "Quarter-Final 3", "Quarter-Final 4"]);
+    /* The third-place playoff is played with the final, so it prints there. */
+    expect(rounds[2].matches.map((m) => m.round)).toEqual(["Final", "Third Place"]);
+  });
+
+  it("does not depend on the order the rows arrive in", () => {
+    expect(bracketRounds([...eight].reverse()).map((r) => r.name)).toEqual(["Quarter-finals", "Semi-finals", "Final"]);
+  });
+
+  it("sorts 10 after 9", () => {
+    /* A first round of twelve matches with nothing drawn after it yet. */
+    const rows = Array.from({ length: 12 }, (_, i) => row(`Round of 32 ${i + 1}`, null, null));
+    const [first] = bracketRounds(rows);
+    expect(first.name).toBe("Round of 32");
+    expect(first.matches.slice(8, 11).map((m) => m.round)).toEqual(["Round of 32 9", "Round of 32 10", "Round of 32 11"]);
+  });
+
+  /* The top round is named by how wide it is, not assumed to be a final. A draw
+     that stopped at quarter-finals — possible until the draw builds complete
+     brackets — used to print its four quarter-finals under "Final". */
+  it("names a draw that stops at quarter-finals as quarter-finals", () => {
+    const four = eight.slice(0, 4);
+    expect(bracketRounds(four).map((r) => r.name)).toEqual(["Quarter-finals"]);
+    /* Three groups × 2 draws three quarter-finals: still quarter-finals. */
+    expect(bracketRounds(eight.slice(0, 3)).map((r) => r.name)).toEqual(["Quarter-finals"]);
+  });
+
+  it("names the semi-finals as semi-finals when the final has been deleted", () => {
+    const noFinal = eight.filter((r) => r.round !== "Final");
+    const rounds = bracketRounds(noFinal);
+    expect(rounds.map((r) => r.name)).toEqual(["Quarter-finals", "Semi-finals"]);
+    /* The third-place match still sits with the top round, and does not widen it. */
+    expect(rounds[1].matches.map((m) => m.round)).toEqual(["Semi-Final 1", "Semi-Final 2", "Third Place"]);
+  });
+
+  /* The print pack's old grouping, kept so the reason stays visible: distinct
+     labels named counting back from the end. With the rows in the order a
+     semi-final draw writes them, SF1 printed under "Quarter-finals". */
+  it("used to print a semi-final under Quarter-finals", () => {
+    const rows = [row("Semi-Final 1", "A1", "B2"), row("Semi-Final 2", "B1", "A2"), row("Final", "W:Semi-Final 1", "W:Semi-Final 2")];
+    const keys = [...new Set(rows.map((m) => m.round))];
+    const names = ["Final", "Semi-finals", "Quarter-finals"];
+    const old = keys.map((key, i) => ({ label: names[keys.length - 1 - i] ?? key, key }));
+    expect(old.find((r) => r.key === "Semi-Final 1")!.label).toBe("Quarter-finals");
+    expect(bracketRounds(rows).map((r) => r.name)).toEqual(["Semi-finals", "Final"]);
   });
 });

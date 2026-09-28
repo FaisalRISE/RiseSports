@@ -22,6 +22,7 @@ import "server-only";
  */
 
 import { matchResult } from "@/lib/results";
+import { rowsByLabel } from "@/lib/brackets";
 import type { GroupTable, LoadedTournament } from "@/lib/tournamentState";
 import type { Match, Tournament } from "@/lib/db/schema";
 
@@ -75,11 +76,11 @@ export function podiumFor(
   const mine = loaded.matches.filter((m) => m.divisionId === divisionId);
   if (mine.length === 0) return null;
 
-  const final = mine.find((m) => m.round === FINAL);
+  const final = decider(mine, FINAL);
   if (final) {
     const decided = settled(t, final);
     if (!decided) return null;
-    const third = mine.find((m) => m.round === THIRD);
+    const third = decider(mine, THIRD);
     const bronze = third ? (settled(t, third)?.winner ?? null) : null;
     return { divisionId, gold: decided.winner, silver: decided.loser, bronze, via: "final" };
   }
@@ -101,6 +102,23 @@ export function podiumFor(
     bronze: third?.teamId ?? null,
     via: "table",
   };
+}
+
+/**
+ * The row that decides a place: the DRAWN bracket's row with that name.
+ *
+ * A match added by hand and typed "Final" used to be able to take the podium —
+ * whichever "Final" came first won. Only when the category has no drawn row of
+ * that name does a hand-added one count (the earliest, so the answer is
+ * stable): that is how an organiser finishes a category whose draw stopped at
+ * quarter-finals, and taking it away before the draw builds complete brackets
+ * would leave those events with no champion at all.
+ */
+function decider(mine: Match[], name: string): Match | undefined {
+  /* The one rule every reader of a knockout label uses (lib/brackets); its
+     "earliest" is created_at then id — the order honours.ts uses in SQL, so the
+     profile and the event page always pick the same row. */
+  return rowsByLabel(mine).get(name);
 }
 
 /** Every category's podium, skipping the ones not yet decided. */

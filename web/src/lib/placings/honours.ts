@@ -19,7 +19,7 @@ import "server-only";
  * is shown on the event's own page. Worth revisiting if leagues become common.
  */
 
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { divisions, matches, players, tournaments } from "@/lib/db/schema";
 import { settled, type Placing } from "./index";
@@ -55,6 +55,20 @@ export async function honoursFor(personId: string): Promise<Honour[]> {
     .where(
       and(
         inArray(matches.round, [FINAL, THIRD]),
+        /* EXACTLY the podium's rule (`decider` in ./index): the DRAWN bracket's
+           row, or — only where the category has no drawn row of that name — the
+           EARLIEST hand-added one (by created_at, then id). Without "earliest",
+           two hand-added Finals in one category gave two golds on profiles while
+           the event page named one champion. Still one query — see the note
+           above on why this is not podiums() per event. */
+        or(
+          eq(matches.bracket, "main"),
+          and(
+            sql`${matches.bracket} is null and ${matches.groupId} is null`,
+            sql`not exists (select 1 from ${matches} as drawn where drawn.division_id = "matches"."division_id" and drawn.round = "matches"."round" and drawn.bracket is not null)`,
+            sql`not exists (select 1 from ${matches} as earlier where earlier.division_id = "matches"."division_id" and earlier.round = "matches"."round" and earlier.bracket is null and earlier.group_id is null and (earlier.created_at, earlier.id collate "C") < ("matches"."created_at", "matches"."id" collate "C"))`,
+          ),
+        ),
         or(inArray(matches.teamAId, teamIds), inArray(matches.teamBId, teamIds)),
       ),
     );
