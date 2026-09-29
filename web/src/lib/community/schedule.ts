@@ -15,7 +15,7 @@ import {
   people, ratingHistory,
   type CommunityGame, type CommunityMatch, type Person,
 } from "@/lib/db/schema";
-import { applyResult } from "@/lib/rating/apply";
+import { applyResult, lockMatch } from "@/lib/rating/apply";
 import { ratingKey } from "@/lib/sports/registry";
 import { DEFAULT_SEED, pairsFormat, sportRating } from "@/lib/rating";
 import { buildSchedule, type Entrant } from "./pairings";
@@ -56,6 +56,8 @@ export function communityRatingKey(
 
 /* ── Generating the evening ───────────────────────────────────────────────*/
 
+const ALREADY_SCORED = "Scores have already been entered — clear them first.";
+
 /**
  * Build the pairings for one date from whoever is confirmed.
  *
@@ -72,19 +74,20 @@ export async function generateSchedule(
   const session = await ensureSession(game.id, date);
 
   const played = await db
-    .select({ id: communityMatches.id })
+    .select({ id: communityMatches.id, scoreA: communityMatches.scoreA, scoreB: communityMatches.scoreB })
     .from(communityMatches)
     .where(eq(communityMatches.sessionId, session.id));
 
+  /* A quick refusal, before any work. NOT the guard — it holds nothing, so a
+     score can land after it; the guard is asked again under the lock below. */
+  if (played.some((g) => g.scoreA != null || g.scoreB != null)) return { ok: false, error: ALREADY_SCORED };
   if (played.length > 0) {
     const scored = await db
       .select({ id: ratingHistory.id })
       .from(ratingHistory)
       .where(inArray(ratingHistory.communityMatchId, played.map((p) => p.id)))
       .limit(1);
-    if (scored.length > 0) {
-      return { ok: false, error: "Scores have already been entered — clear them first." };
-    }
+    if (scored.length > 0) return { ok: false, error: ALREADY_SCORED };
   }
 
   const confirmed = await db
@@ -110,8 +113,36 @@ export async function generateSchedule(
 
   const blocks = buildSchedule(entrants, game, rand);
 
-  await db.transaction(async (tx) => {
-    /* Replace wholesale. No score exists at this point — checked above — so
+  const refused = await db.transaction(async (tx) => {
+    /* Lock this evening's games, then ask again whether any has been scored.
+       The check above ran with nothing held, and a score saved after it was
+       deleted here with its game: ON DELETE CASCADE took the rating history
+       and left the players' ratings moved, with nothing to point at and
+       nothing a clear could ever take back. Locked first, a save that is
+       mid-way finishes before this reads, and is seen. Match rows before
+       anything else is the order every rating writer takes (lib/rating/apply),
+       and this takes no person at all.
+
+       "Scored" is the SCORE, not only its rating: a save writes the score and
+       rates it in two transactions, and a regenerate landing between them
+       found no rating yet and deleted the game with its score. */
+    const games = await tx
+      .select({ id: communityMatches.id, scoreA: communityMatches.scoreA, scoreB: communityMatches.scoreB })
+      .from(communityMatches)
+      .where(eq(communityMatches.sessionId, session.id))
+      .orderBy(asc(communityMatches.id))
+      .for("update");
+    if (games.some((g) => g.scoreA != null || g.scoreB != null)) return true;
+    if (games.length > 0) {
+      const [scored] = await tx
+        .select({ id: ratingHistory.id })
+        .from(ratingHistory)
+        .where(inArray(ratingHistory.communityMatchId, games.map((g) => g.id)))
+        .limit(1);
+      if (scored) return true;
+    }
+
+    /* Replace wholesale. No score exists — just checked, under the lock — so
        there is nothing to preserve and nothing to reconcile. */
     await tx.delete(communityMatches).where(eq(communityMatches.sessionId, session.id));
     await tx.delete(communityByes).where(eq(communityByes.sessionId, session.id));
@@ -146,7 +177,9 @@ export async function generateSchedule(
       .update(communitySessions)
       .set({ scheduledAt: new Date() })
       .where(eq(communitySessions.id, session.id));
+    return false;
   });
+  if (refused) return { ok: false, error: ALREADY_SCORED };
 
   const games = blocks.reduce((n, b) => n + b.courts.reduce((m, c) => m + c.games.length, 0), 0);
   return { ok: true, games };
@@ -274,29 +307,32 @@ export async function saveScore(
   if (scoreA < 0 || scoreB < 0) return { ok: false, error: "Scores cannot be negative." };
   if (scoreA === scoreB) return { ok: false, error: "A game cannot be a draw — somebody has to win." };
 
-  const [match] = await db
-    .select()
-    .from(communityMatches)
-    .where(eq(communityMatches.id, matchId))
-    .limit(1);
-  if (!match) return { ok: false, error: "No such game." };
+  /* The score is fixed once it counts: re-saving would either move the rating
+     twice or leave the recorded score disagreeing with the recorded change.
 
-  /* The rating has already moved for this game. Re-saving would either move it
-     twice or leave the recorded score disagreeing with the recorded change, so
-     the score is fixed once it counts. */
-  const applied = await db
-    .select({ id: ratingHistory.id })
-    .from(ratingHistory)
-    .where(eq(ratingHistory.communityMatchId, matchId))
-    .limit(1);
-  if (applied.length > 0) {
-    return { ok: false, error: "This score is already counted. Ask an organiser to undo it first." };
-  }
-
-  await db
-    .update(communityMatches)
-    .set({ scoreA, scoreB })
-    .where(eq(communityMatches.id, matchId));
+     Asked and written as ONE write, under the game's lock. They were two
+     statements with nothing held between them, so a second save could pass
+     "already counted" before the first save's rating committed and write its
+     own score after it — the game showing one winner, the ratings moved for
+     the other, and the second phone told it had saved. The lock is the one
+     every rating writer takes first (`lockMatch`), so a second save now either
+     finds the first rating and is refused, or writes before the first rating
+     locks the row, in which case that apply finds the score changed and leaves
+     the rating to this save. */
+  const wrote = await db.transaction(async (tx): Promise<{ ok: true; match: CommunityMatch } | { ok: false; error: string }> => {
+    const locked = await lockMatch(tx, { kind: "community", communityMatchId: matchId });
+    if (locked?.kind !== "community") return { ok: false, error: "No such game." };
+    const [counted] = await tx
+      .select({ id: ratingHistory.id })
+      .from(ratingHistory)
+      .where(eq(ratingHistory.communityMatchId, matchId))
+      .limit(1);
+    if (counted) return { ok: false, error: "This score is already counted. Ask an organiser to undo it first." };
+    await tx.update(communityMatches).set({ scoreA, scoreB }).where(eq(communityMatches.id, matchId));
+    return { ok: true, match: locked.row };
+  });
+  if (!wrote.ok) return { ok: false, error: wrote.error };
+  const { match } = wrote;
 
   const aWon = scoreA > scoreB;
   const winnerIds = aWon ? match.lineupA : match.lineupB;
@@ -322,6 +358,14 @@ export async function saveScore(
        verification weight says so, and damps the movement accordingly. */
     verification: "self",
     now: new Date(),
+    /* The score written above must still be the score when the rating is
+       written. Between the two, another save can take the lock and write its
+       own score (nothing had counted yet, so it was allowed to), or a clear
+       can land. The game shows the LAST score written, so only the save that
+       wrote it may move the rating; after a clear there is no score, and
+       nothing moves. */
+    unchanged: (locked) =>
+      locked.kind === "community" && locked.row.scoreA === scoreA && locked.row.scoreB === scoreB,
   });
 
   return {
@@ -331,14 +375,10 @@ export async function saveScore(
   };
 }
 
-/** Clear a score and take back the rating it moved. */
+/** Clear a score and take back the rating it moved, as one write. */
 export async function clearScore(matchId: string): Promise<SaveScoreResult> {
-  const { revertCommunityResult } = await import("./revert");
-  await revertCommunityResult(matchId);
-  await db
-    .update(communityMatches)
-    .set({ scoreA: null, scoreB: null })
-    .where(eq(communityMatches.id, matchId));
+  const { clearCommunityResult } = await import("./revert");
+  await clearCommunityResult(matchId);
   return { ok: true, ratingApplied: false };
 }
 

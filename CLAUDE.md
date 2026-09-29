@@ -1554,6 +1554,133 @@ ratings page, which is now one table per category (`[data-category]`).
 - Test fixtures that build `Match` objects without `bracket` get `undefined`, not null: the
   podium's rule compares loosely (`== null`) so a fixture and a database row read the same.
 
+**Step 5 — taking a rating back is exact and safe** (`lib/rating/apply.ts`; no migration, no
+visible change).
+
+- **The old faults, each now a failing test on the old code.** `rating/revert.test.ts` uses only
+  calls the old code also had, and 22 of its 26 tests fail there, each for its own reason:
+  - two reverts of one match both subtracted it (rows read BEFORE the transaction, subtracted
+    inside it);
+  - two results for one player landing together kept only the second (people read before the
+    transaction and written back as absolute values — the match count came out one short);
+  - a revert left the partner record, "last played" and the reliability snapshot where the
+    match had put them, and left behind any rating the match had CREATED (below);
+  - a result corrected between the apply's read and its write was applied with the OLD score;
+  - a second community save could land its score after the first save's rating, and a
+    regenerated evening could delete a fresh score's history while its ratings stayed moved.
+
+  The other four pass there by design: they guard what the old code already did right —
+  applying when only the serve moved (the choice of result over `rev`, below), taking back an
+  older match without touching a newer one, keeping a seed whose only match predates the seed
+  flag, and a reliability snapshot of the whole record.
+- **ONE lock order for every rating writer: the match row, then the people — all of them in one
+  `ORDER BY id … FOR NO KEY UPDATE` statement.** `lockMatch` and `lockPeople` are the only two
+  places either lock is taken. Postgres locks rows in the order the sort returns them, so two
+  writers queue rather than circle. A deadlock here would not be an error anybody saw: the
+  score save swallows a rating failure and ratings move only on the finish-line transition, so
+  nothing would retry it.
+  - **NO KEY UPDATE, never FOR UPDATE.** FOR UPDATE is the one row lock that conflicts with the
+    FOR KEY SHARE a foreign-key check takes on the row an INSERT points at — so every skill
+    rating, game join or event entry naming one of the players waited behind a rating, and a
+    skill rating (which checks its subject before its rater, in whatever order they are) could
+    close a circle with it. NO KEY UPDATE is what the plain UPDATEs the old code ran took
+    anyway: it conflicts with every rating writer and with nothing that merely refers to a row.
+    Caught by a reviewer from the Postgres lock table; PGlite runs one transaction at a time and
+    cannot show it.
+  - **Any OTHER transaction that writes more than one person takes them through `lockPeople`
+    too.** Approving an entry fills in dates of birth, and did it one by one in ENTRY order, so it
+    could hold one player while a rating held the other — and the database often kills the
+    rating, which nothing retries. It locks them all first now (`registration/approve.ts`).
+  - Writers that hold one row per statement outside a transaction (`refileSeeds`, a score
+    write) cannot close a circle. Regenerating a community evening locks its match rows
+    (`FOR UPDATE`, because it deletes them) and never a person.
+- **What the tests can and cannot see.** PGlite serialises transactions, so a read taken BEFORE
+  a lock is invisible to every behavioural test — a reviewer showed a revert that read the
+  history before locking passed all 22 of the first tests. So `rating/locks.test.ts` records
+  the SQL each transaction sends (and its parameters) and pins the order itself: the first
+  statement locks the match; the first statement to touch a person is the one sorted lock, and
+  it covers everybody the transaction then writes; no player's history is read before it;
+  nothing takes FOR UPDATE; nothing about a player is written outside the rating's transaction.
+  Regenerate and approval have lock-order tests of their own. **34 plausible wrong versions**
+  were applied to the real files (a scratch runner, restoring each) and every one is caught by
+  the test aimed at it — reading before either lock, locking some players or in the wrong
+  mode or order, each field of the result check, the replay order and its tie-break, every
+  branch of the created-format rule, the timestamp, both community guards, the approval.
+- **Everything is computed INSIDE the transaction, after the locks** — ratings, match counts,
+  today's movement for the ±60 cap, recent meetings for the damping, and now the under-rated
+  flag and reliability snapshot too (`derivedFor`). Those were refreshed after the commit from
+  an unlocked read, so an apply and a revert crossing each other could leave the older answer;
+  a player with matches on record was shown with none. They are advisory, so a slip in that
+  arithmetic returns null and the rating is written without them rather than rolled back.
+  Doing it in the same write is also FEWER round trips than refreshing after — the health probe
+  measures ~185ms per query from the live site, and the referee's final tap waits on this.
+- **Revert: `DELETE … RETURNING`, so only the transaction that deleted a row subtracts it**, and
+  the match row is locked before that, so a second revert waits and then finds nothing.
+  `revertResultIn(tx, ref)` takes the caller's transaction (step 7 will fold it into the write
+  that changes the match); `revertMatchRatings` / `revertCommunityResult` wrap it.
+  - **A format the matches CREATED goes when its last match does.** The subtraction left the
+    key at its old value with a count of nought, and for a player seeded by DUPR or an
+    organiser every key counts (`sportRating`) — a first mixed game typed and cleared left a
+    mixed rating nothing stood behind, counting toward their level for ever. Every history row
+    carries `notes.seeded` for its whole CHAIN: did the format's number exist before the chain's
+    first match? A chain with rows passes its answer on (`seededChains`, one grouped query), so
+    it holds however the matches are later taken back — oldest first, or an old one corrected
+    and re-applied under newer ones. A row older than the flag counts as seeded: never delete.
+    Safe because nothing places a seed on a key history created (seeds are written only by
+    `newPersonRow` and moved by `refileSeeds` into an EMPTY key — checked).
+  - **The partner record is REPLAYED from what is left** (`partnerStatsFromHistory`), not
+    un-merged. It stores rounded averages, so taking one match back out by arithmetic is a
+    point out and a second undo builds on the first's error — three in a row drifted by two.
+    Replay skips the engine's first rows (before be4bff2), which name partners but record no
+    ratings and were never merged.
+  - **History is stamped with `clock_timestamp()`, not the column's `now()` default** — `now()`
+    is when the TRANSACTION began, so two applies that begin in one order and lock in the other
+    were stamped the wrong way round, and the replay (which follows the stamps) disagreed with
+    the merges by a point.
+  - "Last played" becomes the latest remaining history row, or never; a player left with no
+    history loses the under-rated flag and the reliability snapshot (null, as a new person has).
+- **The check under the lock asks about the RESULT, not the `rev`** (a deliberate departure
+  from the plan). `applyResult` takes an `unchanged(locked)` predicate; the tournament one
+  re-settles the locked match row and compares winner, loser, both scores and the stage — each
+  field has its own test. A rev check looks equivalent and is not: `rev` also moves when the
+  serve is set on a typed-score match (`setMatchSetup` is allowed whenever the log is empty)
+  and when a side switch is confirmed, and neither re-applies anything — so the rating would
+  silently never land.
+  - A change to the result makes the apply skip with `changed`, and the write that changed it
+    is the one that rates it: `setTypedScore` reverts and re-applies, and an undo that takes
+    the match off the finish line reverts.
+  - "Already applied" is asked again under the lock, so a second apply of one match returns
+    `already` instead of throwing on the unique index inside a swallowed catch.
+- **Community**:
+  - `saveScore` asks "already counted?" and writes the score in ONE transaction under the
+    game's lock. They were two statements holding nothing, so a second phone could pass the
+    check before the first rating committed and write its score AFTER it: the game showing one
+    winner, the ratings moved for the other, and the second phone told it had saved. Between
+    that write and its own rating, the apply's `unchanged` check (the stored score must still
+    be this save's) covers another save or a clear landing in between.
+  - `clearScore` reverts and nulls the score in ONE transaction.
+  - `generateSchedule` asks "any game scored?" again under the lock before it deletes. Its check
+    held nothing, and ON DELETE CASCADE took a just-saved score's history with the game while
+    the players kept the movement — which nothing could ever take back. **"Scored" is the
+    SCORE**, read off the rows it has just locked: a save writes the score and rates it in two
+    transactions, and a regenerate between them found no rating yet and deleted the game, score
+    and all. The rating check stays as a backstop (history without a score is not reachable
+    today: save writes the score first, clear removes both at once).
+- **Reviewed adversarially, twice.** Round one (four reviewers, each proving or refuting its
+  own findings) on the first version: 14 distinct findings, all confirmed; 12 fixed above.
+  Round two (three reviewers) on those fixes confirmed the core — NO KEY UPDATE still
+  serialises every rating writer, every ordering of the seed chain holds, the in-transaction
+  signals equal the old refresh exactly — and found the approval's lock order, the
+  score-versus-rating gap in regenerate, and seven test gaps; all fixed. Round one's other 2
+  findings are older than step 5 and belong to step 7,
+  which rebuilds exactly that code, and are recorded in its plan: `syncRatings` decides
+  "finished" from the rally LOG alone, so an offline log overwriting a typed score leaves the
+  old rating in place; and a revert queued behind an undo can delete the rating of a match that
+  has since been finished again.
+- **Still not exact, by design** (the plan's accepted limits): later matches keep the deltas
+  they were computed with against the reverted rating, and a player can end a day up to one
+  reverted delta outside the ±60 cap. Recomputing would ripple through every opponent.
+
 ## Access: the site is deliberately open, and the switch is a trap
 
 `rise-sports.vercel.app` lets any visitor create events, manage them and enter scores that move

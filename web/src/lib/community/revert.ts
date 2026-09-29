@@ -2,11 +2,19 @@ import "server-only";
 
 /* Undoing a community result.
  *
- * Mirrors `revertMatchRatings` (lib/rating/apply.ts) for the community side.
  * The rating is defined as seed plus the sum of its recorded deltas, so undoing
  * means deleting this result's rows and subtracting what they applied — which
  * keeps every rating explainable by its own history rather than by a number
  * somebody adjusted.
+ *
+ * This file used to carry its own copy of the tournament revert, line for line,
+ * and so its own copy of the faults: rows read outside the transaction (two
+ * clears of one game both subtracted), and the partner record and last-played
+ * date left moved. There is ONE revert now, `revertResultIn` in
+ * lib/rating/apply.ts, and it takes the same locks in the same order as every
+ * other rating writer. This file only says which match, and clears the score in
+ * the SAME transaction, so a game is never left showing a score whose rating has
+ * been taken back, or the other way round.
  *
  * The same honest limitation applies as on the tournament side: later results
  * were computed against the rating this one produced and are NOT recomputed.
@@ -17,42 +25,30 @@ import "server-only";
 import { eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { people, ratingHistory, ratingLedger } from "@/lib/db/schema";
+import { communityMatches } from "@/lib/db/schema";
+import { revertResultIn } from "@/lib/rating/apply";
 
+/** Take back the rating a community result moved, leaving its score alone. */
 export async function revertCommunityResult(
   communityMatchId: string,
 ): Promise<{ reverted: number }> {
-  const rows = await db
-    .select()
-    .from(ratingHistory)
-    .where(eq(ratingHistory.communityMatchId, communityMatchId));
-  if (rows.length === 0) return { reverted: 0 };
+  const done = await db.transaction((tx) =>
+    revertResultIn(tx, { kind: "community", communityMatchId }),
+  );
+  return { reverted: done.reverted };
+}
 
-  await db.transaction(async (tx) => {
-    await tx.delete(ratingHistory).where(eq(ratingHistory.communityMatchId, communityMatchId));
-    await tx.delete(ratingLedger).where(eq(ratingLedger.communityMatchId, communityMatchId));
-
-    for (const r of rows) {
-      const [person] = await tx.select().from(people).where(eq(people.id, r.personId)).limit(1);
-      if (!person) continue;
-
-      const current = person.riseRatings?.[r.format] ?? r.ratingAfter;
-      const ratings = { ...(person.riseRatings ?? {}), [r.format]: current - r.deltaApplied };
-      const counts = {
-        ...(person.matchCount ?? {}),
-        [r.format]: Math.max(0, (person.matchCount?.[r.format] ?? 1) - 1),
-      };
-
-      await tx
-        .update(people)
-        .set({
-          riseRatings: ratings,
-          riseBest: Math.max(...Object.values(ratings)),
-          matchCount: counts,
-        })
-        .where(eq(people.id, r.personId));
-    }
+/** Take back the rating AND clear the score, as one write. */
+export async function clearCommunityResult(
+  communityMatchId: string,
+): Promise<{ reverted: number }> {
+  const done = await db.transaction(async (tx) => {
+    const r = await revertResultIn(tx, { kind: "community", communityMatchId });
+    await tx
+      .update(communityMatches)
+      .set({ scoreA: null, scoreB: null })
+      .where(eq(communityMatches.id, communityMatchId));
+    return r;
   });
-
-  return { reverted: rows.length };
+  return { reverted: done.reverted };
 }

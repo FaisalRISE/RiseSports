@@ -24,6 +24,7 @@ import { findOrCreatePerson, carriedRating, normalisePhone, peopleByPhones } fro
 import { entryFailures, hasRules, rulesOfDivision } from "@/lib/eligibility";
 import { entrantEvidence } from "@/lib/registration";
 import { categoryFormat, categoryRoster } from "@/lib/rating/tournament";
+import { lockPeople } from "@/lib/rating/apply";
 import { ratingKey } from "@/lib/sports/registry";
 
 const TEAM_COLOURS = [
@@ -232,7 +233,15 @@ export async function approveRegistration(
     /* A declared date of birth fills a person's record only where it has
        none. Never overwrites: a returning player's stored date may have come
        from an organiser who checked it, and an entry form typed by anybody
-       should not be able to change it. One at a time — at most twelve. */
+       should not be able to change it. One at a time — at most twelve.
+
+       The people are LOCKED FIRST, all together and in id order — the order
+       every rating writer takes them in (`lockPeople`). Filled one by one in
+       entry order, this could hold one player while a rating held the other,
+       each waiting on the other, and the database would kill one: often the
+       rating, whose failure the score save swallows and nothing retries. */
+    const filling = resolved.filter((r) => r.personId && r.entrant.dob).map((r) => r.personId!);
+    await lockPeople(tx, filling);
     for (const r of resolved) {
       if (!r.personId || !r.entrant.dob) continue;
       await tx

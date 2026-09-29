@@ -379,6 +379,58 @@ describe("approving into a category with rules", () => {
     expect(kept.dob).toBe("1970-01-01");
   });
 
+  /* The date-of-birth fill writes people inside the approval's transaction, so
+     it takes them the way every rating writer does (lib/rating/apply,
+     `lockPeople`): ALL of them, in one statement sorted by id, before the first
+     write. Filled in entry order it could hold one player while a rating held
+     the other, each waiting on the other — and the one the database kills is
+     often the rating, whose failure nothing retries. PGlite runs one
+     transaction at a time and cannot deadlock, so the order is read off the
+     statements themselves. Entry order here is the REVERSE of id order. */
+  it("locks the people it fills in, all at once and in id order, before writing any", async () => {
+    const low = "00000000-0000-4000-8000-00000000a001";
+    const high = "ffffffff-ffff-4fff-bfff-00000000a002";
+    await db.insert(schema.people).values([
+      { id: high, name: "High", phone: "+919000000391" },
+      { id: low, name: "Low", phone: "+919000000392" },
+    ]);
+    const id = await ruledEntry(rules.other, [
+      { name: "High", phone: "+919000000391", dob: "1990-01-01" },
+      { name: "Low", phone: "+919000000392", dob: "1991-01-01" },
+    ], "In Order");
+
+    type Q = { query: (sql: string, ...rest: unknown[]) => Promise<unknown> };
+    const client = (db as unknown as { $client: { transaction: (cb: (tx: Q) => Promise<unknown>) => Promise<unknown> } }).$client;
+    const original = client.transaction.bind(client);
+    const sent: string[][] = [];
+    client.transaction = (cb) =>
+      original(async (tx) => {
+        const mine: string[] = [];
+        sent.push(mine);
+        const query = tx.query.bind(tx);
+        tx.query = (sql: string, ...rest: unknown[]) => {
+          mine.push(sql.replace(/\s+/g, " ").trim().toLowerCase());
+          return query(sql, ...rest);
+        };
+        return cb(tx);
+      });
+    try {
+      expect((await approve.approveRegistration(id)).ok).toBe(true);
+    } finally {
+      client.transaction = original;
+    }
+
+    const tx = sent.find((t) => t.some((s) => s.startsWith('update "people"')));
+    expect(tx, "the approval wrote people in a transaction").toBeDefined();
+    const lock = tx!.findIndex((s) => /from "people" .*order by "people"\."id"( asc)? for no key update$/.test(s));
+    const firstWrite = tx!.findIndex((s) => s.startsWith('update "people"'));
+    expect(lock, "people locked in one sorted statement").toBeGreaterThan(-1);
+    expect(firstWrite, "and only then written").toBeGreaterThan(lock);
+
+    const filled = await db.select().from(schema.people).where(eq(schema.people.phone, "+919000000392"));
+    expect(filled[0].dob).toBe("1991-01-01");
+  });
+
   it("keeps a returning strong player out of a capped category, and lets newcomers in", async () => {
     await db.insert(schema.people).values({
       id: randomUUID(), name: "Strong", phone: "+919000000309",
