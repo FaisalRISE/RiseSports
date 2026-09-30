@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { resolveRules, buildScoring } from "./rules";
-import { replayRallies, rallyStats, rallyOver, rallyGolden, type Side, type MatchLike } from "./replay";
+import { finishedAt, replayRallies, rallyStats, rallyOver, rallyGolden, type Side, type MatchLike } from "./replay";
 import { loadLegacy } from "./__fixtures__/legacy";
 import { SPORT_IDS, sportOf, type SportId } from "@/lib/sports/registry";
 
@@ -168,5 +168,35 @@ describe("scoring rules behave as the rulebook says", () => {
     const undone = replayRallies({ log: log.slice(0, -1), server: "a" }, pb);
     expect(undone).toEqual(replayRallies({ log: log.slice(0, 5), server: "a" }, pb));
     expect(full).not.toEqual(undone);
+  });
+});
+
+describe("finishedAt — where the game ended", () => {
+  /* The one question a whole log landing from a phone needs answered: which
+     rally ended the game. Everything after it is not part of the game. */
+  it("is the rally that ended it, for every sport's rules, on random logs", () => {
+    const rand = rng(20260930);
+    for (const sport of POINT_SPORTS) {
+      const r = resolveRules(sport, undefined)!;
+      for (let i = 0; i < 200; i++) {
+        const m: MatchLike = { log: randomLog(80, rand), server: rand() < 0.5 ? "a" : "b" };
+        const end = finishedAt(m, r);
+        const firstOver = m.log!.findIndex((_, n) => replayRallies({ ...m, log: m.log!.slice(0, n + 1) }, r).over);
+        expect(end, `${sport} #${i}`).toBe(firstOver === -1 ? null : firstOver + 1);
+      }
+    }
+  });
+
+  it("is null while the game is unfinished, and with no rules to play by", () => {
+    const r = resolveRules("pb", undefined)!;
+    expect(finishedAt({ log: ["a", "a", "b"] }, r)).toBeNull();
+    expect(finishedAt({ log: Array(40).fill("a") }, null)).toBeNull();
+  });
+
+  it("counts a golden point below the target where the game really ends", () => {
+    const r = resolveRules("bd", { target: 21, ...buildScoring(21, true, 19, null) })!;
+    /* Rally scoring: 19 each, alternating, then one more ends it at 20–19. */
+    const log: Side[] = [...Array.from({ length: 38 }, (_, i): Side => (i % 2 ? "b" : "a")), "a", "a"];
+    expect(finishedAt({ log }, r)).toBe(39);
   });
 });

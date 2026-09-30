@@ -22,7 +22,7 @@
 import {
   launch, BASE, makeOk, watchErrors, text,
   rallyCount, stableRallyCount, scores, tap, banner, queued, clearQueue,
-  killNetwork, restoreNetwork, until, firstScorableMatch, realErrors,
+  killNetwork, restoreNetwork, until, firstScorableMatch, realErrors, teamsOf,
 } from "./harness.mjs";
 
 const ok = makeOk();
@@ -185,6 +185,58 @@ ok(
 );
 
 await ctx2.close();
+
+/* ── Scenario 3: finishing a game with no signal ─────────────────────────── */
+/* The court used to stay tappable after the winning rally while the server had
+   not seen it — the lock came from the SERVER's view — so an extra tap queued
+   12–4 in a game to 11. That is a final no game produces: its rating was
+   refused, and an undo back to 11–4 never re-applied it. The phone now locks
+   by its own replay, and the server cuts any log at the rally that ended the
+   game. */
+console.log("\n== finishing a game offline ==");
+
+const { ctx: ctx3, p: p3 } = await freshPage();
+watchErrors(p3, errs);
+const matchId3 = await firstScorableMatch(p3, "club-night");
+ok(!!matchId3, `found a match to finish (${matchId3})`);
+const url3 = `${BASE}/t/club-night/score/${matchId3}`;
+await p3.goto(url3);
+await p3.waitForTimeout(1200);
+await clearQueue(p3);
+await p3.reload();
+await p3.waitForTimeout(1200);
+
+const teams3 = await teamsOf(p3);
+const tappable = (name) =>
+  p3.$eval(`button[aria-label="Point to ${name}"]`, (e) => !e.disabled).catch(() => false);
+
+await killNetwork(p3);
+let taps = 0;
+while ((await tappable(teams3[0])) && taps < 80) {
+  await tap(p3, teams3[0]);
+  taps++;
+  await p3.waitForTimeout(150);
+}
+const finished = await stableRallyCount(p3);
+const finalScore = await scores(p3);
+ok(
+  !(await tappable(teams3[0])) && !(await tappable(teams3[1])),
+  `the court locks the moment the phone's own score says the game is won (${finalScore.join("-")} after ${taps} taps)`,
+);
+ok(taps < 80, "the game ended; the taps did not run on");
+
+await restoreNetwork(p3);
+ok(
+  await until(async () => (await queued(p3)).length === 0, { timeout: 30000, label: "the finished game to send" }),
+  "the finished game is sent once the network is back",
+);
+await p3.goto(url3);
+await p3.waitForTimeout(1500);
+ok((await rallyCount(p3)) === finished, `the server holds exactly the finished game (${await rallyCount(p3)} of ${finished} rallies)`);
+ok((await scores(p3)).join("-") === finalScore.join("-"), `the server shows the same final (${(await scores(p3)).join("-")})`);
+ok(!(await tappable(teams3[0])), "and the server locks it too");
+
+await ctx3.close();
 
 console.log("\n== errors ==");
 const real = realErrors(errs);

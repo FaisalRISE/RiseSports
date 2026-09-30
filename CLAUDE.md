@@ -1681,6 +1681,98 @@ visible change).
   they were computed with against the reverted rating, and a player can end a day up to one
   reverted delta outside the ±60 cap. Recomputing would ripple through every opponent.
 
+**Step 6 — the rules decide which final scores are possible** (`lib/scoring/final.ts`; no
+migration, no visible change yet — step 7 puts it in front of the organiser).
+
+- **`finalScoreProblem(ending, a, b, sets?)` is the ONE answer to "could this final happen?"**,
+  returning null or `{code, sentence, suggestion}`. The rating engine's `validScore` is now
+  `w > l && finalScoreProblem(...) === null`, so the table and the ratings can never disagree.
+  The old check asked only "did the winner reach the target by the margin", which accepted
+  15–4 in a game to 11 and 23–20 in badminton (over at 22–20), and — with no rules — any result
+  where the winner scored more, so a best-of-3 tennis match "won" 3–0.
+- **An ENDING says what kind of match it is** (`endingFor(sport, rules, {bestOf, carromBoards})`),
+  shaped by Faisal's answers of 2026-09-29:
+  - `points` — one game, a point a rally (pickleball, badminton, table tennis). Judged by walking
+    the one path that stays level longest (alternate to the loser's score, then the winner runs
+    on) with the engine's own `rallyOver`. The engine's "over" is monotone in the lead and the
+    score, so every other path passes states at least as over; `final.test.ts` does not take that
+    on trust — it enumerates every reachable final by brute force for twelve rule sets (each
+    sport, OSL on two sports, Pickleboss, and `buildScoring` variants) and requires agreement on
+    every score to 40–40, and that nothing is accepted that the old check refused.
+    - **A golden point BELOW the target ends the game below it** ("to 21, golden at 19" is over at
+      20), and there the old check was wrong the other way: it refused 20–0 and 20–19, finals the
+      console really ends on. Two of the twelve rule sets are this shape; the "never accepts what
+      the old check refused" property is scoped to a cap at or above the target, with a test
+      pinning the old check's refusal. The sentences name the score the game really ends at
+      ("a game to 20 ends…"), not the target.
+    - **A score is 0 to 999** (`MAX_SCORE`). The walk is linear in the score, so without a
+      ceiling a crafted score in the millions made the server walk that many rallies.
+  - `games` — games won in a best-of-N match. Faisal: best of 3 happens, typed as games won
+    (2–1), and is chosen **per stage** (e.g. groups one game, knockout best of 3). No stage setting
+    exists yet, so every caller gets one game until step 7/11 adds it.
+  - `boards` — carrom, **both endings** (Faisal: "can be both"): first to 25, where the last board
+    can carry the winner past 25 and it never ends level; or a fixed number of boards, most points
+    wins, level allowed. A level carrom result is a result for the table and moves no rating.
+    Today every carrom event is first to its target; the fixed-boards setting comes later.
+    - **`boards` is carrom's OWN scoring only** — one point decides (`winBy` 1, and a cap that is
+      absent or equal to the target). A carrom event the organiser set to win by two, or to the
+      Pickleboss preset, is played point by point on the console, which ends it at 27–25 or
+      17–15; judged as boards those were refused and the match lost its rating. Such an event
+      is judged as `points`, exactly as the console plays it. `final.test.ts` brute-forces seven
+      carrom setups: the point-by-point ones must agree EXACTLY with what the console reaches,
+      carrom's own must accept at least all of it (plus a last board past the target).
+    - The cap that comes with carrom's own scoring is IGNORED: saving the scoring form with "win
+      by two" unticked stores cap = target, and OSL does the same, and read as a ceiling that
+      refused a real 29–18. The console still stops at the cap when it scores a carrom game
+      point by point — that was true before step 6 and is not changed here.
+  - `sets` — tennis and padel: sets won, and when given the games in each set (Faisal: record
+    them, 6–4 3–6 10–8). A set is 6–0 to 6–4, 7–5 or 7–6; a match tie-break to 10 won by 2 only as
+    the deciding set; nothing after the match is won; the sets won must agree with the games.
+  - `result` — chess, until step 10 gives it result buttons and rated draws (Faisal: draws move
+    ratings). It keeps exactly the old check meanwhile.
+- **A result recorded as games or sets won carries a NEUTRAL margin** (`marginFor`, the
+  `margin` option of `calcRtgChange` and `ApplyInput`, 1000 in the history row). 2–1 in games is
+  as close as 21–19 21–19 or as wide as 21–2 21–3; read as a points margin, both scored the same
+  and a straight-sets win weighed like a rout. Points results are rated exactly as before.
+- **In a game won by two, the loser's score fixes the winner's**, so no correction between two
+  POSSIBLE finals moves the winner's score alone. The step-5 test of that check moved to
+  first-to-25 carrom (29–18 corrected to 27–18), the one ending where it can happen.
+- **A rally log is cut at the rally that ended the game** (`finishedAt` in `replay.ts`, used by
+  `pushLog`). A phone scoring offline could queue a tap after the winning rally — the court was
+  still tappable while the server had not seen the finish — and 11–4 landed as 12–4: a final
+  that cannot happen, so no rating, and an undo back to 11–4 never re-applied it. Before step 6
+  the old check accepted 12–4, so this only became a loss when the check got stricter. Three
+  guards, one per place the extra tap could come from:
+  - the server keeps the log up to `finishedAt` and drops the rest (`pushLog.test.ts`: an
+    exact 11–4, a 12–4 cut to 11–4 and rated, an undo then re-push still rated, an unfinished
+    log stored whole — the middle two fail on the old `pushLog`);
+  - `useOfflineScoring` refuses a tap once the replayed local log is over;
+  - `RefConsole` locks the court once the LOCAL log is over or an OSL rotation (7, 14) is
+    waiting — the same test as the server's `locked` in `matchState.ts`, which offline could
+    not see.
+    `e2e/offline.mjs` scenario 3 plays a game to the end with the network off, checks both
+    halves are locked, reconnects and reloads, and checks the server holds exactly the
+    finishing rally count.
+- Not yet judged: community scores. A community game has no target setting, and judging it
+  by the sport's default would refuse a real game played to 15. They are rated as before.
+- **Reviewed adversarially** (ultracode). Two real faults: the extra offline
+  tap, and win-by-two/Pickleboss carrom — both fixed above. Smaller: the carrom form cap, the
+  missing ceiling, the wrong ending named when a golden point sits below the target, and about
+  ten test gaps (the tennis neutral margin was checked in the history row but not in the
+  rating that actually moves, among them) — all fixed.
+- **Open questions for Faisal, both needed before step 7 opens score entry:**
+  - carrom — does "can be both" mean the international rule, "25 points or 8 boards, whichever
+    comes first"? Today it is one or the other, never both at once;
+  - tennis/padel — only best of 3 sets of 6 with a match tie-break is modelled. A one-set match,
+    a pro set to 8 or 9, and short sets to 4 cannot be entered yet (a per-stage set format).
+- Proof: `final.test.ts` (65, the brute forces among them), `rating/final.rating.test.ts` (8)
+  through the real engine — 4 of the first 5 fail on the old code: 15–4 and a 3–0 best-of-3
+  were rated, and 2–1 in sets was read as a points margin; the carrom ones pin 29–18 rated and
+  26–25 refused under carrom's own scoring, and 27–25 rated and 29–18 refused under win by
+  two — `replay.test.ts` (`finishedAt` against the full replay on random logs),
+  `pushLog.test.ts`, and **44 plausible wrong versions** of the walk, the endings, the carrom
+  shape, the trim, the ceiling, the wording and the wiring, each caught.
+
 ## Access: the site is deliberately open, and the switch is a trap
 
 `rise-sports.vercel.app` lets any visitor create events, manage them and enter scores that move

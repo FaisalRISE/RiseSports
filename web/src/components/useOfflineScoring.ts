@@ -250,9 +250,17 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
   const scoreOffline = useCallback(
     (side: Side) => {
       if (!canScoreOffline) return;
-      append([...(localLog ?? serverLog), side]);
+      const base = localLog ?? serverLog;
+      /* A finished game takes no more rallies. The court is locked once the
+         phone's own replay says it is over, but a tap already on its way (a
+         double tap on the winning rally) would still land here — and queued
+         past the end, 11–4 became 12–4, a final no game produces. The server
+         cuts such a log at the finish too (`pushLog`); this keeps the phone
+         from ever showing it. */
+      if (replayLite({ log: base, server: args.server, posA: args.posA, posB: args.posB }, rules).over) return;
+      append([...base, side]);
     },
-    [append, canScoreOffline, localLog, serverLog],
+    [append, canScoreOffline, localLog, serverLog, rules, args.server, args.posA, args.posB],
   );
 
   const undoOffline = useCallback(() => {

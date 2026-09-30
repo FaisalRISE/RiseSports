@@ -91,7 +91,13 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
   const live = off.local
     ? { ...view, a: off.local.a, b: off.local.b, serving: off.local.serving, servePos: off.local.servePos,
         over: off.local.over, winner: off.local.winner, golden: off.local.golden,
-        gamePoint: off.local.gamePoint, rallies: off.local.rallies }
+        gamePoint: off.local.gamePoint, rallies: off.local.rallies,
+        /* Locked exactly as the server locks it — finished, or a rotation to
+           confirm — but by the PHONE'S replay while rallies are queued. It was
+           the server's `locked`, which does not know about a finish the server
+           has not seen yet, so the court stayed tappable after the winning
+           rally and an extra tap queued 12–4 in a game to 11. */
+        locked: off.local.over || (view.osl?.pendingGate ?? 0) > 0 }
     : view;
 
   /* Hold the screen on while there is a match to score. A phone that dims

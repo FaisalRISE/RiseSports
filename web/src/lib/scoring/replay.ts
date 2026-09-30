@@ -165,6 +165,28 @@ export function replayRallies(m: MatchLike, r: Rules | null): ReplayState {
   return finish(s, r, log.length);
 }
 
+/**
+ * How many rallies the game took: the length of the log up to and including
+ * the rally that ended it, or null while it is unfinished.
+ *
+ * Anything after that is not part of the game. A phone scoring offline could
+ * queue a tap after the winning rally (the court was still tappable while the
+ * server had not seen the finish), and the log landed as 12–4 in a game to 11
+ * — a final that cannot happen, so its rating was refused, and an undo back to
+ * 11–4 never re-applied it. `pushLog` cuts a log here before it lands.
+ */
+export function finishedAt(m: MatchLike, r: Rules | null): number | null {
+  if (!r) return null;
+  const log = m?.log ?? [];
+  const first: Side = m?.server === "b" ? "b" : "a";
+  const s = initWalk(m);
+  for (let i = 0; i < log.length; i++) {
+    step(s, log[i], r, first);
+    if (rallyOver(s.a, s.b, r)) return i + 1;
+  }
+  return null;
+}
+
 /* ---------- per-side and per-player splits ---------- */
 
 export type Split = {

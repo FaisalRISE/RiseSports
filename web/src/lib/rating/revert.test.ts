@@ -98,12 +98,12 @@ async function person(rating = 1000, key = KEY, gender: "M" | "F" = "M"): Promis
 }
 
 /** One event, one category, one match between two men's pairs, typed a–b. */
-async function match(sideA: string[], sideB: string[], a = 11, b = 3): Promise<string> {
+async function match(sideA: string[], sideB: string[], a = 11, b = 3, sport: "pb" | "cr" = "pb"): Promise<string> {
   const tournamentId = randomUUID();
   const divisionId = randomUUID();
   const [teamA, teamB, matchId] = [randomUUID(), randomUUID(), randomUUID()];
   await testDb.insert(schema.tournaments).values({
-    id: tournamentId, slug: `ev-${tournamentId.slice(0, 8)}`, name: "Event", sport: "pb",
+    id: tournamentId, slug: `ev-${tournamentId.slice(0, 8)}`, name: "Event", sport,
     format: "standard", ownerId: owner, status: "live",
   });
   await testDb.insert(schema.divisions).values({ id: divisionId, tournamentId, name: "Main" });
@@ -345,16 +345,19 @@ describe("taking a tournament result back", () => {
 
   it("does not apply a result whose winner's score alone changed after it was read", async () => {
     const [a, b, c, d] = [await person(), await person(), await person(), await person()];
-    /* 15–9 typed by habit in an event to 11, corrected to 11–9: same winner,
-       same loser, same losing score — only the margin moved. */
-    const m = await match([a, b], [c, d], 15, 9);
+    /* Carrom to 25, where the last board can carry the winner past 25: 29–18
+       corrected to 27–18 is the same winner, loser and losing score, and
+       both are finals that can happen. (In a game won by two the loser's
+       score fixes the winner's, so no correction between two POSSIBLE
+       results there moves the winner's score alone.) */
+    const m = await match([a, b], [c, d], 29, 18, "cr");
     beforeNextTx = () =>
-      testDb.update(schema.matches).set({ typedScoreA: 11, rev: 2 }).where(eq(schema.matches.id, m));
+      testDb.update(schema.matches).set({ typedScoreA: 27, rev: 2 }).where(eq(schema.matches.id, m));
 
     expect(await applyMatchRatings(m)).toEqual({ status: "skipped", reason: "changed" });
     expect((await applyMatchRatings(m)).status).toBe("applied");
-    expect(Math.round(marginMultiplier(15, 9) * 1000)).not.toBe(Math.round(marginMultiplier(11, 9) * 1000));
-    expect((await historyOf(a))[0].marginMultiplier).toBe(Math.round(marginMultiplier(11, 9) * 1000));
+    expect(Math.round(marginMultiplier(29, 18) * 1000)).not.toBe(Math.round(marginMultiplier(27, 18) * 1000));
+    expect((await historyOf(a))[0].marginMultiplier).toBe(Math.round(marginMultiplier(27, 18) * 1000));
   });
 
   /* What a correction to an EARLIER match does (setTypedScore reverts it and

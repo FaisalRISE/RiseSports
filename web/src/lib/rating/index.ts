@@ -101,8 +101,15 @@ export type RtgChange = {
   imbalance: number;
 };
 
+/** Where the margin multiplier comes from: the points ("score"), or nowhere
+    ("neutral", 1.0) — for results recorded as games or sets won, which say
+    nothing about how close the games were. */
+export type Margin = "score" | "neutral";
+
 export type RtgOptions = {
   phase?: Phase;
+  /** Defaults to reading the margin off the scores. */
+  margin?: Margin;
   /** How the result was captured. Defaults to an organiser-entered match. */
   verification?: Verification;
   /** Completed matches by the winner, for the provisional multiplier. */
@@ -130,6 +137,7 @@ export function calcRtgChange(
   scoreL: number,
   {
     phase = "group",
+    margin = "score",
     verification = "organiser",
     /* Default to settled. A caller that does not know the match count should
        not accidentally get the provisional boost. */
@@ -142,7 +150,7 @@ export function calcRtgChange(
   const raw =
     K_BASE *
     (1 - expected) *
-    marginMultiplier(scoreW, scoreL) *
+    (margin === "neutral" ? 1 : marginMultiplier(scoreW, scoreL)) *
     phaseMultiplier(phase) *
     verificationWeight(verification);
 

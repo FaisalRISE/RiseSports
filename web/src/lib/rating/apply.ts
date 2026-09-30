@@ -30,13 +30,13 @@ import {
 } from "@/lib/db/schema";
 import {
   calcRtgChange, calcExp, marginMultiplier, phaseMultiplier, verificationWeight,
-  provisionalMultiplier, DEFAULT_SEED, startingRating, type Phase, type Verification,
+  provisionalMultiplier, DEFAULT_SEED, startingRating, type Margin, type Phase, type Verification,
 } from "@/lib/rating";
 import { phaseOf, categoryFormat, categoryRoster, refileSeeds } from "@/lib/rating/tournament";
 import { ratingKey } from "@/lib/sports/registry";
 import { rulesFor } from "@/lib/matchState";
 import { matchResult } from "@/lib/results";
-import type { Rules } from "@/lib/scoring/rules";
+import { endingFor, finalScoreProblem, type Ending } from "@/lib/scoring/final";
 import { playedFromHistory, reliabilityForPerson } from "@/lib/rating/reliability";
 import { detectSandbagging, type RatedMatch } from "@/lib/rating/sandbagging";
 
@@ -63,16 +63,26 @@ export type ApplyResult =
  *
  * "An invalid score must not silently produce a rating change." A typo'd 11–13
  * that no pickleball game could produce would otherwise move real ratings.
+ *
+ * The judgement is `finalScoreProblem`'s (lib/scoring/final), the same one a
+ * typed result is held to, so the table and the ratings can never disagree
+ * about whether a score could happen. It used to be its own check, which
+ * accepted finals no game produces — 15–4 in a game to 11, 23–20 in badminton —
+ * and, with no rules, any result where the winner scored more (3–0 in a
+ * best-of-3 tennis match). A rating also needs a WINNER, which a level carrom
+ * result over a fixed number of boards is not.
  */
-export function validScore(rules: Rules | null, w: number, l: number): boolean {
-  if (!rules) return w > l; // formats this engine does not score (tennis, padel)
-  if (w <= l) return false;
-  if (rules.cap != null && w > rules.cap) return false;
-  if (w < rules.target) return false;
-  /* Won by the required margin, unless the cap forced a one-point finish. */
-  if (w - l >= rules.winBy) return true;
-  return rules.cap != null && w === rules.cap;
+export function validScore(ending: Ending, w: number, l: number): boolean {
+  return w > l && finalScoreProblem(ending, w, l) === null;
 }
+
+/** A result recorded as games or sets won says who won and by how many games
+    or sets — not by how many POINTS, which is what the margin multiplier
+    reads. 2–1 in games is as close as 21–19 21–19 or as wide as 21–2 21–3;
+    reading it as a points margin would score both the same, so those results
+    carry a neutral margin instead. */
+export const marginFor = (ending: Ending): Margin =>
+  ending.kind === "games" || ending.kind === "sets" ? "neutral" : "score";
 
 /* ── The trust machinery, as pure decisions ──────────────────────────────
  *
@@ -178,8 +188,8 @@ export async function applyMatchRatings(
   const settled = settleMatch(t, m);
   if (!settled) return { status: "skipped", reason: "not finished" };
 
-  const rules = rulesFor(t);
-  if (!validScore(rules, settled.scoreW, settled.scoreL)) {
+  const ending = endingFor(t.sport, rulesFor(t));
+  if (!validScore(ending, settled.scoreW, settled.scoreL)) {
     return { status: "skipped", reason: `invalid score ${settled.scoreW}-${settled.scoreL}` };
   }
 
@@ -218,6 +228,7 @@ export async function applyMatchRatings(
     key, winnerIds, loserIds,
     scoreW: settled.scoreW, scoreL: settled.scoreL,
     phase: settled.phase, verification, now,
+    margin: marginFor(ending),
     /* Everything above was read without a lock, so the match may have moved on
        by the time the rating is written. Asked again of the row as LOCKED: the
        RESULT must be the one this rating was computed from. Not the `rev` —
@@ -250,6 +261,9 @@ export type ApplyInput = {
   phase: Phase;
   verification: Verification;
   now: Date;
+  /** "neutral" when the scores are games or sets won rather than points — see
+      `marginFor`. Defaults to reading the margin off the scores. */
+  margin?: Margin;
   /** Does the match, as it stands under its lock, still say what the caller
       computed this result from? False means another write changed it first,
       and that write is the one that settles the rating. Omitted: not asked. */
@@ -493,6 +507,7 @@ const bestOf = (ratings: Record<string, number>): number | null => {
  */
 export async function applyResult(input: ApplyInput): Promise<ApplyResult> {
   const { ref, key, winnerIds, loserIds, scoreW, scoreL, phase, verification, now, unchanged } = input;
+  const margin = input.margin ?? "score";
 
   if (winnerIds.length === 0 || loserIds.length === 0) {
     return { status: "skipped", reason: "no linked people on one side" };
@@ -529,6 +544,7 @@ export async function applyResult(input: ApplyInput): Promise<ApplyResult> {
       Math.max(0, ...ids.map((id) => byId.get(id)?.matchCount?.[key] ?? 0));
 
     const change = calcRtgChange(W.mean, L.mean, scoreW, scoreL, {
+      margin,
       phase,
       verification,
       winnerGames: gamesOf(winnerIds),
@@ -611,7 +627,7 @@ export async function applyResult(input: ApplyInput): Promise<ApplyResult> {
         ratingAfter: r.before + r.delta,
         deltaApplied: r.delta,
         expected: Math.round(expected * 1000),
-        marginMultiplier: Math.round(marginMultiplier(scoreW, scoreL) * 1000),
+        marginMultiplier: margin === "neutral" ? 1000 : Math.round(marginMultiplier(scoreW, scoreL) * 1000),
         stageMultiplier: Math.round(phaseMultiplier(phase) * 1000),
         verificationWeight: Math.round(verificationWeight(verification) * 1000),
         provisionalMultiplier: Math.round(

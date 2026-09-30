@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { validScore, carryScale, capDelta, repeatDamping } from "./apply";
+import { validScore, marginFor, carryScale, capDelta, repeatDamping } from "./apply";
 import { resolveRules } from "@/lib/scoring/rules";
+import { endingFor } from "@/lib/scoring/final";
 
 /* The trust machinery, tested on its own.
  *
@@ -8,8 +9,8 @@ import { resolveRules } from "@/lib/scoring/rules";
  * and "a number two friends can farm on a Tuesday". They are pure so they can
  * be pinned here; the database wiring around them is covered by e2e. */
 
-const pb11 = resolveRules("pb", undefined);            // to 11, win by 2, no cap
-const bd21 = resolveRules("bd", undefined);            // to 21, win by 2, cap 30
+const pb11 = endingFor("pb", resolveRules("pb", undefined)); // to 11, win by 2, no cap
+const bd21 = endingFor("bd", resolveRules("bd", undefined)); // to 21, win by 2, cap 30
 
 describe("validScore — spec §8", () => {
   /* "An invalid score must not silently produce a rating change." */
@@ -38,11 +39,30 @@ describe("validScore — spec §8", () => {
     expect(validScore(bd21, 31, 29)).toBe(false);
   });
 
-  /* Tennis and padel are scored in games and sets, which this engine does not
-     model — validating them against a points target would reject everything. */
-  it("falls back to 'winner scored more' where there are no rules", () => {
-    expect(validScore(null, 3, 1)).toBe(true);
-    expect(validScore(null, 1, 3)).toBe(false);
+  /* Tennis and padel have no points rules. They used to fall back to "the
+     winner scored more", which accepted 3–1 as a best-of-3 result. They are
+     judged in sets now (lib/scoring/final). */
+  it("judges tennis in sets won, not 'the winner scored more'", () => {
+    const tennis = endingFor("tn", resolveRules("tn", undefined));
+    expect(validScore(tennis, 2, 1)).toBe(true);
+    expect(validScore(tennis, 2, 0)).toBe(true);
+    expect(validScore(tennis, 3, 1)).toBe(false);
+    expect(validScore(tennis, 1, 2)).toBe(false);
+  });
+
+  /* The finals the old check let through: the game was already over before
+     the score typed. */
+  it("rejects a score the game ended before reaching", () => {
+    expect(validScore(pb11, 15, 4)).toBe(false);
+    expect(validScore(bd21, 23, 20)).toBe(false);
+  });
+
+  /* A level result can be a real one (carrom over a fixed number of boards),
+     and still has no winner for a rating to move. */
+  it("needs a winner even where a level result is allowed", () => {
+    const boards = endingFor("cr", resolveRules("cr", undefined), { carromBoards: true });
+    expect(validScore(boards, 20, 20)).toBe(false);
+    expect(validScore(boards, 21, 20)).toBe(true);
   });
 });
 
@@ -118,5 +138,19 @@ describe("repeatDamping — spec §8 repeat opponents", () => {
   it("damps from the third meeting", () => {
     expect(repeatDamping(2)).toBe(0.6);
     expect(repeatDamping(9)).toBe(0.6);
+  });
+});
+
+/* Which results carry a POINTS margin. Games and sets won say nothing about
+   how close the games were, so they are neutral; a game's points, carrom's
+   and chess's result keep the margin they always had. */
+describe("marginFor", () => {
+  it("is neutral for games and sets won, and the score for everything else", () => {
+    expect(marginFor({ kind: "games", bestOf: 3 })).toBe("neutral");
+    expect(marginFor(endingFor("tn", resolveRules("tn", undefined)))).toBe("neutral");
+    expect(marginFor(endingFor("pd", resolveRules("pd", undefined)))).toBe("neutral");
+    expect(marginFor(pb11)).toBe("score");
+    expect(marginFor(endingFor("cr", resolveRules("cr", undefined)))).toBe("score");
+    expect(marginFor(endingFor("ch", resolveRules("ch", undefined)))).toBe("score");
   });
 });

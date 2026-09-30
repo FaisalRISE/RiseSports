@@ -10,11 +10,11 @@ import { matches, tournaments, scorerGrants } from "@/lib/db/schema";
 import { principalFor, grantCookieName, GRANT_COOKIE_OPTIONS } from "@/lib/auth/guard";
 import { canScore, canManage, assert } from "@/lib/auth/policy";
 import { verifyPin, generateGrantToken } from "@/lib/auth/pin";
-import { viewMatch } from "@/lib/matchState";
+import { rulesFor, viewMatch } from "@/lib/matchState";
 import { applyMatchRatings, revertMatchRatings } from "@/lib/rating/apply";
 import { oslPruneAcks } from "@/lib/formats/osl";
 import { rewindIndex } from "@/lib/scoring/rewind";
-import type { Side } from "@/lib/scoring/replay";
+import { finishedAt, type Side } from "@/lib/scoring/replay";
 import {
   readTiming, startTiming, applyTick, stopTiming, reopenTiming,
   type Timing, type Tick,
@@ -308,11 +308,24 @@ export async function pushLog(
 
   const current = (ctx.match.log as Side[]) ?? [];
 
+  /* A game is over at the rally that ends it, and a log carrying taps beyond
+     that is cut there. A phone scoring offline could add one after the winning
+     rally, so 11–4 landed as 12–4 — a final no game produces, which is refused
+     a rating, and an undo back to 11–4 did not bring the rating back (the match
+     was over both before and after, so nothing re-applied it). The taps after
+     the finish were never part of the game. `scorePoint` already refuses a
+     rally once the match is won; this is the same rule for a whole log. */
+  const end = finishedAt(
+    { log: incoming, server: ctx.match.server, posA: ctx.match.posA as 0 | 1, posB: ctx.match.posB as 0 | 1 },
+    rulesFor(ctx.tournament),
+  );
+  const kept = end != null && end < incoming.length ? incoming.slice(0, end) : incoming;
+
   /* Gates are re-derived from the incoming log rather than trusted from the
      device: an offline console cannot evaluate OSL rotation (it is not shipped
      to the browser), so it may have queued rallies straight past a gate it
      never knew was due. */
-  const res = await commitLog(ctx, incoming, acksFor(ctx, incoming), expectedRev, clock);
+  const res = await commitLog(ctx, kept, acksFor(ctx, kept), expectedRev, clock);
   if (res.ok) return { ok: true, rev: expectedRev + 1 };
   return { ok: false, reason: "stale", serverLog: current, rev: ctx.match.rev };
 }
