@@ -439,25 +439,57 @@ describe("peer ratings, enforced by the database", () => {
   });
 });
 
+/* Each refusal is matched to the CONSTRAINT that should have fired, not just
+   to "it threw" — a missing foreign key or a typo in the test would also
+   throw, and a test that passes for the wrong reason proves nothing. The two
+   drivers name it differently: PGlite on `constraint`, postgres-js on
+   `constraint_name`. */
+async function refusedBy(write: Promise<unknown>, constraint: string) {
+  let caught: unknown = null;
+  try {
+    await write;
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught, `expected ${constraint} to refuse this row`).not.toBeNull();
+  type Named = { constraint?: string; constraint_name?: string };
+  const err = caught as Named & { cause?: Named };
+  expect(err.cause?.constraint ?? err.cause?.constraint_name ?? err.constraint ?? err.constraint_name).toBe(constraint);
+}
+
+/* A typed result that moves no rating says why in one of three words, and only
+   a TYPED result carries a reason or the games of each set. The screens and
+   `recordResult` keep to that; these keep any other way in to it too. */
+describe("a match's result, enforced by the database", () => {
+  /* By id: an UPDATE moves a row in the heap, and "the first row" with no
+     order can then be a different match. */
+  const anyMatch = async () => (await db.select().from(schema.matches).orderBy(schema.matches.id).limit(1))[0];
+  const set = async (over: Record<string, unknown>) =>
+    db.update(schema.matches).set(over as never).where(eq(schema.matches.id, (await anyMatch()).id));
+
+  it("refuses a reason that is not walkover, retired or unrated", async () => {
+    await refusedBy(set({ typedScoreA: 11, typedScoreB: 0, outcome: "forfeit" }), "matches_outcome_known");
+  });
+
+  it("refuses a reason on a result that was not typed", async () => {
+    await refusedBy(set({ typedScoreA: null, typedScoreB: null, outcome: "walkover" }), "matches_outcome_typed");
+  });
+
+  it("refuses the games of each set without a typed result", async () => {
+    await refusedBy(set({ typedScoreA: null, typedScoreB: null, outcome: null, sets: [[6, 4]] }), "matches_sets_typed");
+  });
+
+  it("accepts a typed walkover with its sets", async () => {
+    const was = await anyMatch();
+    await expect(set({ typedScoreA: 2, typedScoreB: 0, outcome: "walkover", sets: [[6, 0], [6, 0]] })).resolves.toBeDefined();
+    await set({ typedScoreA: was.typedScoreA, typedScoreB: was.typedScoreB, outcome: was.outcome, sets: was.sets });
+  });
+});
+
 describe("category rules, enforced by the database", () => {
   /* lib/eligibility checks every rule on every way into a category, but a
      Server Action is a public endpoint. These CHECKs refuse rules that cannot
-     mean anything, however the row arrives.
-
-     Each refusal is matched to the CONSTRAINT that should have fired, not just
-     to "it threw" — a missing foreign key or a typo in the test would also
-     throw, and a test that passes for the wrong reason proves nothing. */
-  async function refusedBy(write: Promise<unknown>, constraint: string) {
-    let caught: unknown = null;
-    try {
-      await write;
-    } catch (e) {
-      caught = e;
-    }
-    expect(caught, `expected ${constraint} to refuse this row`).not.toBeNull();
-    const err = caught as { constraint?: string; cause?: { constraint?: string } };
-    expect(err.cause?.constraint ?? err.constraint).toBe(constraint);
-  }
+     mean anything, however the row arrives. */
 
   let n = 0;
   const division = (over: Record<string, unknown>) =>

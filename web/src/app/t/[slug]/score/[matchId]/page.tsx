@@ -2,7 +2,9 @@ import { notFound } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { matches, players, teams, tournaments } from "@/lib/db/schema";
-import { viewMatch, rulesFor, describeCourt } from "@/lib/matchState";
+import Link from "next/link";
+import { viewMatch, rulesFor, describeCourt, noLiveCourt, teamsNotIn } from "@/lib/matchState";
+import { matchResult, resultSentence } from "@/lib/results";
 import { principalFor } from "@/lib/auth/guard";
 import { canScore, canView } from "@/lib/auth/policy";
 import { RefConsole, type ConsoleTeam } from "@/components/RefConsole";
@@ -57,11 +59,23 @@ export default async function ScorePage({
   };
 
   const view = viewMatch(row.tournament, row.match);
+  /* Tennis, padel, carrom over a set number of boards: the court counts
+     points and cannot finish these, so the page says how they ARE recorded
+     instead of offering a court that never ends. */
+  const noCourt = noLiveCourt(row.tournament, row.match);
+  /* A knockout match whose slots are not filled: every rally would be refused,
+     so there is no court to tap — only what unlocks it. */
+  const waiting = noCourt ? null : teamsNotIn(row.match);
+  /* Who won and how, in the words every other screen uses ("2–1", "0–2 w/o"). */
+  const result = matchResult(row.tournament, row.match, view);
+  const teamName = (id: string | null) => (id ? byTeam.get(id)?.name : null) ?? "TBD";
+  const recorded = result ? resultSentence(result, teamName(row.match.teamAId), teamName(row.match.teamBId)) : null;
 
   /* The resolved rules cross to the client as DATA, never as code: the browser
      needs the numbers to score offline, but `resolveRules` and the format
-     presets stay here. See lib/scoring/replayLite.ts for where that line is. */
-  const rules = rulesFor(row.tournament);
+     presets stay here. See lib/scoring/replayLite.ts for where that line is.
+     The MATCH's rules — the ones it finished under, once it has. */
+  const rules = rulesFor(row.tournament, row.match);
   const liteRules: LiteRules | null = rules
     ? {
         target: rules.target,
@@ -85,12 +99,43 @@ export default async function ScorePage({
         {canScore(principal) ? "" : " · view only"}
       </p>
 
+      {waiting ? (
+        <div data-testid="teams-not-in" className="space-y-3 rounded-xl border border-neutral-700 bg-neutral-900 p-4">
+          <h2 className="text-base font-black">{waiting.title}</h2>
+          <p className="text-sm text-neutral-300">{waiting.body}</p>
+          <Link
+            href={`/t/${slug}/manage`}
+            className="inline-block rounded-lg bg-neutral-200 px-4 py-2 text-sm font-black text-neutral-900"
+          >
+            Go to the manage screen
+          </Link>
+        </div>
+      ) : noCourt ? (
+        <div data-testid="no-live-court" className="space-y-3 rounded-xl border border-neutral-700 bg-neutral-900 p-4">
+          <h2 className="text-base font-black">{noCourt.title}</h2>
+          <p className="text-sm text-neutral-300">{noCourt.body}</p>
+          {recorded && (
+            <p data-testid="recorded-result" className="text-sm font-bold text-emerald-300">
+              Recorded: {recorded}
+            </p>
+          )}
+          {/* Back to the event, not to the manage screen: there is nothing
+              there yet to record this match with (step 10). */}
+          <Link
+            href={`/t/${slug}`}
+            className="inline-block rounded-lg bg-neutral-200 px-4 py-2 text-sm font-black text-neutral-900"
+          >
+            Back to the event
+          </Link>
+        </div>
+      ) : (
       <RefConsole
         view={view}
         teamA={consoleTeam(row.match.teamAId, row.match.lineupA, "a")}
         teamB={consoleTeam(row.match.teamBId, row.match.lineupB, "b")}
         canScore={canScore(principal)}
-        notes={describeCourt(row.tournament)}
+        notes={describeCourt(row.tournament, row.match)}
+        eventHref={`/t/${slug}`}
         actions={{
           score: scorePoint,
           undo: undoPoint,
@@ -108,6 +153,7 @@ export default async function ScorePage({
           posB: row.match.posB as 0 | 1 | null,
         }}
       />
+      )}
     </main>
     </>
   );

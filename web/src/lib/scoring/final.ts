@@ -133,8 +133,8 @@ export function finalScoreProblem(
 
 /** No real final reaches four figures, and the walk below is as long as the
     loser's score: an unbounded one could be made to run for ever. The score
-    boxes already stop at 999 (`setTypedScore`). */
-const MAX_SCORE = 999;
+    boxes already stop at 999 (`recordResult`). */
+export const MAX_SCORE = 999;
 const isScore = (n: number) => Number.isInteger(n) && n >= 0 && n <= MAX_SCORE;
 const dash = (x: number, y: number) => `${x}–${y}`;
 
@@ -271,6 +271,89 @@ function setsProblem(bestOf: number, a: number, b: number, sets?: readonly SetSc
     };
   }
   return null;
+}
+
+/**
+ * A tennis or padel match that did NOT finish normally — a retirement, or time
+ * called — recorded without a rating. It may have stopped part-way through a
+ * set, so the LAST set may be unfinished — but only at a score that set really
+ * passes through: a set is over at 6–4, so it never stood at 9–2. Every set
+ * before it is a finished set, no set comes after the match was already won,
+ * and nobody has won more sets than a best of N allows. The typed sets won say
+ * who the match was AWARDED to, which after a retirement need not be who led —
+ * unless the sets show the match already WON, and then it was won by that side.
+ * Without this, "2–0 ret." could be stored with three sets the other side won,
+ * and "0–2 ret." over 6–4 6–4 handed the match to the side that lost it.
+ */
+export function stoppedSetsProblem(
+  bestOf: number, a: number, b: number, sets?: readonly SetScore[],
+): ScoreProblem | null {
+  if (!isScore(a) || !isScore(b)) return NOT_A_SCORE;
+  const won = bestOfProblem(bestOf, a, b, "set");
+  if (won && won.code !== "unfinished") return won;
+  if (!sets || sets.length === 0) return null;
+
+  const need = Math.floor(bestOf / 2) + 1;
+  let sa = 0;
+  let sb = 0;
+  for (const [i, [x, y]] of sets.entries()) {
+    if (!isScore(x) || !isScore(y)) return NOT_A_SCORE;
+    if (sa === need || sb === need) {
+      return { code: "set-after-the-end", sentence: `The match was over after set ${i} — set ${i + 1} can't have been played.` };
+    }
+    const deciding = sa === need - 1 && sb === need - 1;
+    /* The deciding set is a match tie-break to 10 (Faisal: best of 3 with a
+       tie-break decider), so a deciding set stopped short of 10 is a
+       tie-break in progress — 6–4 in it is not a set won. Counted as one, a
+       retirement at 6–4 in the tie-break read as "the match already won". */
+    if (i === sets.length - 1 && deciding && Math.max(x, y) < 10) break;
+    const problem = setProblem(x, y, i + 1, deciding);
+    if (problem) {
+      if (i < sets.length - 1) return problem;
+      /* The set it stopped in. */
+      if (!passesThrough(x, y, deciding)) {
+        return {
+          code: "set-invalid",
+          sentence: `Set ${i + 1}, ${dash(x, y)}: a set is over before it gets there, so the match can't have stopped at that score.`,
+        };
+      }
+      break;
+    }
+    if (x > y) sa++;
+    else sb++;
+  }
+  /* The sets show the match DECIDED: then it was not cut short, whatever it
+     is labelled, and the sets won are what the sets say — "1–0 ret." over
+     6–4 6–3 printed a score no set agrees with. Undecided when it stopped,
+     it may be awarded either way. */
+  if (sa === need || sb === need) {
+    const won = sa === need ? "a" : "b";
+    if ((a > b ? "a" : "b") !== won) {
+      return {
+        code: "sets-disagree",
+        sentence: `The sets show the match already won, ${dash(sa, sb)} in sets — it can't be awarded to the other side.`,
+      };
+    }
+    if (a !== sa || b !== sb) {
+      return {
+        code: "sets-disagree",
+        sentence: `The sets show the match won ${dash(sa, sb)} in sets, so that is the score to record.`,
+        suggestion: { a: sa, b: sb },
+      };
+    }
+  }
+  return null;
+}
+
+/** A set score some unfinished set stands at on its way to the end: up to 6–5
+ *  or 6–6 in games, or — as the deciding set — a match tie-break short of its
+ *  end (9–3, 11–10). */
+function passesThrough(x: number, y: number, deciding: boolean): boolean {
+  const hi = Math.max(x, y);
+  const lo = Math.min(x, y);
+  const games = hi <= 5 || (hi === 6 && lo >= 5);
+  const tiebreak = hi < 10 || hi - lo <= 1;
+  return games || (deciding && tiebreak);
 }
 
 /** One set: to 6 by 2 (6–0 to 6–4), 7–5, or 7–6 on a tie-break — or, only as

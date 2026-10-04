@@ -20,7 +20,9 @@ import {
   PAIR_LABELS, PAIR_RANGES, OSL_SWITCH_SECONDS, type PairIndex,
 } from "@/lib/formats/osl";
 import { readTiming, type Timing } from "@/lib/scoring/timing";
-import type { Match, Tournament } from "@/lib/db/schema";
+import { endingFor, type Ending } from "@/lib/scoring/final";
+import { sportOf } from "@/lib/sports/registry";
+import type { Match, MatchRules, Outcome, Tournament } from "@/lib/db/schema";
 
 export type OslView = {
   pair: PairIndex;
@@ -41,6 +43,11 @@ export type MatchView = ReplayState & {
   locked: boolean;
   rev: number;
   typed: boolean;
+  /** The typed result, when there is one — the replayed `a`/`b` above are the
+   *  rally log's, which a typed match does not have. */
+  typedScore: { a: number; b: number } | null;
+  /** Why a typed result moves no rating, when it does not. */
+  outcome: Outcome | null;
   /** How long the match has taken so far. Plain accumulated milliseconds, safe
    *  to hand the browser — see lib/scoring/timing.ts for why it is never a
    *  clock reading. */
@@ -48,15 +55,110 @@ export type MatchView = ReplayState & {
   osl: OslView | null;
 };
 
-/** Scoring overrides for a tournament's declared format, falling back to any
- *  per-tournament overrides the organiser set. */
-export function rulesFor(t: Pick<Tournament, "sport" | "format" | "scoring">): Rules | null {
-  const preset =
-    t.format === "osl" ? oslRuleOverrides()
-    : t.format === "pickleboss" ? picklebossRuleOverrides()
-    : null;
-  const overrides = preset ?? (t.scoring ?? undefined);
-  return resolveRules(t.sport, overrides as never);
+type ScoringOf = Pick<Tournament, "sport" | "format" | "scoring">;
+/** Anything that may carry a match's frozen scoring. */
+type RulesCarrier = Partial<Pick<Match, "rules">> | null | undefined;
+
+const presetOf = (t: Pick<Tournament, "format">) =>
+  t.format === "osl" ? oslRuleOverrides()
+  : t.format === "pickleboss" ? picklebossRuleOverrides()
+  : null;
+
+/** A carrom event played over a set number of boards stores how many in its
+ *  scoring (`{ boards: 8 }`); every other event has none. */
+export function boardsOf(scoring: unknown): number | null {
+  const n = Number((scoring as { boards?: unknown } | null)?.boards);
+  return Number.isInteger(n) && n >= 1 && n <= 99 ? n : null;
+}
+
+/**
+ * The event's scoring as it stands TODAY, in the shape a match freezes it in:
+ * the format's preset if it has one, else the organiser's own settings, else
+ * the sport's.
+ */
+export function eventRules(t: ScoringOf): MatchRules {
+  const preset = presetOf(t);
+  return {
+    rules: resolveRules(t.sport, (preset ?? t.scoring ?? undefined) as never),
+    boards: t.sport === "cr" && !preset ? boardsOf(t.scoring) : null,
+  };
+}
+
+/**
+ * The scoring a match is judged by: the one it FINISHED under, if it has, else
+ * the event's today.
+ *
+ * Faisal, 2026-09-29: changing the scoring applies to every match not yet
+ * finished — including one being played — and finished results stand. So a
+ * match is frozen the moment it first has a result (`writeResult` stamps
+ * `matches.rules`), and a change of the event's rules after that cannot reopen
+ * it: an 11–7 played to 11 would otherwise stop being over when the event
+ * moved to 15, and drop out of the table and the podium. The freeze stays while
+ * the match has any play, so an undo that reopens a finished game corrects it
+ * under the rules it was played to.
+ */
+export function matchRules(t: ScoringOf, m?: RulesCarrier): MatchRules {
+  return (m?.rules as MatchRules | null | undefined) ?? eventRules(t);
+}
+
+/** The point rules for this match (see `matchRules`), or for the event today
+ *  when no match is given. Null for a sport the point engine does not score. */
+export function rulesFor(t: ScoringOf, m?: RulesCarrier): Rules | null {
+  return matchRules(t, m).rules;
+}
+
+/** What kind of final this match has — one game, sets, boards… — judged by
+ *  the scoring it is played under. The ONE way to ask, so the table, the
+ *  rating and the typed-result check cannot read one match two ways. */
+export function endingOf(t: ScoringOf, m?: RulesCarrier): Ending {
+  const s = matchRules(t, m);
+  return endingFor(t.sport, s.rules, { carromBoards: s.boards != null });
+}
+
+/**
+ * Why this match has no live court, or null when it has one.
+ *
+ * The referee console counts points. Tennis and padel are scored in games and
+ * sets, and carrom over a set number of boards ends when the boards run out,
+ * which a point count cannot see — so those are typed in, and the console says
+ * so instead of offering a court that cannot finish them.
+ */
+export function noLiveCourt(t: ScoringOf, m?: RulesCarrier): { title: string; body: string } | null {
+  const s = matchRules(t, m);
+  const e = endingOf(t, m);
+  const sport = sportOf(t.sport).name;
+  if (e.kind === "sets" || !s.rules) {
+    return {
+      title: `No live court for ${sport.toLowerCase()}`,
+      body: `${sport} is scored in sets, so this match is recorded by typing its result: the games in each set, like 6–4 3–6 10–8. Typing a result in is not on the manage screen yet.`,
+    };
+  }
+  if (e.kind === "boards" && e.target === null) {
+    return {
+      title: `No live court for a match over ${s.boards} boards`,
+      body: `This match ends after ${s.boards} boards, and the court counts points, not boards — so its final score is typed in. Typing a result in is not on the manage screen yet.`,
+    };
+  }
+  return null;
+}
+
+/**
+ * A knockout match whose slots are not filled yet has nobody to score — or to
+ * rate: scored anyway, it finished with no rating, and filling the slots later
+ * could not give it one. So the court waits for both teams, the same rule
+ * `recordResult` keeps for a typed result.
+ *
+ * The words say what actually unlocks it. The slots are filled by the
+ * organiser's "Fill resolved slots", not by the feeders finishing: a referee
+ * told to wait for matches already over had nothing to wait for. ONE sentence,
+ * for the score page and for every action that refuses a rally.
+ */
+export function teamsNotIn(m: Pick<Match, "teamAId" | "teamBId">): { title: string; body: string } | null {
+  if (m.teamAId && m.teamBId) return null;
+  return {
+    title: "The teams aren't in this match yet",
+    body: "It can be scored once both teams are in it. When the matches feeding it have finished, the organiser fills them in with “Fill resolved slots” on the manage screen.",
+  };
 }
 
 /** The tie-break chain a format's tables are sorted by. They genuinely differ:
@@ -71,9 +173,9 @@ export const allowsDraws = (sport: string): boolean => sport === "ch" || sport =
 export function viewMatch(
   t: Pick<Tournament, "sport" | "format" | "scoring">,
   m: Pick<Match, "id" | "log" | "server" | "posA" | "posB" | "ackedGates" | "rev" | "typedScoreA" | "typedScoreB"> &
-     Partial<Pick<Match, "timing">>,
+     Partial<Pick<Match, "timing" | "rules" | "outcome">>,
 ): MatchView {
-  const rules = rulesFor(t);
+  const rules = rulesFor(t, m);
   const state = replayRallies(
     { log: m.log as Side[], server: m.server, posA: m.posA as 0 | 1, posB: m.posB as 0 | 1 },
     rules,
@@ -102,6 +204,8 @@ export function viewMatch(
     locked: state.over || (osl?.pendingGate ?? 0) > 0,
     rev: m.rev,
     typed: m.typedScoreA != null && m.typedScoreB != null,
+    typedScore: m.typedScoreA != null && m.typedScoreB != null ? { a: m.typedScoreA, b: m.typedScoreB } : null,
+    outcome: m.outcome ?? null,
     timing: m.timing ? readTiming(m.timing) : null,
     osl,
   };
@@ -129,8 +233,8 @@ export type CourtNotes = {
  * so a rally won by the receivers moves the serve and leaves the score alone —
  * which looks like the app ignoring a tap.
  */
-export function describeCourt(t: Pick<Tournament, "sport" | "format" | "scoring">): CourtNotes | null {
-  const r = rulesFor(t);
+export function describeCourt(t: Pick<Tournament, "sport" | "format" | "scoring">, m?: RulesCarrier): CourtNotes | null {
+  const r = rulesFor(t, m);
   if (!r) return null;
 
   const serve = r.sideOut

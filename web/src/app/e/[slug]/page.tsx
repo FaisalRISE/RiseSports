@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 import { divisions, registrations, tournaments, users } from "@/lib/db/schema";
 import { sportOf } from "@/lib/sports/registry";
 import { entryWindow, formatFee, indiaTimeLabel } from "@/lib/registration";
-import { rulesFor } from "@/lib/matchState";
+import { rulesFor, eventRules } from "@/lib/matchState";
 import { EntryForm } from "@/components/EntryForm";
 import { hasRules, needsFrom, ruleChips, rulesOfDivision, rulesSentence } from "@/lib/eligibility";
 import { submitEntry } from "./actions";
@@ -38,6 +38,7 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
   const window = entryWindow(t);
   const sport = sportOf(t.sport);
   const rules = rulesFor(t);
+  const boards = eventRules(t).boards;
   const fee = formatFee(t.entryFee);
 
   return (
@@ -55,7 +56,7 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
           {[
             `${sport.emoji} ${sport.name}`,
             t.format === "osl" ? "OSL team format" : t.format === "pickleboss" ? "Pickleboss" : "Standard",
-            rules ? `To ${rules.target}` : null,
+            boards != null ? `${boards} boards` : rules ? `To ${rules.target}` : null,
             t.status === "live" ? "In progress" : t.status === "finished" ? "Finished" : null,
           ]
             .filter(Boolean)

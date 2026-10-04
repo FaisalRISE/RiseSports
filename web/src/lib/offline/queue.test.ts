@@ -8,7 +8,8 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import {
-  classify, flushMatch, flushAll, saveQueued, loadQueued, clearQueued, allQueued, __resetQueue,
+  classify, flushMatch, flushAll, saveQueued, loadQueued, clearQueued, allQueued, __resetQueue, settleReply,
+  knownToPhone, withSent, clearIfLanded,
   type PushResult, type QueuedMatch,
 } from "./queue";
 import type { Side } from "@/lib/scoring/replayLite";
@@ -82,7 +83,7 @@ describe("flushing", () => {
     await saveQueued(rec("m1", "aab"));
     const push = async (): Promise<PushResult> => ({ ok: true, rev: 5 });
     const out = await flushMatch(rec("m1", "aab"), push);
-    expect(out).toEqual({ status: "flushed", matchId: "m1", rev: 5 });
+    expect(out).toEqual({ status: "flushed", matchId: "m1", rev: 5, landed: true, serverLog: L("aab") });
     expect(await loadQueued("m1")).toBeNull();
   });
 
@@ -105,14 +106,120 @@ describe("flushing", () => {
        ours; re-pushing must not look like a conflict. */
     const push = async (): Promise<PushResult> => ({ ok: false, reason: "stale", serverLog: L("aab"), rev: 9 });
     const out = await flushMatch(rec("m1", "aab"), push);
-    expect(out).toEqual({ status: "flushed", matchId: "m1", rev: 9 });
+    /* Not LANDED: this attempt wrote nothing, so the time it carried goes back. */
+    expect(out).toEqual({ status: "flushed", matchId: "m1", rev: 9, landed: false, serverLog: L("aab") });
   });
 
   it("drops a redundant queue when the server is already ahead", async () => {
     await saveQueued(rec("m1", "aa"));
     const push = async (): Promise<PushResult> => ({ ok: false, reason: "stale", serverLog: L("aabb"), rev: 7 });
     const out = await flushMatch(rec("m1", "aa"), push);
-    expect(out.status).toBe("flushed");
+    expect(out).toMatchObject({ status: "flushed", landed: false, serverLog: L("aabb") });
+    expect(await loadQueued("m1")).toBeNull();
+  });
+
+  /* The rev moved and nobody added a rally — a scoring change moves every
+     match's rev, and a write whose reply was lost moves this one. An undo is
+     SHORTER than the server's log, so `classify` calls it "behind", and it was
+     dropped as redundant: the point the referee took off came back. */
+  it("retries an undo when the server holds the log this phone was based on", async () => {
+    const pushed: [string, number][] = [];
+    const push = async (_id: string, log: Side[], base: number): Promise<PushResult> => {
+      pushed.push([log.join(""), base]);
+      return base === 3 ? { ok: false, reason: "stale", serverLog: L("aab"), rev: 4 } : { ok: true, rev: 5 };
+    };
+    const undo: QueuedMatch = { ...rec("m1", "aa", 3), baseLog: L("aab") };
+    expect(await flushMatch(undo, push)).toMatchObject({ status: "flushed", landed: true, rev: 5 });
+    expect(pushed).toEqual([["aa", 3], ["aa", 4]]);
+  });
+
+  it("retries an undo when the server holds a log this phone sent and never heard back about", async () => {
+    const pushed: [string, number][] = [];
+    const push = async (_id: string, log: Side[], base: number): Promise<PushResult> => {
+      pushed.push([log.join(""), base]);
+      return base === 1 ? { ok: false, reason: "stale", serverLog: L("aab"), rev: 2 } : { ok: true, rev: 3 };
+    };
+    const undo: QueuedMatch = { ...rec("m1", "aa", 1), baseLog: L("aa"), sent: [L("aab")] };
+    expect(await flushMatch(undo, push)).toMatchObject({ status: "flushed", landed: true });
+    expect(pushed).toEqual([["aa", 1], ["aa", 2]]);
+  });
+
+  it("an undo then a tap is this phone's own edit, not a conflict, when nobody else wrote", async () => {
+    const push = async (_id: string, _log: Side[], base: number): Promise<PushResult> =>
+      base === 3 ? { ok: false, reason: "stale", serverLog: L("aab"), rev: 4 } : { ok: true, rev: 5 };
+    const edit: QueuedMatch = { ...rec("m1", "aaa", 3), baseLog: L("aab") };
+    expect(await flushMatch(edit, push)).toMatchObject({ status: "flushed", landed: true });
+  });
+
+  /* The other half of the rule: a log this phone has NOT seen is another
+     device's work, and is judged by `classify` exactly as before. */
+  it("still drops an undo, and still asks about a difference, against another device's rallies", async () => {
+    const theirs = async (): Promise<PushResult> => ({ ok: false, reason: "stale", serverLog: L("aabb"), rev: 4 });
+    const based: QueuedMatch = { ...rec("m1", "aa", 3), baseLog: L("aab") };
+    expect(await flushMatch(based, theirs)).toMatchObject({ status: "flushed", landed: false });
+    const tapped: QueuedMatch = { ...rec("m1", "aaba", 3), baseLog: L("aab") };
+    expect(await flushMatch(tapped, theirs)).toMatchObject({ status: "conflict" });
+  });
+
+  /* Shorter than the log this phone knew the server held, and not one it
+     sent: another device took a rally off. Ours reads as "ahead" of it, and
+     was pushed straight over the correction. */
+  it("puts rallies another device took off to the referee, not back on the server", async () => {
+    let calls = 0;
+    const push = async (): Promise<PushResult> => { calls++; return { ok: false, reason: "stale", serverLog: L("aa"), rev: 4 }; };
+    const tapped: QueuedMatch = { ...rec("m1", "aaab", 3), baseLog: L("aaa") };
+    expect(await flushMatch(tapped, push)).toEqual({ status: "conflict", matchId: "m1", serverLog: L("aa"), localLog: L("aaab"), rev: 4 });
+    expect(calls).toBe(1);
+    /* This phone's OWN undo, sent and unheard, is not someone else's. */
+    const own: QueuedMatch = { ...rec("m1", "aab", 3), baseLog: L("aaa"), sent: [L("aa")] };
+    let retried = 0;
+    expect(await flushMatch(own, async (_id, _log, base) => {
+      retried++;
+      return base === 3 ? { ok: false, reason: "stale", serverLog: L("aa"), rev: 4 } : { ok: true, rev: 5 };
+    })).toMatchObject({ status: "flushed", landed: true });
+    expect(retried).toBe(2);
+  });
+
+  /* A pause with nothing queued sends the log the server was last known to
+     hold, only to carry the clock. On a stale reply that log is not this
+     phone's work and is never judged: the server's own log goes back. */
+  it("a clock-only push sends the server's own log back on a stale reply", async () => {
+    const pushed: [string, number][] = [];
+    const push = async (_id: string, log: Side[], base: number): Promise<PushResult> => {
+      pushed.push([log.join(""), base]);
+      return base === 3 ? { ok: false, reason: "stale", serverLog: L("aab"), rev: 4 } : { ok: true, rev: 5 };
+    };
+    const pause: QueuedMatch = { ...rec("m1", "aaa", 3), baseLog: L("aaa") };
+    expect(await flushMatch(pause, push, 3, { clockOnly: true })).toEqual({
+      status: "flushed", matchId: "m1", rev: 5, landed: true, serverLog: L("aab"),
+    });
+    expect(pushed).toEqual([["aaa", 3], ["aab", 4]]);
+  });
+
+  /* The server cuts a log at the rally that ended the game, and says what it
+     stored. That — not what was sent — is what the server holds. */
+  it("takes what the server stored when it cut the log at the finish", async () => {
+    const push = async (): Promise<PushResult> => ({ ok: true, rev: 2, log: L("aa") });
+    expect(await flushMatch(rec("m1", "aaab"), push)).toMatchObject({ status: "flushed", landed: true, serverLog: L("aa") });
+  });
+
+  it("knows a log only by its content, and a record from before it knows nothing", () => {
+    expect(knownToPhone({ baseLog: L("ab") }, L("ab"))).toBe(true);
+    expect(knownToPhone({ baseLog: L("ab") }, L("ba"))).toBe(false);
+    expect(knownToPhone({ sent: [L("a"), L("ab")] }, L("ab"))).toBe(true);
+    expect(knownToPhone({}, L("ab"))).toBe(false);
+    expect(knownToPhone({}, [])).toBe(false);
+    expect(withSent([L("a"), L("ab")], L("a"))).toEqual([L("ab"), L("a")]);
+    expect(withSent(Array.from({ length: 9 }, (_, i) => L("a".repeat(i + 1))), L("b"))).toHaveLength(8);
+  });
+
+  /* The stored record is the phone's NEWEST log. Clearing it because an older
+     one landed deleted a tap made meanwhile. */
+  it("clears a record only while it still holds the log that landed", async () => {
+    await saveQueued(rec("m1", "aab"));
+    await clearIfLanded("m1", L("aa"));
+    expect((await loadQueued("m1"))?.log).toEqual(L("aab"));
+    await clearIfLanded("m1", L("aab"));
     expect(await loadQueued("m1")).toBeNull();
   });
 
@@ -188,5 +295,67 @@ describe("a push that rejects outright", () => {
     });
     expect(out.status).toBe("failed");
     if (out.status === "failed") expect(out.error).toBe("No connection to the server");
+  });
+});
+
+/* Step 7. Two replies the queue used to have no word for, and so retried:
+ * "the match was typed in" and "this match will never take rallies". The first
+ * is how a phone that reconnected used to wipe out a typed result — its push
+ * was stale, the typed match's log was empty, so its rallies looked "ahead"
+ * and went again at the new rev, and that write replaced the typed score. */
+describe("a reply that ends the attempt for good", () => {
+  it("typed: keeps the rallies, holds them for the referee, and sends them once", async () => {
+    await saveQueued(rec("m1", "ab"));
+    let calls = 0;
+    const push = async (): Promise<PushResult> => { calls++; return { ok: false, reason: "typed", a: 11, b: 3, rev: 4 }; };
+    expect(await flushMatch(rec("m1", "ab"), push)).toEqual({ status: "typed", matchId: "m1", a: 11, b: 3, rev: 4, outcome: null, kept: true });
+    expect(calls).toBe(1);
+    expect(await loadQueued("m1")).toMatchObject({ log: L("ab"), held: true });
+
+    /* Nothing sends a held record on its own. */
+    expect(await flushAll(push)).toEqual([]);
+    expect(calls).toBe(1);
+  });
+
+  /* The differential: the old reply for the same situation. A stale answer
+     with the typed match's empty log reads as "ahead" and is retried — that
+     retry is the write that replaced the typed result. */
+  it("where a stale reply with an empty server log would have been retried", async () => {
+    expect(classify([], L("ab"))).toBe("ahead");
+    let calls = 0;
+    await flushMatch(rec("m1", "ab"), async () => {
+      calls++;
+      return calls === 1 ? { ok: false, reason: "stale", serverLog: [], rev: 4 } : { ok: true, rev: 5 };
+    });
+    expect(calls).toBe(2);
+  });
+
+  it("refused: drops the rallies and does not retry", async () => {
+    await saveQueued(rec("m1", "ab"));
+    let calls = 0;
+    const out = await flushMatch(rec("m1", "ab"), async () => {
+      calls++;
+      return { ok: false, reason: "refused", title: "This match was deleted", error: "It was removed on the manage screen." };
+    });
+    expect(out).toEqual({ status: "refused", matchId: "m1", title: "This match was deleted", error: "It was removed on the manage screen." });
+    expect(calls).toBe(1);
+    expect(await loadQueued("m1")).toBeNull();
+  });
+
+  /* A pause sent with nothing queued carries the server's own log. Filed as
+     held, a reload offered to "put back" rallies the organiser had replaced. */
+  it("typed: holds nothing when nothing was queued", async () => {
+    const out = await flushMatch(rec("m1", "ab"), async () => ({ ok: false, reason: "typed", a: 11, b: 3, rev: 4 }));
+    expect(out).toMatchObject({ status: "typed", kept: false });
+    expect(await loadQueued("m1")).toBeNull();
+  });
+
+  it("settleReply is the one reading of a reply, for the conflict dialog too", async () => {
+    const r = rec("m1", "ab");
+    expect(await settleReply({ ok: true, rev: 3 }, r)).toEqual({ status: "flushed", matchId: "m1", rev: 3, landed: true, serverLog: L("ab") });
+    expect(await settleReply({ ok: false, reason: "error", error: "x" }, r)).toEqual({ status: "failed", matchId: "m1", error: "x" });
+    expect(await settleReply({ ok: false, reason: "stale", serverLog: [], rev: 3 }, r)).toBeNull();
+    expect(await settleReply({ ok: false, reason: "typed", a: 1, b: 0, rev: 3 }, r)).toMatchObject({ status: "typed" });
+    expect(await settleReply({ ok: false, reason: "refused", title: "t", error: "e" }, r)).toMatchObject({ status: "refused" });
   });
 });

@@ -46,7 +46,10 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
     const view = viewMatch(t, m);
     const [a, b] = resolveSlots(m, resolverFor(m.divisionId), nameOf);
     const result = matchResult(t, m, view);
-    const live = view.rallies > 0 && !view.over;
+    /* Live is rallies with no result yet — read off the RESULT, not the
+       replay's "over": a carrom match over a set number of boards can replay
+       past carrom's own target and still have no result. */
+    const live = view.rallies > 0 && !result;
     const decided = result !== null;
     return (
       <li key={m.id} className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-3">

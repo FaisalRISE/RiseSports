@@ -98,7 +98,8 @@ describe("a log that lands from a phone", () => {
 
   it("is cut at the winning rally when it carries a tap past it — and is still rated", async () => {
     const m = await match();
-    expect(await actions.pushLog(m, [...ELEVEN_FOUR, "a"], 0)).toEqual({ ok: true, rev: 1 });
+    /* The reply says what was STORED, so the phone builds on the cut log. */
+    expect(await actions.pushLog(m, [...ELEVEN_FOUR, "a"], 0)).toEqual({ ok: true, rev: 1, log: ELEVEN_FOUR });
     expect((await stored(m)).log).toEqual(ELEVEN_FOUR);
     expect(await ratingRows(m)).toHaveLength(4);
   });

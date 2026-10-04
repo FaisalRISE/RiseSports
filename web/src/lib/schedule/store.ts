@@ -132,6 +132,12 @@ export async function applySchedule(
   const placed = new Map(plan.placements.map((p) => [p.matchId, p]));
 
   await db.transaction(async (tx) => {
+    /* The EVENT row first, as every writer that touches many of its matches
+       takes it (lib/scoring/change, the draws): placements update matches in
+       time order, a scoring change locks them in id order, and two writers
+       each holding rows the other wants is a deadlock. One lock per event,
+       taken first, makes them queue. */
+    await tx.select({ id: tournaments.id }).from(tournaments).where(eq(tournaments.id, tournamentId)).for("no key update");
     for (const p of plan.placements) {
       await tx
         .update(matches)
@@ -159,10 +165,16 @@ export async function applySchedule(
   return { ...plan, cleared };
 }
 
-/** Take every time back off, leaving the draw alone. */
+/** Take every time back off, leaving the draw alone. The event row first,
+ *  like every writer of many matches: one UPDATE locks them in whatever order
+ *  it scans them, and against a scoring change locking them in id order that
+ *  is a deadlock. */
 export async function clearSchedule(tournamentId: string): Promise<void> {
-  await db
-    .update(matches)
-    .set({ court: null, scheduledAt: null })
-    .where(eq(matches.tournamentId, tournamentId));
+  await db.transaction(async (tx) => {
+    await tx.select({ id: tournaments.id }).from(tournaments).where(eq(tournaments.id, tournamentId)).for("no key update");
+    await tx
+      .update(matches)
+      .set({ court: null, scheduledAt: null })
+      .where(eq(matches.tournamentId, tournamentId));
+  });
 }

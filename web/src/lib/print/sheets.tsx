@@ -25,7 +25,7 @@ import "server-only";
  * browser, so the bundle-leak guard stays honest. */
 
 import type { Group, Match, Team, Tournament } from "@/lib/db/schema";
-import { rulesFor } from "@/lib/matchState";
+import { rulesFor, eventRules } from "@/lib/matchState";
 import { matchResult } from "@/lib/results";
 import { sportOf } from "@/lib/sports/registry";
 import { floatingTime } from "@/lib/schedule";
@@ -240,6 +240,16 @@ export function MarginGrid({
 
 /** The rules, stated in words, so a paper sheet is enough to settle an argument. */
 export function RulesLine({ tournament }: { tournament: Tournament }) {
+  /* Carrom over a set number of boards is not a points game at all: printed
+     as "One game to 25" the sheet settled the argument the wrong way. */
+  const boards = eventRules(tournament).boards;
+  if (boards != null) {
+    return (
+      <div className="rules">
+        {boards} boards. Most points after the last board wins; a level score is a draw in a group.
+      </div>
+    );
+  }
   const r = rulesFor(tournament);
   if (!r) return null;
   return (

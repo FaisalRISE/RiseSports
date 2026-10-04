@@ -27,6 +27,8 @@ import { categoryFormat, categoryRoster, refileSeeds } from "@/lib/rating/tourna
 import { seedFromDupr } from "@/lib/rating";
 import { DrawChanged, deleteUnplayed, drawSignature, lockedIds, requireDivision } from "@/lib/draw/guard";
 import { DEFAULT_SPORT, SPORTS, ratingKey, usesDupr } from "@/lib/sports/registry";
+import { changeScoring, type ScoringSaved } from "@/lib/scoring/change";
+import { RESULT_ENTRY_ON_SCREEN } from "@/lib/results/record";
 
 /* Same discipline as the scoring actions: load, authorize server-side, write.
  * With RISE_OPEN_ACCESS unset these assertions pass for everyone; with it set
@@ -647,6 +649,11 @@ async function runDraw(
   let divisionId = wanted ?? "";
   try {
     problem = await db.transaction(async (tx) => {
+      /* The EVENT row first, before the category: a scoring change and the
+         order of play lock it first too and then many of its matches, and a
+         draw deleting matches in its own order could otherwise hold rows they
+         want while waiting for theirs. See lib/scoring/change. */
+      await tx.select({ id: tournaments.id }).from(tournaments).where(eq(tournaments.id, t.id)).for("no key update");
       const division = await requireDivision(t.id, wanted, tx);
       if (!division) return "unknown-category";
       divisionId = division.id;
@@ -995,8 +1002,31 @@ const scoringSchema = z.object({
   scoreType: scoreTypeSchema,
 });
 
-export async function setScoring(tournamentId: string, formData: FormData) {
+/**
+ * Save how this event's games are won, and say what that did to the matches
+ * already played (lib/scoring/change): finished ones keep their results, ones
+ * being played switch to the new rules — or, where the new rules would have
+ * ended a game already, nothing is saved and the organiser is told which.
+ */
+export async function setScoring(tournamentId: string, formData: FormData): Promise<ScoringSaved> {
   const t = await requireManager(tournamentId);
+
+  /* Carrom over a set number of boards is a different ending, not a target:
+     most points after the last board wins, and a level score is a draw. The
+     point settings mean nothing for it, so they are not stored. */
+  if (t.sport === "cr" && formData.get("carromEnd") === "boards") {
+    if (!RESULT_ENTRY_ON_SCREEN) {
+      return {
+        ok: false,
+        error: "A set number of boards needs each match's final score typed in, and results can't be typed in yet. Use first to a score for now.",
+      };
+    }
+    const boards = z.coerce.number().int().min(1).max(99).safeParse(formData.get("boards"));
+    if (!boards.success) return { ok: false, error: "Say how many boards a match lasts — a whole number from 1 to 99." };
+    const saved = await changeScoring(t, { boards: boards.data });
+    revalidateScoring(t.slug);
+    return saved;
+  }
 
   const raw = {
     target: formData.get("target"),
@@ -1022,21 +1052,24 @@ export async function setScoring(tournamentId: string, formData: FormData) {
     ...buildScoring(v.target, v.winBy2, v.goldenAt, v.switchAt, v.scoreType),
   };
 
-  await db
-    .update(tournaments)
-    .set({ scoring: overrides as Record<string, unknown> })
-    .where(eq(tournaments.id, t.id));
-
-  revalidatePath(`/t/${t.slug}/manage`);
-  revalidatePath(`/t/${t.slug}`);
+  const saved = await changeScoring(t, overrides as Record<string, unknown>);
+  revalidateScoring(t.slug);
+  return saved;
 }
 
-/** Back to the sport's own defaults. */
-export async function clearScoring(tournamentId: string) {
+/** Back to the sport's own defaults — a change like any other, so finished
+ *  matches keep their results here too. */
+export async function clearScoring(tournamentId: string): Promise<ScoringSaved> {
   const t = await requireManager(tournamentId);
-  await db.update(tournaments).set({ scoring: null }).where(eq(tournaments.id, t.id));
-  revalidatePath(`/t/${t.slug}/manage`);
-  revalidatePath(`/t/${t.slug}`);
+  const saved = await changeScoring(t, null);
+  revalidateScoring(t.slug);
+  return saved;
+}
+
+function revalidateScoring(slug: string) {
+  revalidatePath(`/t/${slug}/manage`);
+  revalidatePath(`/t/${slug}`);
+  revalidatePath(`/t/${slug}/ratings`);
 }
 
 /**
@@ -1049,7 +1082,17 @@ export async function clearScoring(tournamentId: string) {
 export async function describeScoring(input: {
   target: number | string; winBy2: boolean;
   goldenAt: number | string; scoreType: string;
+  /** Carrom over a set number of boards. */
+  boards?: number | string | null;
 }): Promise<string> {
+  /* null means "not boards"; an EMPTY box while boards is chosen is the
+     organiser retyping the number, and must not read as first-to-a-score. */
+  if (input.boards != null) {
+    const boards = z.coerce.number().int().min(1).max(99).safeParse(input.boards === "" ? undefined : input.boards);
+    return boards.success
+      ? `${boards.data} boards. Most points wins; a level score is a draw in a group (a knockout needs a winner).`
+      : "Say how many boards a match lasts.";
+  }
   const v = scoringSchema.parse({ ...input, switchAt: null });
   const { goldenInfo } = await import("@/lib/scoring/rules");
   return goldenInfo(v.target, v.winBy2, v.goldenAt, v.scoreType);

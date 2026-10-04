@@ -28,6 +28,12 @@ const testDb = drizzle(client, { schema });
 
 vi.mock("@/lib/db", () => ({ db: testDb }));
 vi.mock("server-only", () => ({}));
+/* The score actions, for the writer every score change goes through. */
+vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
+vi.mock("next/navigation", () => ({ redirect: () => { throw new Error("redirect"); }, notFound: () => {} }));
+vi.mock("next/headers", () => ({
+  cookies: async () => ({ get: () => undefined, set: () => {}, delete: () => {} }),
+}));
 
 const dir = path.resolve(process.cwd(), "drizzle");
 for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".sql")).sort()) {
@@ -229,6 +235,92 @@ describe("every rating writer locks the match, then the people in id order", () 
     expect(txs).toHaveLength(1);
     assertLockOrder(txs[0], "matches");
     noPeopleWrittenOutside(bare);
+  });
+
+  /* Step 7: every score change goes through ONE writer, and a change of
+     RESULT takes the old rating back in the same transaction as the write.
+     The match row is the first thing that transaction touches — the UPDATE
+     itself takes its lock — so the rating engine's order holds: match, then
+     people. The old writer reverted in a transaction of its own AFTER the
+     write, which a revert queued behind an undo could run after the match had
+     been finished again, deleting the new rating. */
+  it("correcting a result: the write and the revert are one transaction, match first", async () => {
+    const [a, b, c, d] = await four();
+    const m = await match([a, b], [c, d]);
+    await apply.applyMatchRatings(m);
+    const { recordResult } = await import("@/app/t/[slug]/actions");
+    const { txs, bare } = await recorded(() => recordResult(m, { a: 11, b: 5, expectedRev: 1 }));
+
+    const write = txs.find((tx) => tx.some((s) => s.startsWith('delete from "rating_history"')));
+    expect(write, "the revert runs inside a transaction").toBeDefined();
+    expect(write![0], "that transaction's first statement is the write, which locks the match").toMatch(/^update "matches" /);
+    const touching = write!.filter((s) => s.includes('"people"'));
+    expect(touching[0]).toMatch(/^select .* from "people" .*order by "people"\."id"( asc)? for no key update$/);
+    expect(write!.filter((s) => / for update$/.test(s)), "nothing takes FOR UPDATE").toEqual([]);
+
+    /* The new rating: its own transaction, after the commit, in the usual order. */
+    const reapply = txs.find((tx) => tx.some((s) => s.startsWith('insert into "rating_history"')));
+    expect(reapply).toBeDefined();
+    assertLockOrder(reapply!, "matches");
+    noPeopleWrittenOutside(bare);
+    expect(bare.filter((s) => s.startsWith('delete from "rating_history"')), "no revert outside a transaction").toEqual([]);
+  });
+
+  /* Every writer of many of an event's matches takes the event row FIRST: the
+     order of play, the draws, clearing the times and removing a category all
+     write matches in their own order (a plan's, a scan's, a cascade's), and
+     without one lock per event taken first two of them could each hold rows
+     the other wants. */
+  it("drawing up the times, clearing them, drawing and removing a category take the event row first", async () => {
+    const [a, b, c, d] = await four();
+    const m = await match([a, b], [c, d]);
+    const [row] = await testDb.select().from(schema.matches).where(eq(schema.matches.id, m));
+    const { applySchedule } = await import("@/lib/schedule/store");
+    const sched = await recorded(() => applySchedule(row.tournamentId, {
+      startsAt: new Date("2026-10-04T09:00:00Z"), courts: 2, matchMinutes: 20,
+    }));
+    const writes = sched.txs.find((tx) => tx.some((s) => s.startsWith('update "tournaments"')));
+    expect(writes?.[0]).toMatch(/^select .* from "tournaments" .* for no key update$/);
+
+    const { generateGroups } = await import("@/app/t/[slug]/manage/actions");
+    const fd = new FormData();
+    fd.set("divisionId", row.divisionId);
+    fd.set("groups", "1");
+    const draw = await recorded(() => generateGroups(row.tournamentId, fd).catch(() => {}));
+    const drawn = draw.txs.find((tx) => tx.some((s) => s.includes('"divisions"')));
+    expect(drawn?.[0]).toMatch(/^select .* from "tournaments" .* for no key update$/);
+
+    const { clearSchedule } = await import("@/lib/schedule/store");
+    const cleared = await recorded(() => clearSchedule(row.tournamentId));
+    const clearing = cleared.txs.find((tx) => tx.some((s) => s.startsWith('update "matches"')));
+    expect(clearing?.[0]).toMatch(/^select .* from "tournaments" .* for no key update$/);
+    expect(cleared.bare.filter((s) => s.startsWith('update "matches"')), "nothing outside it").toEqual([]);
+
+    const { removeDivision } = await import("@/app/t/[slug]/manage/registration/actions");
+    const removed = await recorded(() => removeDivision(row.tournamentId, row.divisionId).catch(() => {}));
+    const removing = removed.txs.find((tx) => tx.some((s) => s.startsWith('delete from "divisions"')));
+    expect(removing?.[0]).toMatch(/^select .* from "tournaments" .* for no key update$/);
+  });
+
+  /* A scoring change locks the EVENT row, then every match of it in id order,
+     NO KEY UPDATE throughout, in ONE transaction that never touches a person:
+     the writers above take the event row first too, and a rating takes a match
+     before people — so none of them can close a circle. */
+  it("changing an event's scoring: the event, then its matches in id order, and no people", async () => {
+    const [a, b, c, d] = await four();
+    const m = await match([a, b], [c, d]);
+    const [row] = await testDb.select().from(schema.matches).where(eq(schema.matches.id, m));
+    const { setScoring } = await import("@/app/t/[slug]/manage/actions");
+    const fd = new FormData();
+    for (const [k, v] of Object.entries({ target: "15", winBy2: "on", goldenAt: "none", scoreType: "" })) fd.set(k, v);
+    const { txs } = await recorded(() => setScoring(row.tournamentId, fd));
+
+    const change = txs.find((tx) => tx.some((s) => s.startsWith('update "tournaments"')));
+    expect(change, "the change is one transaction").toBeDefined();
+    expect(change![0]).toMatch(/^select .* from "tournaments" .* for no key update$/);
+    expect(change![1]).toMatch(/^select .* from "matches" .*order by "matches"\."id"( asc)? for no key update$/);
+    expect(change!.filter((s) => s.includes('"people"')), "no person is touched").toEqual([]);
+    expect(change!.filter((s) => / for update$/.test(s)), "nothing takes FOR UPDATE").toEqual([]);
   });
 
   it("applying a community result", async () => {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { matchResult, hasPlay, matchLine } from "./index";
+import { matchResult, hasPlay, matchLine, resultSentence } from "./index";
 import { viewMatch } from "@/lib/matchState";
+import { resolveRules } from "@/lib/scoring/rules";
 import type { Match, Tournament } from "@/lib/db/schema";
 
 /* Real match rows through the real `viewMatch`: what is checked is "which score
@@ -26,8 +27,18 @@ const rallies = (k: number) => Array.from({ length: k }, () => "a");
 describe("what a match's result is", () => {
   it("is the typed pair when both boxes are filled", () => {
     expect(matchResult(event("pb"), match({ typedScoreA: 11, typedScoreB: 7 }))).toEqual({
-      a: 11, b: 7, winner: "a", draw: false, source: "typed", display: "11–7",
+      a: 11, b: 7, winner: "a", draw: false, source: "typed", outcome: null, display: "11–7",
     });
+  });
+
+  /* A result that moves no rating says so wherever the score is printed —
+     one place, so the table, the print pack and the CSV all agree. */
+  it("marks a walkover and a retirement where the score is printed, and nothing else", () => {
+    expect(matchResult(event("pb"), match({ typedScoreA: 11, typedScoreB: 0, outcome: "walkover" }))).toMatchObject({
+      winner: "a", outcome: "walkover", display: "11–0 w/o",
+    });
+    expect(matchResult(event("pb"), match({ typedScoreA: 7, typedScoreB: 9, outcome: "retired" }))?.display).toBe("7–9 ret.");
+    expect(matchResult(event("pb"), match({ typedScoreA: 9, typedScoreB: 7, outcome: "unrated" }))?.display).toBe("9–7");
   });
 
   it("is the replayed score once a refereed match is over", () => {
@@ -51,10 +62,32 @@ describe("what a match's result is", () => {
       .toMatchObject({ winner: null, draw: false });
   });
 
+  /* Carrom over a set number of boards replays its rallies against carrom's
+     default target, and 26–10 read as a finished game. No point count ends a
+     match the court cannot finish. */
+  it("is nothing for rallies on a match with no live court", () => {
+    const boards = { ...event("cr"), scoring: { boards: 8 } } as unknown as Tournament;
+    const log = Array.from({ length: 25 }, () => "a") as never;
+    expect(matchResult(event("cr"), match({ log }))).toMatchObject({ a: 25, b: 0, source: "live" });
+    expect(matchResult(boards, match({ log }))).toBeNull();
+    /* A match FROZEN under first-to-25 keeps the result it finished with. */
+    expect(matchResult(boards, match({ log, rules: { rules: resolveRules("cr"), boards: null } as never }))).toMatchObject({ a: 25 });
+  });
+
   it("uses a view the caller already has", () => {
     const m = match({ log: rallies(21) as never });
     const v = viewMatch(event("bd"), m);
     expect(matchResult(event("bd"), m, v)).toEqual(matchResult(event("bd"), m));
+  });
+});
+
+describe("the result in a sentence", () => {
+  it("names who won and how, and a draw is just its score", () => {
+    const say = (m: Partial<Match>, sport = "pb") => resultSentence(matchResult(event(sport), match(m))!, "Aces", "Bees");
+    expect(say({ typedScoreA: 11, typedScoreB: 7 })).toBe("Aces win, 11–7");
+    expect(say({ typedScoreA: 0, typedScoreB: 11, outcome: "walkover" })).toBe("Bees win, 0–11 w/o");
+    expect(say({ typedScoreA: 9, typedScoreB: 7, outcome: "retired" })).toBe("Aces win, 9–7 ret.");
+    expect(say({ typedScoreA: 1, typedScoreB: 1 }, "ch")).toBe("1–1");
   });
 });
 

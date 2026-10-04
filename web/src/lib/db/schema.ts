@@ -15,7 +15,17 @@ import {
   pgTable, text, integer, boolean, timestamp, jsonb, uniqueIndex, index, primaryKey, date,
 } from "drizzle-orm/pg-core";
 import type { Side } from "@/lib/scoring/replay";
+import type { Rules } from "@/lib/scoring/rules";
 import type { SportId } from "@/lib/sports/registry";
+
+/** Why a recorded result moves no rating. */
+export const OUTCOMES = ["walkover", "retired", "unrated"] as const;
+export type Outcome = (typeof OUTCOMES)[number];
+
+/** A match's scoring, frozen: the resolved point rules (null for a sport the
+ *  point engine does not score — tennis, padel) and, for carrom played over a
+ *  set number of boards, how many. */
+export type MatchRules = { rules: Rules | null; boards: number | null };
 
 const id = () => text("id").primaryKey();
 const created = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
@@ -231,6 +241,22 @@ export const matches = pgTable(
      *  match counts for the tables but is excluded from rally statistics. */
     typedScoreA: integer("typed_score_a"),
     typedScoreB: integer("typed_score_b"),
+    /** Tennis and padel: the games in each set, as typed ([[6,4],[3,6],[10,8]]).
+     *  The sets WON go in typed_score_a/b like any other result; these are the
+     *  detail, checked against them (lib/scoring/final `setsProblem`). */
+    sets: jsonb("sets").$type<[number, number][] | null>(),
+    /** How a result that moves no rating came about: a walkover, a retirement,
+     *  or a game stopped early and recorded as it stood ("unrated"). NULL for an
+     *  ordinary result. It counts in the table either way. A CHECK in 0021
+     *  holds it to those three words. */
+    outcome: text("outcome").$type<Outcome | null>(),
+    /** The scoring this match FINISHED under, stamped the moment it first has a
+     *  result and kept while it has any play at all. Faisal, 2026-09-29: a
+     *  change to the event's scoring applies to every match not yet finished,
+     *  and finished results stand — an 11–7 played to 11 stays a win when the
+     *  event moves to 15. NULL means "the event's current scoring". See
+     *  lib/matchState `rulesFor`. */
+    rules: jsonb("rules").$type<MatchRules | null>(),
 
     /* How long the match actually took — spec: match-timing-spec.md v2.0.
      * Only ACCUMULATED milliseconds and a wall-clock start for ordering; never

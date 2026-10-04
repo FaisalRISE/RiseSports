@@ -360,7 +360,7 @@ describe("taking a tournament result back", () => {
     expect((await historyOf(a))[0].marginMultiplier).toBe(Math.round(marginMultiplier(27, 18) * 1000));
   });
 
-  /* What a correction to an EARLIER match does (setTypedScore reverts it and
+  /* What a correction to an EARLIER match does (`writeResult` reverts it and
      re-applies it): the newer match's movement must stay where it is. A revert
      that put the rating back to the old match's "before" would throw it away. */
   it("takes back an older match without touching the newer one's movement", async () => {
@@ -462,7 +462,7 @@ describe("a format that only matches created", () => {
     /* The OLDER match first, while the newer one still stands on the format… */
     await revertMatchRatings(m1);
     expect((await load(newcomer)).riseRatings[KEY]).toBeDefined();
-    /* …then corrected and re-applied under it, as setTypedScore does… */
+    /* …then corrected and re-applied under it, as `writeResult` does… */
     await applyMatchRatings(m1);
     /* …and then everything taken back. */
     await revertMatchRatings(m2);

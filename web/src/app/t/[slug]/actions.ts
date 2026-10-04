@@ -6,15 +6,19 @@ import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/lib/db";
-import { matches, tournaments, scorerGrants } from "@/lib/db/schema";
+import { matches, tournaments, scorerGrants, OUTCOMES, type Outcome } from "@/lib/db/schema";
 import { principalFor, grantCookieName, GRANT_COOKIE_OPTIONS } from "@/lib/auth/guard";
 import { canScore, canManage, assert } from "@/lib/auth/policy";
 import { verifyPin, generateGrantToken } from "@/lib/auth/pin";
-import { rulesFor, viewMatch } from "@/lib/matchState";
-import { applyMatchRatings, revertMatchRatings } from "@/lib/rating/apply";
+import { rulesFor, viewMatch, eventRules, endingOf, noLiveCourt, teamsNotIn, allowsDraws } from "@/lib/matchState";
+import { matchResult, hasPlay, type MatchResult } from "@/lib/results";
+import { normaliseResult, resultProblem, type ResultRefusalCode } from "@/lib/results/record";
+import { applyMatchRatings, revertMatchRatingsIn } from "@/lib/rating/apply";
 import { oslPruneAcks } from "@/lib/formats/osl";
 import { rewindIndex } from "@/lib/scoring/rewind";
+import { MAX_SCORE } from "@/lib/scoring/final";
 import { finishedAt, type Side } from "@/lib/scoring/replay";
+import type { PushResult } from "@/lib/offline/queue";
 import {
   readTiming, startTiming, applyTick, stopTiming, reopenTiming,
   type Timing, type Tick,
@@ -30,6 +34,11 @@ import {
 
 const sideSchema = z.enum(["a", "b"]);
 const idSchema = z.string().min(1).max(64);
+/* The revision a device last read. Checked like every other input: a Server
+   Action is a public endpoint, and a fraction reached Postgres as rev = 1.5 and
+   threw (a 500, retried by the phone for ever), while a string passed the guard
+   and wrote rev "5" + 1 = "51". */
+const revSchema = z.number().int().min(0);
 
 /* A device's report of time that passed, already split into play and pause.
  * Bounded so a broken clock on one phone cannot write a nonsense duration: an
@@ -46,13 +55,18 @@ const tickSchema = z
 
 type Ctx = Awaited<ReturnType<typeof loadMatch>>;
 
-async function loadMatch(matchId: string) {
+async function findMatch(matchId: string) {
   const [row] = await db
     .select({ match: matches, tournament: tournaments })
     .from(matches)
     .innerJoin(tournaments, eq(matches.tournamentId, tournaments.id))
     .where(eq(matches.id, matchId))
     .limit(1);
+  return row ?? null;
+}
+
+async function loadMatch(matchId: string) {
+  const row = await findMatch(matchId);
   if (!row) throw new Error("Match not found");
   return row;
 }
@@ -90,70 +104,184 @@ function nextTiming(
   return t;
 }
 
-/** Write the log with an optimistic-concurrency guard on `rev`. */
+/** Everything a write may set about a match's score. */
+type Next = {
+  log: Side[];
+  ackedGates: number[];
+  typedScoreA: number | null;
+  typedScoreB: number | null;
+  outcome: Outcome | null;
+  sets: [number, number][] | null;
+  /** Undefined leaves the clock as it is. */
+  timing?: Timing | null;
+};
+
+/** Same result — score, winner and why it moves no rating, if it does not. */
+function sameResult(x: MatchResult | null, y: MatchResult | null): boolean {
+  if (!x || !y) return x === y;
+  return x.a === y.a && x.b === y.b && x.winner === y.winner && x.outcome === y.outcome;
+}
+
+/**
+ * THE writer of a match's score. Every rally, undo, correction and typed
+ * result comes through here, under a guard on `rev` so a stale device cannot
+ * roll the match back.
+ *
+ * It asks ONE question — did the RESULT change? — rather than the three the old
+ * code asked in three places, each wrong somewhere:
+ *   - "was it over, is it over" from the rally log alone, so replacing a typed
+ *     11–3 with rallies never took 11–3's rating back, and the real result later
+ *     found history already there and answered "already";
+ *   - only on the finish-line transition, so correcting 11–7 to 11–9 never
+ *     re-rated at all;
+ *   - with the revert in a transaction of its own after the write, so a revert
+ *     queued behind an undo could run after the match had been finished again
+ *     and delete the new rating.
+ *
+ * Unchanged (every mid-game rally): one guarded UPDATE, nothing else — the hot
+ * path stays free. Changed: the UPDATE and the revert of whatever rating the
+ * match had move together in ONE transaction, under the match row's lock (the
+ * rating engine's lock order: match, then people). The revert runs every time,
+ * result or not before: it is one idempotent DELETE … RETURNING, and running it
+ * unconditionally also repairs a match an old bug left with history and no
+ * result. The new rating, if the new result earns one, is applied after the
+ * commit; `applyMatchRatings` re-checks the result under its own lock, so a
+ * write landing in between makes it stand aside for that write.
+ *
+ * It also freezes the scoring the match is judged by (`matches.rules`, see
+ * lib/matchState `matchRules`): stamped the moment it first has a result, kept
+ * while it has any play, dropped when it has none.
+ *
+ * A rating failure is logged, never thrown: the score is committed, and a rally
+ * that would not save because of a rating is a problem on court right now.
+ */
+async function writeResult(
+  ctx: Ctx, next: Next, expectedRev: number,
+): Promise<{ ok: true; rev: number } | { ok: false; reason: "stale" }> {
+  const { tournament: t, match: m } = ctx;
+  const after = { ...m, ...next, timing: next.timing === undefined ? m.timing : next.timing };
+  const before = matchResult(t, m);
+  const result = matchResult(t, after);   // judged by the frozen rules if it has them, else today's
+  const rules = hasPlay(after) ? (m.rules ?? (result ? eventRules(t) : null)) : null;
+
+  const values = {
+    log: next.log,
+    ackedGates: next.ackedGates,
+    typedScoreA: next.typedScoreA,
+    typedScoreB: next.typedScoreB,
+    outcome: next.outcome,
+    sets: next.sets,
+    rules,
+    ...(next.timing !== undefined ? { timing: next.timing as unknown as Record<string, unknown> | null } : {}),
+    rev: expectedRev + 1,
+    updatedAt: new Date(),
+  };
+  const guard = and(eq(matches.id, m.id), eq(matches.rev, expectedRev));
+
+  if (sameResult(before, result)) {
+    const updated = await db.update(matches).set(values).where(guard).returning({ id: matches.id });
+    if (updated.length === 0) return { ok: false, reason: "stale" };
+  } else {
+    const written = await db.transaction(async (tx) => {
+      const updated = await tx.update(matches).set(values).where(guard).returning({ id: matches.id });
+      if (updated.length === 0) return false;
+      await revertMatchRatingsIn(tx, m.id);
+      return true;
+    });
+    if (!written) return { ok: false, reason: "stale" };
+  }
+  /* On EITHER path, a finished result that earns a rating is offered to the
+     engine. On the changed path that is the new rating. On the unchanged path
+     it is a repair: a match can be finished with no rating — its teams were
+     filled in after it was played, or an apply failed — and every later write
+     of the same result used to take the cheap path and leave it so for ever.
+     The engine answers "already" in two queries when the rating is there. A
+     mid-game rally has no result, so the hot path still does nothing extra. */
+  if (result?.winner && !result.outcome) await rate(m.id);
+
+  revalidatePath(`/t/${t.slug}`);
+  revalidatePath(`/t/${t.slug}/manage`);
+  revalidatePath(`/t/${t.slug}/score/${m.id}`);
+  revalidatePath(`/t/${t.slug}/ratings`);
+  return { ok: true, rev: expectedRev + 1 };
+}
+
+/** Offer a finished match to the rating engine. Logged, never thrown: the
+ *  score is committed, and a rally that would not save because of a rating is
+ *  a problem on court right now. */
+async function rate(matchId: string) {
+  try {
+    await applyMatchRatings(matchId);
+  } catch (e) {
+    console.error("rating apply failed for match", matchId, e);
+  }
+}
+
+/**
+ * Write a rally log. A match holding a TYPED result refuses it unless the
+ * caller explicitly asked to replace that result — rallies used to null a typed
+ * score on every write, so a phone that had scored two rallies offline wiped
+ * out the organiser's 11–7 when it reconnected, and nobody was asked.
+ */
 async function commitLog(
   ctx: Ctx,
   log: Side[],
   ackedGates: number[],
   expectedRev: number,
   tick: Tick,
-): Promise<{ ok: true } | { ok: false; reason: "stale" }> {
-  const wasOver = viewMatch(ctx.tournament, ctx.match).over;
-  const isOver = viewMatch(
-    ctx.tournament,
-    { ...ctx.match, log, ackedGates, typedScoreA: null, typedScoreB: null },
-  ).over;
+  opts: { replaceTyped?: boolean } = {},
+): Promise<
+  | { ok: true; rev: number }
+  | { ok: false; reason: "stale" }
+  | { ok: false; reason: "typed"; a: number; b: number; outcome: Outcome | null }
+> {
+  const view = viewMatch(ctx.tournament, ctx.match);
+  if (view.typedScore && !opts.replaceTyped) {
+    return { ok: false, reason: "typed", ...view.typedScore, outcome: view.outcome };
+  }
+
+  const cleared = { ...ctx.match, log, ackedGates, typedScoreA: null, typedScoreB: null, outcome: null, sets: null };
+  const wasOver = view.over;
+  const isOver = viewMatch(ctx.tournament, cleared).over;
   const timing = nextTiming(ctx.match.timing, wasOver, isOver, log.length > 0, tick);
 
-  const updated = await db
-    .update(matches)
-    .set({
-      log,
-      ackedGates,
-      ...(timing ? { timing: timing as unknown as Record<string, unknown> } : {}),
-      rev: expectedRev + 1,
-      updatedAt: new Date(),
-      typedScoreA: null,
-      typedScoreB: null,
-    })
-    .where(and(eq(matches.id, ctx.match.id), eq(matches.rev, expectedRev)))
-    .returning({ id: matches.id });
-
-  if (updated.length === 0) return { ok: false, reason: "stale" };
-
-  await syncRatings(ctx, wasOver, isOver);
-
-  revalidatePath(`/t/${ctx.tournament.slug}`);
-  revalidatePath(`/t/${ctx.tournament.slug}/score/${ctx.match.id}`);
-  revalidatePath(`/t/${ctx.tournament.slug}/ratings`);
-  return { ok: true };
+  return writeResult(
+    ctx,
+    {
+      log, ackedGates, typedScoreA: null, typedScoreB: null, outcome: null, sets: null,
+      ...(timing ? { timing } : {}),
+    },
+    expectedRev,
+  );
 }
 
-/**
- * Move people's RISE Ratings when a match crosses the finish line, and put them
- * back if an undo takes it back over that line.
- *
- * Gated on the TRANSITION rather than on the current state, so the common case
- * — a referee tapping a rally mid-game — does no database work at all. Applying
- * on every write would put a query in the hot path of every point.
- *
- * Failures are swallowed deliberately: a rating that did not move is a problem
- * for later, but a rally that would not save because of it is a problem on
- * court right now. The match is already committed at this point.
- */
-async function syncRatings(ctx: Ctx, wasOver: boolean, isOver: boolean) {
-  try {
-    if (wasOver === isOver) return;
-    if (isOver) await applyMatchRatings(ctx.match.id);
-    else await revertMatchRatings(ctx.match.id);
-  } catch (e) {
-    console.error("rating sync failed for match", ctx.match.id, e);
-  }
+/** Why the court takes no rally, or null when it does. Asked by every
+ *  single-rally action; `pushLog` answers the same cases in its own words. */
+function courtRefusal(ctx: Ctx): string | null {
+  const typed = viewMatch(ctx.tournament, ctx.match).typedScore;
+  if (typed) return `This match's result was typed in as ${typed.a}–${typed.b}, so the court is locked.`;
+  const notIn = teamsNotIn(ctx.match);
+  if (notIn) return `${notIn.title}. ${notIn.body}`;
+  return noLiveCourt(ctx.tournament, ctx.match)?.body ?? null;
 }
 
-export type ActionResult = { ok: true } | { ok: false; error: string };
+/** `stale`: the match moved on since this console's view of it — the console
+ *  reloads, and the referee taps again on what is there now. A tap answered
+ *  only with words left a console that cannot score offline (carrom, chess,
+ *  OSL) on its old rev, failing every tap until somebody reloaded by hand; a
+ *  scoring change moves every match's rev, so one save did that to every live
+ *  court of such an event at once. */
+export type ActionResult = { ok: true } | { ok: false; error: string; stale?: true };
 
 const EMPTY: Tick = { playMs: 0, pausedMs: 0 };
+/* Says what happened to the TAP — it was not recorded — and does not guess
+   why: another device, or a change of scoring, which moves every match's rev.
+   The console reloads on `stale`, so the sentence must still be true after. */
+const STALE = {
+  ok: false,
+  error: "Not recorded — the match had just changed (on another device, or the scoring was changed). It shows the latest now: try again.",
+  stale: true,
+} as const;
 
 /** Record one rally to the side that won it. */
 export async function scorePoint(
@@ -162,16 +290,20 @@ export async function scorePoint(
   const id = idSchema.parse(matchId);
   const w = sideSchema.parse(side);
   const clock = tickSchema.parse(tick);
+  const rev = revSchema.parse(expectedRev);
   const ctx = await requireScorer(id);
 
+  const refused = courtRefusal(ctx);
+  if (refused) return { ok: false, error: refused };
   const view = viewMatch(ctx.tournament, ctx.match);
   if (view.over) return { ok: false, error: "The match is already won." };
   if (view.locked) return { ok: false, error: "Confirm the rotation before scoring." };
 
   const log = [...(ctx.match.log as Side[]), w];
-  const res = await commitLog(ctx, log, ctx.match.ackedGates ?? [], expectedRev, clock);
-  return res.ok ? { ok: true } : { ok: false, error: "Another device scored first — reloading." };
+  const res = await commitLog(ctx, log, ctx.match.ackedGates ?? [], rev, clock);
+  return res.ok ? { ok: true } : STALE;
 }
+
 
 /** Rotation gates are re-derived from a log rather than trusted: dropping below
  *  a gate re-arms its confirmation, so the console cannot silently drift out of
@@ -189,14 +321,17 @@ export async function undoPoint(
 ): Promise<ActionResult> {
   const id = idSchema.parse(matchId);
   const clock = tickSchema.parse(tick);
+  const rev = revSchema.parse(expectedRev);
   const ctx = await requireScorer(id);
 
+  const refused = courtRefusal(ctx);
+  if (refused) return { ok: false, error: refused };
   const log = [...(ctx.match.log as Side[])];
   if (log.length === 0) return { ok: false, error: "Nothing to undo." };
   log.pop();
 
-  const res = await commitLog(ctx, log, acksFor(ctx, log), expectedRev, clock);
-  return res.ok ? { ok: true } : { ok: false, error: "Another device scored first — reloading." };
+  const res = await commitLog(ctx, log, acksFor(ctx, log), rev, clock);
+  return res.ok ? { ok: true } : STALE;
 }
 
 /**
@@ -218,16 +353,19 @@ export async function minusPoint(
   const id = idSchema.parse(matchId);
   const w = sideSchema.parse(side);
   const clock = tickSchema.parse(tick);
+  const rev = revSchema.parse(expectedRev);
   const ctx = await requireScorer(id);
 
+  const refused = courtRefusal(ctx);
+  if (refused) return { ok: false, error: refused };
   const log = ctx.match.log as Side[];
   const cut = rewindIndex(log.length, (n) =>
     viewMatch(ctx.tournament, { ...ctx.match, log: log.slice(0, n), typedScoreA: null, typedScoreB: null })[w]);
   if (cut === null) return { ok: false, error: "That side has no points to take off." };
 
   const next = log.slice(0, cut);
-  const res = await commitLog(ctx, next, acksFor(ctx, next), expectedRev, clock);
-  return res.ok ? { ok: true } : { ok: false, error: "Another device scored first — reloading." };
+  const res = await commitLog(ctx, next, acksFor(ctx, next), rev, clock);
+  return res.ok ? { ok: true } : STALE;
 }
 
 /**
@@ -256,8 +394,16 @@ export async function setMatchSetup(
   if ((ctx.match.log as Side[]).length > 0) {
     return { ok: false, error: "The match has started — undo back to 0–0 to change this." };
   }
+  /* A typed result has no serve to set, and moving its rev would make a phone
+     holding rallies for it answer a refusal it can never get past. */
+  const refused = courtRefusal(ctx);
+  if (refused) return { ok: false, error: refused };
 
-  await db
+  /* Guarded like every other write, on the rev AND on the log still being
+     empty. A push landing between the read above and this write used to have
+     the serve changed underneath its rallies — rewriting who served every one
+     of them, at the same rev the push had written, so its phone never knew. */
+  const written = await db
     .update(matches)
     .set({
       ...(v.server !== undefined ? { server: v.server } : {}),
@@ -266,17 +412,13 @@ export async function setMatchSetup(
       rev: ctx.match.rev + 1,
       updatedAt: new Date(),
     })
-    .where(eq(matches.id, id));
+    .where(and(eq(matches.id, id), eq(matches.rev, ctx.match.rev), sql`jsonb_array_length(${matches.log}) = 0`))
+    .returning({ id: matches.id });
+  if (written.length === 0) return STALE;
 
   revalidatePath(`/t/${ctx.tournament.slug}/score/${id}`);
   return { ok: true };
 }
-
-/** What a device gets back when its queued log could not be applied as-is. */
-export type PushResult =
-  | { ok: true; rev: number }
-  | { ok: false; reason: "stale"; serverLog: Side[]; rev: number }
-  | { ok: false; reason: "error"; error: string };
 
 /**
  * Apply a whole log recorded offline.
@@ -291,22 +433,54 @@ export type PushResult =
  * device cannot tell a lost response from a genuine two-device conflict without
  * seeing it — and the difference matters, because one resolves silently and the
  * other has to interrupt a referee. `lib/offline/queue.ts:classify` decides.
+ *
+ * Two answers the phone must not retry (`PushResult` in lib/offline/queue):
+ *   - "typed": the match holds a typed result. The phone keeps its rallies and
+ *     asks the referee; only an explicit `replaceTyped` push, at the rev this
+ *     returns, replaces it. Asked BEFORE the rev guard, so a stale push cannot
+ *     slip past it by being retried at the new rev.
+ *   - "refused": the match was deleted, or has no live court. It used to come
+ *     back as "error", which the phone retried every fifteen seconds for ever.
  */
 export async function pushLog(
   matchId: string, log: Side[], expectedRev: number, tick: Tick = EMPTY,
+  opts: { replaceTyped?: boolean } = {},
 ): Promise<PushResult> {
   const id = idSchema.parse(matchId);
   const incoming = z.array(sideSchema).max(500).parse(log);
   const clock = tickSchema.parse(tick);
+  const rev = revSchema.parse(expectedRev);
+  const replaceTyped = z.object({ replaceTyped: z.boolean().optional() }).parse(opts).replaceTyped ?? false;
 
-  let ctx: Ctx;
+  const found = await findMatch(id);
+  if (!found) {
+    return {
+      ok: false, reason: "refused",
+      title: "This match was deleted",
+      error: "It was removed on the manage screen.",
+    };
+  }
+  const ctx: Ctx = found;
   try {
-    ctx = await requireScorer(id);
+    assert(canScore(await principalFor(ctx.tournament.id)), "score this match");
   } catch (e) {
     return { ok: false, reason: "error", error: e instanceof Error ? e.message : "Not allowed" };
   }
 
-  const current = (ctx.match.log as Side[]) ?? [];
+  const none = noLiveCourt(ctx.tournament, ctx.match);
+  if (none) return { ok: false, reason: "refused", title: none.title, error: none.body };
+  const notIn = teamsNotIn(ctx.match);
+  if (notIn) return { ok: false, reason: "refused", title: notIn.title, error: notIn.body };
+
+  /* Replacing a typed result is allowed only for the result the referee SAW.
+     If it was typed again since (or the row moved on any other way), answer
+     with the result as it stands now, so the phone shows that one and asks
+     again — a plain "stale" here left the card on the old score, and every
+     replace went out at the old rev and failed for ever. */
+  const typedNow = viewMatch(ctx.tournament, ctx.match);
+  if (replaceTyped && typedNow.typedScore && rev !== ctx.match.rev) {
+    return { ok: false, reason: "typed", ...typedNow.typedScore, outcome: typedNow.outcome, rev: ctx.match.rev };
+  }
 
   /* A game is over at the rally that ends it, and a log carrying taps beyond
      that is cut there. A phone scoring offline could add one after the winning
@@ -317,7 +491,7 @@ export async function pushLog(
      rally once the match is won; this is the same rule for a whole log. */
   const end = finishedAt(
     { log: incoming, server: ctx.match.server, posA: ctx.match.posA as 0 | 1, posB: ctx.match.posB as 0 | 1 },
-    rulesFor(ctx.tournament),
+    rulesFor(ctx.tournament, ctx.match),
   );
   const kept = end != null && end < incoming.length ? incoming.slice(0, end) : incoming;
 
@@ -325,53 +499,135 @@ export async function pushLog(
      device: an offline console cannot evaluate OSL rotation (it is not shipped
      to the browser), so it may have queued rallies straight past a gate it
      never knew was due. */
-  const res = await commitLog(ctx, kept, acksFor(ctx, kept), expectedRev, clock);
-  if (res.ok) return { ok: true, rev: expectedRev + 1 };
-  return { ok: false, reason: "stale", serverLog: current, rev: ctx.match.rev };
+  const res = await commitLog(ctx, kept, acksFor(ctx, kept), rev, clock, { replaceTyped });
+  /* Say what was STORED when it is not what was sent, or the phone goes on
+     believing in the taps after the finish and builds its next undo on them. */
+  if (res.ok) return kept.length < incoming.length ? { ok: true, rev: res.rev, log: kept } : { ok: true, rev: res.rev };
+  if (res.reason === "typed") {
+    return { ok: false, reason: "typed", a: res.a, b: res.b, outcome: res.outcome, rev: ctx.match.rev };
+  }
+  /* Lost the race: answer with the match AS IT IS NOW. The log and rev read
+     above are what this push was judged against, and the write that beat it
+     moved both — a phone told the old rev retried at it, was stale again, and
+     settled only on its last attempt, or not at all. */
+  const now = await findMatch(id);
+  if (!now) {
+    return { ok: false, reason: "refused", title: "This match was deleted", error: "It was removed on the manage screen." };
+  }
+  const typedLater = viewMatch(now.tournament, now.match);
+  if (typedLater.typedScore) {
+    return { ok: false, reason: "typed", ...typedLater.typedScore, outcome: typedLater.outcome, rev: now.match.rev };
+  }
+  return { ok: false, reason: "stale", serverLog: (now.match.log as Side[]) ?? [], rev: now.match.rev };
 }
 
 /** Confirm a rotation (and, at 14, the change of ends). Rules 3.4 / 5.6. */
 export async function confirmRotation(matchId: string, gate: number, expectedRev: number): Promise<ActionResult> {
   const id = idSchema.parse(matchId);
   const g = z.union([z.literal(7), z.literal(14)]).parse(gate);
+  const rev = revSchema.parse(expectedRev);
   const ctx = await requireScorer(id);
 
+  const refused = courtRefusal(ctx);
+  if (refused) return { ok: false, error: refused };
   const view = viewMatch(ctx.tournament, ctx.match);
   if (view.osl?.pendingGate !== g) return { ok: false, error: "That rotation is not due." };
 
   const acked = [...(ctx.match.ackedGates ?? []), g];
-  const res = await commitLog(ctx, ctx.match.log as Side[], acked, expectedRev, EMPTY);
-  return res.ok ? { ok: true } : { ok: false, error: "Another device updated the match — reloading." };
+  const res = await commitLog(ctx, ctx.match.log as Side[], acked, rev, EMPTY);
+  return res.ok ? { ok: true } : STALE;
 }
 
-/** Record a result that was not scored rally by rally. Counts for the tables,
- *  excluded from rally statistics because there is no rally record. */
-export async function setTypedScore(matchId: string, a: number, b: number): Promise<ActionResult> {
+const scoreSchema = z.number().int().min(0).max(MAX_SCORE);
+
+const recordSchema = z.object({
+  a: scoreSchema,
+  b: scoreSchema,
+  expectedRev: revSchema,
+  outcome: z.enum(OUTCOMES).nullable().optional(),
+  /* Best of 3 is three sets at most; five leaves room for a best of 5. */
+  sets: z.array(z.tuple([scoreSchema, scoreSchema])).max(5).nullable().optional(),
+  /** Typing over a match that is being refereed live replaces its rallies. */
+  replaceLive: z.boolean().optional(),
+});
+
+export type RecordInput = z.input<typeof recordSchema>;
+
+export type RecordReply =
+  | { ok: true; rev: number }
+  | {
+      ok: false;
+      code: ResultRefusalCode | "live" | "stale";
+      /** One plain sentence for whoever typed it. */
+      error: string;
+      /** The score they probably meant, in the order they typed it. */
+      suggestion?: { a: number; b: number };
+      /** Code "live": the rallies that typing would replace. */
+      live?: { a: number; b: number; rallies: number };
+    };
+
+/**
+ * Record a result typed in rather than scored rally by rally — the final
+ * score, a walkover, or a game that did not finish normally.
+ *
+ * Organisers and PIN referees alike (`canScore`): Faisal, 2026-09-29, "either,
+ * freely", including over a match being refereed live. Replacing live rallies
+ * is still a CHOICE, never a side effect: without `replaceLive` a match with
+ * rallies answers "live" and names what would be lost.
+ *
+ * The final is judged by the rules this match is played under (lib/results/
+ * record, `endingOf`). A result recorded with an `outcome` counts in the table
+ * and moves no rating, so it may stand short of the end — a game stopped at
+ * 9–7 — but never past it, and it still needs a winner.
+ *
+ * Idempotent: the same result again returns ok at the current rev, even from
+ * an older rev, so a retry after a reply lost on a bad connection is not an
+ * error.
+ */
+export async function recordResult(matchId: string, input: RecordInput): Promise<RecordReply> {
   const id = idSchema.parse(matchId);
+  const v = recordSchema.parse(input);
   const ctx = await requireScorer(id);
-  const scoreSchema = z.number().int().min(0).max(999);
-  const sa = scoreSchema.parse(a);
-  const sb = scoreSchema.parse(b);
-  if (sa === sb) return { ok: false, error: "A match cannot end level." };
+  const { tournament: t, match: m } = ctx;
 
-  await db
-    .update(matches)
-    .set({ typedScoreA: sa, typedScoreB: sb, log: [], rev: ctx.match.rev + 1, updatedAt: new Date() })
-    .where(eq(matches.id, id));
+  const ending = endingOf(t, m);
+  const r = normaliseResult(ending, { a: v.a, b: v.b, outcome: v.outcome ?? null, sets: v.sets ?? null });
 
-  /* A typed score IS a result, so it moves ratings like any other. Re-applied
-     from scratch because the score may have been corrected: revert first, then
-     apply, which the idempotency guard would otherwise refuse. */
-  try {
-    await revertMatchRatings(id);
-    await applyMatchRatings(id);
-  } catch (e) {
-    console.error("rating sync failed for typed score", id, e);
+  const log = (m.log as Side[]) ?? [];
+  const same =
+    m.typedScoreA === r.a && m.typedScoreB === r.b && (m.outcome ?? null) === r.outcome &&
+    JSON.stringify(m.sets ?? null) === JSON.stringify(r.sets) && log.length === 0;
+  if (same) {
+    /* The same result again — a retry after a lost reply, or somebody saving
+       it twice. Also the way to repair a finished match that has no rating:
+       the engine answers "already" in two queries when it has one. */
+    if (r.a !== r.b && !r.outcome) await rate(m.id);
+    return { ok: true, rev: m.rev };
   }
 
-  revalidatePath(`/t/${ctx.tournament.slug}`);
-  revalidatePath(`/t/${ctx.tournament.slug}/ratings`);
-  return { ok: true };
+  const problem = resultProblem(m, ending, r, allowsDraws(t.sport));
+  if (problem) return { ok: false, ...problem };
+
+  if (log.length > 0 && !v.replaceLive) {
+    const view = viewMatch(t, m);
+    return {
+      ok: false, code: "live",
+      error: `This match is being refereed live — ${view.a}–${view.b} after ${log.length} ${log.length === 1 ? "rally" : "rallies"}. Typing a result replaces those rallies.`,
+      live: { a: view.a, b: view.b, rallies: log.length },
+    };
+  }
+
+  const res = await writeResult(
+    ctx,
+    {
+      log: [], ackedGates: [],   // an OSL rotation re-arms if the match is ever refereed again
+      typedScoreA: r.a, typedScoreB: r.b, outcome: r.outcome, sets: r.sets,
+      timing: null,              // a typed result has no play time to report
+    },
+    v.expectedRev,
+  );
+  if (res.ok) return res;
+  return { ok: false, code: "stale", error: "This match changed on another device a moment ago — look at it again before saving." };
 }
 
 /** Redeem a scorer PIN. Grants scoring rights for THIS tournament only. */

@@ -49,29 +49,41 @@ const scoreLinks=await p.locator('a:has-text("Score")').count();
 ok(scoreLinks===6,'6 group fixtures generated (2 groups of 3 = 3 each), got '+scoreLinks);
 
 /* Play every match on the manage page that is not already final, and report
-   how many it finished. Reused for the knockout below: the original version of
+   how many it FINISHED. Reused for the knockout below: the original version of
    this suite drew the bracket and stopped there, so nothing ever checked what
-   happens when an event actually ENDS. */
+   happens when an event actually ENDS.
+   A knockout match whose slots are not filled yet has no court — its page says
+   what unlocks it — so it is passed over until "Fill resolved slots" has run.
+   It used to be counted as played on the strength of one refused tap. */
+let waitingSeen=0;
 async function playOutstanding(limit){
   let done=0;
+  const waiting=new Set();
   for(let guard=0; guard<limit; guard++){
     const rows = await p.locator('li:has(a:text("Score"))').all();
-    let target=null;
+    let target=null, href=null;
     for(const row of rows){
       const t=await row.textContent().catch(()=>'');
-      if(!/·\s*final/.test(t)){ target=row; break; }
+      const h=await row.locator('a:text("Score")').getAttribute('href').catch(()=>null);
+      if(!/·\s*final/.test(t) && !waiting.has(h)){ target=row; href=h; break; }
     }
     if(!target) break;
     await target.locator('a:text("Score")').click();
     await p.waitForURL(/\/score\//,{timeout:20000});
-    await p.waitForSelector('[aria-label^="Point to"]',{timeout:20000});
-    const half=p.locator('[aria-label^="Point to"]').first();
-    for(let k=0;k<16;k++){
-      if(await half.isDisabled().catch(()=>true)) break;
-      await half.click().catch(()=>{});
-      await p.waitForTimeout(120);
+    await p.waitForSelector('[aria-label^="Point to"], [data-testid="teams-not-in"]',{timeout:20000});
+    if(await p.locator('[data-testid="teams-not-in"]').count()){
+      waiting.add(href);
+      waitingSeen++;
+    } else {
+      const half=p.locator('[aria-label^="Point to"]').first();
+      for(let k=0;k<16;k++){
+        if(await half.isDisabled().catch(()=>true)) break;
+        await half.click().catch(()=>{});
+        await p.waitForTimeout(120);
+      }
+      await p.waitForTimeout(400);
+      if(await half.isDisabled().catch(()=>false)) done++;
     }
-    done++;
     await p.goto(B+'/t/friyayy-cup/manage');
     await p.waitForTimeout(500);
   }
@@ -144,6 +156,7 @@ for(let pass=0; pass<4; pass++){
   if(unfinished===0) break;
 }
 ok(koPlayed>=3,'played the semi-finals and the final ('+koPlayed+')');
+ok(waitingSeen>=1,'the final, before its slots were filled, said so instead of offering a court ('+waitingSeen+')');
 
 console.log('\n== the event has a champion ==');
 await p.goto(B+'/t/friyayy-cup'); await p.waitForTimeout(900);

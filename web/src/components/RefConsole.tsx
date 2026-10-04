@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, useTransition } from "react";
+import { useCallback, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { MatchView, CourtNotes } from "@/lib/matchState";
 import type { Side } from "@/lib/scoring/replay";
@@ -8,7 +8,7 @@ import type { LiteRules } from "@/lib/scoring/replayLite";
 import type { PushResult } from "@/lib/offline/queue";
 import { fmtClock, PAUSE_REASONS, type PauseReason, type Tick } from "@/lib/scoring/clock";
 import { useOfflineScoring } from "./useOfflineScoring";
-import { useMatchClock } from "./useMatchClock";
+import { useMatchClock, type MatchClock } from "./useMatchClock";
 import { useKeepAwake } from "./useKeepAwake";
 
 /* The referee console.
@@ -25,6 +25,48 @@ import { useKeepAwake } from "./useKeepAwake";
 
 export type ConsoleTeam = { id: string; name: string; colour: string | null; players: string[] };
 
+/** The typed result in a sentence — a walkover or a retirement says so, as it
+ *  does on every other screen, rather than reading as a game played out. */
+export function typedHeading(
+  r: { a: number; b: number; outcome: "walkover" | "retired" | "unrated" | null },
+  nameA: string, nameB: string,
+): string {
+  if (r.a === r.b) return `Typed in: ${r.a}–${r.b}`;
+  const winner = r.a > r.b ? nameA : nameB;
+  const score = `${Math.max(r.a, r.b)}–${Math.min(r.a, r.b)}`;
+  if (r.outcome === "walkover") return `Typed in: walkover to ${winner}`;
+  if (r.outcome === "retired") return `Typed in: ${winner} win ${score} — the other side retired`;
+  if (r.outcome === "unrated") return `Typed in: ${winner} win ${score} — stopped early, no rating change`;
+  return `Typed in: ${winner} win ${score}`;
+}
+
+/** A single-rally action's answer. `stale`: the match moved on since this
+ *  view of it, and the console reloads. */
+export type Reply = { ok: true } | { ok: false; error: string; stale?: true };
+
+/**
+ * Send one write from a console that cannot score offline (carrom, chess, OSL),
+ * carrying the time the clock has measured — and put that time BACK when the
+ * write did not land. A stale or refused reply writes nothing, and neither
+ * does a request that never arrived; the time then rides on the next write.
+ * It was claimed and dropped, so every live court of such an event lost a
+ * rally's worth of play time on each scoring save, which moves every rev.
+ */
+export async function sendTap(
+  send: (tick: Tick | undefined) => Promise<Reply>,
+  clock: Pick<MatchClock, "claim" | "restore"> | null,
+): Promise<Reply> {
+  const tick = clock ? clock.claim() : undefined;
+  try {
+    const r = await send(tick);
+    if (!r.ok && tick && clock) clock.restore(tick);
+    return r;
+  } catch {
+    if (tick && clock) clock.restore(tick);
+    return { ok: false, error: "Not recorded — the server did not answer. Try again." };
+  }
+}
+
 export type RefConsoleProps = {
   view: MatchView;
   teamA: ConsoleTeam;
@@ -33,17 +75,17 @@ export type RefConsoleProps = {
   /** The rules in words, written on the server — see matchState.describeCourt. */
   notes: CourtNotes | null;
   actions: {
-    score: (matchId: string, side: Side, rev: number, tick?: Tick) =>
-      Promise<{ ok: true } | { ok: false; error: string }>;
-    undo: (matchId: string, rev: number, tick?: Tick) =>
-      Promise<{ ok: true } | { ok: false; error: string }>;
-    minus: (matchId: string, side: Side, rev: number, tick?: Tick) =>
-      Promise<{ ok: true } | { ok: false; error: string }>;
-    confirm: (matchId: string, gate: number, rev: number) => Promise<{ ok: true } | { ok: false; error: string }>;
-    setup: (matchId: string, setup: { server?: Side; posA?: 0 | 1; posB?: 0 | 1 }) =>
-      Promise<{ ok: true } | { ok: false; error: string }>;
-    push: (matchId: string, log: Side[], baseRev: number, tick?: Tick) => Promise<PushResult>;
+    score: (matchId: string, side: Side, rev: number, tick?: Tick) => Promise<Reply>;
+    undo: (matchId: string, rev: number, tick?: Tick) => Promise<Reply>;
+    minus: (matchId: string, side: Side, rev: number, tick?: Tick) => Promise<Reply>;
+    confirm: (matchId: string, gate: number, rev: number) => Promise<Reply>;
+    setup: (matchId: string, setup: { server?: Side; posA?: 0 | 1; posB?: 0 | 1 }) => Promise<Reply>;
+    push: (
+      matchId: string, log: Side[], baseRev: number, tick?: Tick, opts?: { replaceTyped?: boolean },
+    ) => Promise<PushResult>;
   };
+  /** Where "Back to the event" goes when this match can take no more rallies. */
+  eventHref: string;
   /** Rules and raw log as DATA, so the browser can keep scoring with no signal. */
   offline: {
     rules: LiteRules | null;
@@ -55,7 +97,7 @@ export type RefConsoleProps = {
   };
 };
 
-export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offline }: RefConsoleProps) {
+export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offline, eventHref }: RefConsoleProps) {
   const [flipped, setFlipped] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -71,6 +113,8 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
   /* Stable, so the queue's callbacks are stable. An inline arrow here is a new
      function on every render, and this console re-renders every second. */
   const onSynced = useCallback(() => router.refresh(), [router]);
+  /* Stable for the same reason: the queue's callbacks depend on it. */
+  const sides = useMemo((): [string, string] => [teamA.id, teamB.id], [teamA.id, teamB.id]);
 
   const off = useOfflineScoring({
     matchId: view.matchId,
@@ -81,14 +125,24 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
     server: offline.server,
     posA: offline.posA,
     posB: offline.posB,
+    typed: view.typedScore ? { ...view.typedScore, outcome: view.outcome } : null,
+    sides,
     push: actions.push,
     onSynced,
     clock,
   });
 
+  /* A TYPED result is the match's result, whatever this phone holds: the
+     court shows it and takes no taps. `off.held` is the same thing learnt from
+     a refused push, before the page has re-rendered with it. */
+  const typedShown = off.held ?? (view.typedScore ? { ...view.typedScore, outcome: view.outcome, rev: view.rev } : null);
+
   /* While rallies are queued the browser's own replay is what is true on court;
      the server's view is behind until they land. */
-  const live = off.local
+  const live = typedShown
+    ? { ...view, a: typedShown.a, b: typedShown.b, over: true, locked: true, golden: false, gamePoint: [],
+        winner: typedShown.a > typedShown.b ? ("a" as const) : typedShown.b > typedShown.a ? ("b" as const) : null }
+    : off.local
     ? { ...view, a: off.local.a, b: off.local.b, serving: off.local.serving, servePos: off.local.servePos,
         over: off.local.over, winner: off.local.winner, golden: off.local.golden,
         gamePoint: off.local.gamePoint, rallies: off.local.rallies,
@@ -112,11 +166,17 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
   const scoreOf = (t: ConsoleTeam) => (t.id === teamA.id ? live.a : live.b);
   const sideOf = (t: ConsoleTeam): Side => (t.id === teamA.id ? "a" : "b");
 
-  const run = (fn: () => Promise<{ ok: true } | { ok: false; error: string }>) => {
+  /* A stale answer reloads the view, so the next tap goes out at the rev
+     that is there now. It used to say "reloading" and not reload: a console
+     that cannot score offline then failed every tap until somebody reloaded
+     it by hand. */
+  const run = (send: (tick: Tick | undefined) => Promise<Reply>, clocked = false) => {
     setError(null);
     start(async () => {
-      const r = await fn();
-      if (!r.ok) setError(r.error);
+      const r = await sendTap(send, clocked ? clock : null);
+      if (r.ok) return;
+      setError(r.error);
+      if (r.stale) router.refresh();
     });
   };
 
@@ -124,7 +184,10 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
      format that needs one is not scoreable here at all. */
   const locked =
     live.locked || !canScore || pending ||
-    (!off.online && !off.canScoreOffline) || !!off.conflict;
+    (!off.online && !off.canScoreOffline) || !!off.conflict || !!off.refused ||
+    /* The queue an earlier session left is still being read: a tap now would
+       build on a log about to be replaced. A moment after the page opens. */
+    (off.canScoreOffline && !off.ready);
   const gate = live.osl?.pendingGate ?? 0;
 
   /* ONE path, always, whenever the browser can score this format. Branching on
@@ -135,15 +198,15 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
      Queue first, send second: the rally is durable before anything can fail. */
   const point = (side: Side) => {
     if (off.canScoreOffline) off.scoreOffline(side);
-    else run(() => actions.score(view.matchId, side, view.rev, clock.claim()));
+    else run((tick) => actions.score(view.matchId, side, view.rev, tick), true);
   };
   const undo = () => {
     if (off.canScoreOffline) off.undoOffline();
-    else run(() => actions.undo(view.matchId, view.rev, clock.claim()));
+    else run((tick) => actions.undo(view.matchId, view.rev, tick), true);
   };
   const minus = (side: Side) => {
     if (off.canScoreOffline) off.minusOffline(side);
-    else run(() => actions.minus(view.matchId, side, view.rev, clock.claim()));
+    else run((tick) => actions.minus(view.matchId, side, view.rev, tick), true);
   };
 
   /* Pause takes effect on this device the instant it is tapped and is written
@@ -163,7 +226,7 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
      there is nothing to rewrite — including after a correction takes a match
      back to 0–0, which is exactly when a referee notices the wrong side was
      marked as serving. */
-  const canSetUp = canScore && live.rallies === 0 && !off.conflict;
+  const canSetUp = canScore && live.rallies === 0 && !off.conflict && !typedShown && !off.refused;
 
   const half = (t: ConsoleTeam, side: "left" | "right") => {
     const serving = live.serving === sideOf(t);
@@ -236,7 +299,7 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
             {fmtClock(clock.displayMs)}
           </div>
         </div>
-        {canScore && started && !live.over && (
+        {canScore && started && !live.over && !off.refused && (
           <button
             type="button"
             onClick={() => setPaused(clock.paused ? null : "timeout")}
@@ -335,7 +398,7 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             <button
               type="button"
-              onClick={() => void off.resolveConflict("mine")}
+              onClick={() => void off.resolveConflict("mine").then((e) => setError(e))}
               className="rounded-lg border border-rose-400 bg-rose-500/20 p-3 text-left text-[13px] font-bold text-rose-200 hover:bg-rose-500/30"
             >
               Keep this phone&apos;s score
@@ -343,13 +406,76 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
             </button>
             <button
               type="button"
-              onClick={() => void off.resolveConflict("theirs")}
+              onClick={() => void off.resolveConflict("theirs").then((e) => setError(e))}
               className="rounded-lg border border-neutral-500 bg-neutral-800 p-3 text-left text-[13px] font-bold text-neutral-200 hover:bg-neutral-700"
             >
               Keep the saved score
               <span className="mt-1 block font-mono text-lg">{off.conflict.serverLog.length} rallies</span>
             </button>
           </div>
+        </div>
+      )}
+
+      {/* The server will never take this phone's rallies — the match was
+          deleted. They are gone; say so, once, and point the way out. */}
+      {off.refused && (
+        <div role="alert" data-testid="push-refused" className="rounded-xl border border-rose-500 bg-rose-500/10 p-4">
+          <h2 className="text-base font-black text-rose-300">{off.refused.title}</h2>
+          <p className="mt-1 text-sm font-semibold text-rose-300">
+            {off.refused.error}
+            {off.refused.rallies > 0 &&
+              ` The ${off.refused.rallies} ${off.refused.rallies === 1 ? "rally" : "rallies"} recorded on this phone ${off.refused.rallies === 1 ? "was" : "were"} not saved.`}
+          </p>
+          <a href={eventHref} className="mt-3 inline-block rounded-lg bg-neutral-200 px-4 py-2 text-sm font-black text-neutral-900">
+            Back to the event
+          </a>
+        </div>
+      )}
+
+      {/* A typed result. With rallies held on this phone, the referee chooses —
+          nothing is overwritten either way until they do. */}
+      {typedShown && (
+        <div role="status" data-testid="typed-result" className="rounded-xl border border-emerald-500 bg-emerald-500/10 p-4">
+          <h2 className="text-base font-black text-emerald-300">{typedHeading(typedShown, teamA.name, teamB.name)}</h2>
+          {off.held && off.local ? (
+            <>
+              <p className="mt-1 text-sm font-semibold text-neutral-300">
+                The result was typed in while this phone&apos;s rallies were waiting to be sent. The {off.queued}{" "}
+                {off.queued === 1 ? "rally" : "rallies"} on this phone, {off.local.a}–{off.local.b}, {off.queued === 1 ? "was" : "were"} not
+                saved. Nothing is changed until you choose.
+              </p>
+              {canScore && (
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    disabled={off.syncing}
+                    onClick={() => { setError(null); void off.keepTyped().then((e) => { if (e) setError(e); }); }}
+                    className="rounded-lg bg-emerald-400 p-3 text-left text-sm font-black text-emerald-950 disabled:opacity-40"
+                  >
+                    Keep {typedShown.a}–{typedShown.b}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={off.syncing}
+                    onClick={() => {
+                      setError(null);
+                      void off.replaceTyped().then((e) => { if (e) setError(e); });
+                    }}
+                    className="rounded-lg border border-neutral-500 bg-neutral-900 p-3 text-left text-sm font-bold text-neutral-200 disabled:opacity-40"
+                  >
+                    Use this phone&apos;s score instead
+                    <span className="mt-1 block text-xs font-semibold text-neutral-400">
+                      {off.local.a}–{off.local.b} after {off.local.rallies} {off.local.rallies === 1 ? "rally" : "rallies"}. The match goes back to being played.
+                    </span>
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="mt-1 text-sm font-semibold text-neutral-300">
+              The result was typed in, so the court is locked.
+            </p>
+          )}
         </div>
       )}
 
@@ -451,7 +577,7 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
         {canScore && (
           <button
             type="button"
-            disabled={pending || live.rallies === 0 || !!off.conflict}
+            disabled={pending || live.rallies === 0 || !!off.conflict || !!typedShown || !!off.refused}
             onClick={undo}
             className="rounded-lg border border-neutral-600 px-3 py-1.5 text-xs font-bold text-neutral-300 hover:border-neutral-400 disabled:opacity-40"
           >
@@ -471,7 +597,7 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
         </p>
       )}
 
-      {live.over && (
+      {live.over && !typedShown && (
         <p className="rounded-xl border border-emerald-500 bg-emerald-500/10 p-3 text-sm font-bold text-emerald-300">
           🏆 {live.winner === "a" ? teamA.name : teamB.name} win {Math.max(live.a, live.b)}–{Math.min(live.a, live.b)}
           {view.timing?.playingMs ? ` in ${fmtClock(view.timing.playingMs)}` : ""}.

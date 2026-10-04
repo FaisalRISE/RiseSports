@@ -49,6 +49,9 @@ export type MatchClock = {
   claim: () => Tick;
   /** Put a claim back when its write did not land. */
   restore: (t: Tick) => void;
+  /** A pause or resume is waiting to be written. It rides on no rally, so a
+   *  push that landed without it has to be followed by one that carries it. */
+  hasPending: () => boolean;
   /** Pause with a reason, or resume with null. Applies here immediately. */
   setPaused: (reason: PauseReason | null) => void;
 };
@@ -161,6 +164,8 @@ export function useMatchClock({ timing, live }: UseMatchClockArgs): MatchClock {
     if (t.pause !== undefined && pauseChange.current === undefined) pauseChange.current = t.pause;
   }, []);
 
+  const hasPending = useCallback(() => pauseChange.current !== undefined, []);
+
   const setPaused = useCallback(
     (next: PauseReason | null) => {
       /* Fold what has passed BEFORE flipping, or the play before an injury
@@ -184,6 +189,7 @@ export function useMatchClock({ timing, live }: UseMatchClockArgs): MatchClock {
     ticking: live && !paused,
     claim,
     restore,
+    hasPending,
     setPaused,
   };
 }

@@ -34,9 +34,9 @@ import {
 } from "@/lib/rating";
 import { phaseOf, categoryFormat, categoryRoster, refileSeeds } from "@/lib/rating/tournament";
 import { ratingKey } from "@/lib/sports/registry";
-import { rulesFor } from "@/lib/matchState";
+import { endingOf } from "@/lib/matchState";
 import { matchResult } from "@/lib/results";
-import { endingFor, finalScoreProblem, type Ending } from "@/lib/scoring/final";
+import { finalScoreProblem, type Ending } from "@/lib/scoring/final";
 import { playedFromHistory, reliabilityForPerson } from "@/lib/rating/reliability";
 import { detectSandbagging, type RatedMatch } from "@/lib/rating/sandbagging";
 
@@ -185,11 +185,20 @@ export async function applyMatchRatings(
     .limit(1);
   if (existing.length > 0) return { status: "already" };
 
+  /* A walkover, a retirement or a game stopped early counts in the table and
+     moves nobody: there is no played result for a rating to read. */
+  if (m.outcome) return { status: "skipped", reason: `recorded without a rating (${m.outcome})` };
+
   const settled = settleMatch(t, m);
   if (!settled) return { status: "skipped", reason: "not finished" };
 
-  const ending = endingFor(t.sport, rulesFor(t));
-  if (!validScore(ending, settled.scoreW, settled.scoreL)) {
+  /* Judged by the rules THIS match is played under — the ones it finished
+     under, once it has (lib/matchState `matchRules`) — and, for tennis and
+     padel, by the games in each set when they were typed. */
+  const ending = endingOf(t, m);
+  const aWon = settled.winnerTeamId === m.teamAId;
+  const [a, b] = aWon ? [settled.scoreW, settled.scoreL] : [settled.scoreL, settled.scoreW];
+  if (!validScore(ending, settled.scoreW, settled.scoreL) || finalScoreProblem(ending, a, b, m.sets ?? undefined)) {
     return { status: "skipped", reason: `invalid score ${settled.scoreW}-${settled.scoreL}` };
   }
 
@@ -236,7 +245,7 @@ export async function applyMatchRatings(
        switch is confirmed, neither of which re-applies anything, so checking
        it would leave a finished match with no rating movement at all. */
     unchanged: (locked) =>
-      locked.kind === "tournament" && sameSettlement(settleMatch(t, locked.row), settled),
+      locked.kind === "tournament" && !locked.row.outcome && sameSettlement(settleMatch(t, locked.row), settled),
   });
 }
 

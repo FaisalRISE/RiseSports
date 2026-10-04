@@ -10,6 +10,7 @@ import { drawSignature } from "@/lib/draw/guard";
 import { ProblemNotice } from "./ProblemNotice";
 import { viewMatch } from "@/lib/matchState";
 import { hasPlay, matchLine } from "@/lib/results";
+import { RESULT_ENTRY_ON_SCREEN } from "@/lib/results/record";
 import { sportOf, usesDupr } from "@/lib/sports/registry";
 import { oslLineupIssues } from "@/lib/formats/osl";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
@@ -23,7 +24,7 @@ import { StandingsTable } from "@/components/StandingsTable";
 import { ScoringControls, type ScoringState } from "./ScoringControls";
 import { maxGroupsFor } from "@/lib/formats/pickleboss";
 import { resolveRules } from "@/lib/scoring/rules";
-import { allowsDraws } from "@/lib/matchState";
+import { allowsDraws, boardsOf } from "@/lib/matchState";
 import { PersonLink } from "@/components/PersonLink";
 import { AddPlayerForm } from "./AddPlayerForm";
 import { DivisionRulesForm } from "./DivisionRulesForm";
@@ -163,6 +164,7 @@ export default async function ManagePage({
        pickleball event and then WRITE that as an override on the first save —
        pinning a value that was only ever the sport's default. */
     scoreType: t.scoring == null ? "" : liveRules?.sideOut ? "service" : "rally",
+    boards: t.sport === "cr" ? boardsOf(t.scoring) : null,
   };
 
   const loaded = await loadTournament(slug);
@@ -371,8 +373,9 @@ export default async function ManagePage({
         <section>
           <h2 className="mb-1 text-lg font-black">Scoring</h2>
           <p className="mb-3 text-[11px] text-neutral-500">
-            How a game is won. It applies to every match in the event, and the
-            referee console reads it.
+            How a game is won. A change applies to every match not yet finished,
+            including one being played now. Finished matches keep the result they
+            finished with.
           </p>
           <ScoringControls
             tournamentId={t.id}
@@ -380,6 +383,7 @@ export default async function ManagePage({
             isCustom={t.scoring != null}
             presetName={presetName}
             sportDefault={sportDefaultLabel}
+            carrom={t.sport === "cr" && RESULT_ENTRY_ON_SCREEN}
           />
         </section>
 

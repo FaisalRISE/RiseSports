@@ -106,8 +106,14 @@ export async function addDivision(tournamentId: string, formData: FormData) {
 export async function removeDivision(tournamentId: string, divisionId: string) {
   const t = await requireManager(tournamentId);
   /* Only a category of THIS event. Deleting by id alone let a manager of one
-     event remove another event's category — and with it, by cascade, its teams. */
-  await db.delete(divisions).where(and(eq(divisions.id, divisionId), eq(divisions.tournamentId, t.id)));
+     event remove another event's category — and with it, by cascade, its teams.
+     The event row first: the cascade deletes and updates many matches in its
+     own order, and every other writer of many matches takes this lock first
+     (see lib/scoring/change). */
+  await db.transaction(async (tx) => {
+    await tx.select({ id: tournaments.id }).from(tournaments).where(eq(tournaments.id, t.id)).for("no key update");
+    await tx.delete(divisions).where(and(eq(divisions.id, divisionId), eq(divisions.tournamentId, t.id)));
+  });
   refresh(t.slug);
 }
 

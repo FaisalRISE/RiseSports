@@ -592,7 +592,9 @@ the `tournaments.scoring` column had existed since the port, and nothing wrote t
   `scorePoint` alone records nothing, and nothing fails: the record exists with `playingMs: 0`.
   Found by reading the database after playing, not by a test.
 - Deltas accumulate across taps and travel with the push that lands; a failed push puts its
-  share back, so time is neither lost nor double-counted by a retry.
+  share back, so time is not lost by a retry. **One known limit**: a write whose REPLY was lost
+  did land, with its time, and that time was put back and goes again — the play between two
+  pushes can be counted twice. Fixing it needs an idempotency key per tick; it moves no rating.
 - The clock read sits at **module level** in both files — inside a component body React's purity
   rule cannot tell it is only called from an event handler.
 
@@ -1647,7 +1649,7 @@ visible change).
   and when a side switch is confirmed, and neither re-applies anything — so the rating would
   silently never land.
   - A change to the result makes the apply skip with `changed`, and the write that changed it
-    is the one that rates it: `setTypedScore` reverts and re-applies, and an undo that takes
+    is the one that rates it: a correction reverts and re-applies (`writeResult` since step 7), and an undo that takes
     the match off the finish line reverts.
   - "Already applied" is asked again under the lock, so a second apply of one match returns
     `already` instead of throwing on the unique index inside a swallowed catch.
@@ -1760,11 +1762,13 @@ migration, no visible change yet — step 7 puts it in front of the organiser).
   missing ceiling, the wrong ending named when a golden point sits below the target, and about
   ten test gaps (the tennis neutral margin was checked in the history row but not in the
   rating that actually moves, among them) — all fixed.
-- **Open questions for Faisal, both needed before step 7 opens score entry:**
-  - carrom — does "can be both" mean the international rule, "25 points or 8 boards, whichever
-    comes first"? Today it is one or the other, never both at once;
-  - tennis/padel — only best of 3 sets of 6 with a match tie-break is modelled. A one-set match,
-    a pro set to 8 or 9, and short sets to 4 cannot be entered yet (a per-stage set format).
+- **Two questions the review raised, answered by Faisal on 2026-09-30.** Both confirm the model
+  as built:
+  - carrom — **the organiser picks one** per event: first to the target, or a fixed number of
+    boards. Never "25 or 8 boards, whichever comes first". Step 7 adds that setting;
+  - tennis/padel — **best of 3 sets only** (sets of 6, with a match tie-break to 10 as the
+    decider). A one-set match, a pro set or short sets are not needed, so there is no set-format
+    setting.
 - Proof: `final.test.ts` (65, the brute forces among them), `rating/final.rating.test.ts` (8)
   through the real engine — 4 of the first 5 fail on the old code: 15–4 and a 3–0 best-of-3
   were rated, and 2–1 in sets was read as a points margin; the carrom ones pin 29–18 rated and
@@ -1772,6 +1776,281 @@ migration, no visible change yet — step 7 puts it in front of the organiser).
   two — `replay.test.ts` (`finishedAt` against the full replay on random logs),
   `pushLog.test.ts`, and **44 plausible wrong versions** of the walk, the endings, the carrom
   shape, the trim, the ceiling, the wording and the wiring, each caught.
+
+**Step 7 — one way to save a result, and the referee's phone respects it** (migration `0021`).
+Faisal approved a picture of the screens first (the "Saving Results" artifact, 2026-09-30).
+
+- **ONE writer: `writeResult`** (`app/t/[slug]/actions.ts`). Every rally, undo, correction and
+  typed result goes through it, and it asks one question — did the RESULT change
+  (`matchResult` before and after, outcome included)? Unchanged (every mid-game rally): one
+  rev-guarded UPDATE, nothing else — unless the result is a FINISHED one, when the engine is
+  asked again (two queries when it is already rated; a repair when it is not). Changed: the UPDATE
+  and `revertMatchRatingsIn` in ONE
+  transaction — the UPDATE is the transaction's first statement and takes the match row's lock,
+  so the rating engine's order (match, then people) holds; the revert runs EVERY time, which
+  also repairs a match an old bug left with history and no result. The new rating is applied
+  after the commit, and `applyMatchRatings` re-checks the result under its own lock. Fixes, each
+  a test in `results.test.ts`:
+  - rallies from a phone nulled a TYPED result on every write, and its rating stayed;
+  - ratings moved only on the finish-line transition, so 11–7 corrected to 11–9 never re-rated;
+  - "finished" was read off the rally log alone, so a match with a rating and no result
+    answered "already" when it finally finished, keeping the wrong movement;
+  - the revert ran in its own transaction after the write, so one queued behind an undo could
+    delete the rating of a match finished again since (step 5's second carried finding).
+  - `locks.test.ts` pins the shape: the correcting transaction starts with `update "matches"`,
+    locks people in one sorted statement, and nothing reverts outside a transaction.
+- **`recordResult`** replaces `setTypedScore` (which had no caller, no rev guard, wiped the log
+  and refused every level score). Organisers and PIN referees alike (Faisal: "either, freely").
+  The rules for typing live in `lib/results/record.ts`, pure: both teams known; a level score
+  only where the sport has draws AND in a group ("A knockout match needs a winner"); the final
+  judged by `finalScoreProblem` against the MATCH's ending; a result with an `outcome` may stop
+  SHORT of the end (9–7) but never pass it and never be level. Replacing live rallies is a
+  choice (`replaceLive`), never a side effect — without it the reply is code `live` naming what
+  would go. **Idempotent**: the same result again is ok at the current rev, so a retry after a
+  lost reply is not an error. The screen that calls it is step 10.
+- **`matches.outcome`** (`walkover | retired | unrated`, CHECK in 0021, only on a typed result):
+  counts in the table, moves no rating — `writeResult` never applies one and the engine skips it
+  whoever asks. A walkover is stored at the winning score (`walkoverScore`: 11 in a game to 11,
+  2 in a best of 3, 25 in carrom to 25, 1 over a set number of boards). `matchResult` carries it
+  and prints "11–0 w/o" / "9–7 ret." everywhere.
+- **`matches.sets`** holds tennis/padel games per set; sets WON stay in typed_score_a/b and must
+  agree with them for a rated result, and for a match the sets show DECIDED. A match stopped
+  before it was decided (a retirement) may be awarded either way; the deciding set is a match
+  tie-break, so a decider short of 10 is a tie-break being played, not a set won. The rating
+  engine checks the sets too.
+- **The rules stay with a FINISHED match** (`matches.rules`, `MatchRules = {rules, boards}`).
+  Faisal: a change applies to every match not yet finished, including one being played, and
+  finished results stand. `matchRules(t, m)` = the frozen scoring, else the event's today;
+  `rulesFor(t, m)`, `endingOf(t, m)` and `viewMatch` all read it, so the table, the rating, the
+  console and a typed correction judge one match one way. `writeResult` freezes a match the
+  moment it first has a result and KEEPS the freeze while it has any play — an undo that reopens
+  a finished game corrects it under the rules it was played to (and the phone's log is cut at the
+  end of THAT game). Dropped only when the match has no play at all.
+- **Changing the scoring** (`lib/scoring/change.ts`, used by Save and by "Back to the sport's
+  defaults"), ONE transaction: the EVENT row locked and re-read, then every match of the event
+  in id order (event and match rows only, so it cannot circle with a rating): finished matches
+  not yet frozen (from before step 7) are
+  frozen under the OLD scoring; a match being played plays on under the new one — or, if the new
+  rules end it where it stands, it is finished, frozen, its clock stopped and rated after the
+  commit; or, if they would already have ended it (14–4 moving to 11), NOTHING is saved and the
+  organiser is told which match — and likewise when the new rules would re-count a live game's
+  rallies. EVERY match's `rev` moves. The save returns plain lines the
+  card shows ("Saved. This event now plays to 15." / "1 finished match keeps its result." / "Aces
+  v Bees is being played now, 7–1. It plays on to 15.").
+- **Carrom over a set number of boards** (Faisal: the organiser picks one per event): the card
+  offers "A set number of boards" or "First to a score", stored as `scoring: { boards: 8 }`
+  (no migration; `boardsOf`). Choosing boards hides the point settings.
+  - **HELD BACK until results can be typed in** (`RESULT_ENTRY_ON_SCREEN = false` in
+    lib/results/record; step 10 turns it on). A match over a set number of boards has no live
+    court, so its result can only be typed — and no screen types one yet. Chosen, it left every
+    match of the event with no way to record a result, and a game being played lost its court
+    mid-game. The card does not offer it and `setScoring` refuses it; the engine underneath
+    (`changeScoring`, the freeze, `noLiveCourt`) is built and tested through `changeScoring`.
+- **No live court** (`noLiveCourt`) for tennis, padel and carrom over boards — the court counts
+  points and cannot finish them. The score page shows the note instead of a court, saying the
+  result is typed in and that typing is NOT on the manage screen yet (it said "on the manage
+  screen", promising a control that does not exist), with "Back to the event"; `scorePoint`
+  and friends refuse; `pushLog` refuses. And **rallies finish a match only where the court can**
+  (`matchResult`): a carrom event moved to boards still replays its rallies against carrom's
+  default target, and a live 26–10 read as a finished game, frozen and rated. A match FROZEN under
+  first-to-25 keeps the result it finished with.
+- **A knockout match whose slots are not filled has no court either** (`teamsNotIn` in
+  lib/matchState — one sentence for the page and every refusal of a rally; `recordResult` has its
+  own). Its page says what unlocks it: the
+  organiser's "Fill resolved slots" on the manage screen, NOT the feeders finishing — the first
+  wording told a referee to wait for semi-finals already over. Filling is manual until step 9.
+- **The phone** (lib/offline/queue + `useOfflineScoring` + `RefConsole`):
+  - `PushResult` is declared ONCE, in `lib/offline/queue.ts` (already client-safe), and gained
+    `typed` and `refused`. A reply the phone did not know used to fall into its retry path.
+  - **`typed`** is asked BEFORE the rev guard, so a stale push cannot slip past it by being
+    retried at the new rev — which is exactly how a reconnecting phone used to wipe a typed
+    result (stale → the typed match's empty log read as "ahead" → retried → overwrote it). The
+    record is kept `held`; nothing sends a held record on its own (the retry timer; `flushAll`,
+    which nothing in production calls, skips them too);
+    the console shows "Typed in: X win 11–7" with "Keep 11–7" and "Use this phone's score
+    instead" (a push with `replaceTyped` at the rev the refusal named — typed again since, and
+    the server answers `typed` with the new result, so nothing unseen is replaced).
+  - **`refused`** (the match was deleted, or has no live court) drops the rallies and says why,
+    once, with "Back to the event". A deleted match used to answer `error`, retried every
+    fifteen seconds for ever.
+  - `settleReply` maps every reply to an outcome for `flushMatch` and the card choices alike —
+    except "stale", which each caller judges (`flushMatch` by the rules below; the conflict
+    dialog and the typed card by "did only the rev move?").
+  - Queued records carry `sides` (the two team ids shown) for step 9.
+  - **What the phone KNOWS the server holds** (`baseLog` + `sent` on the record, `knownToPhone`):
+    the log at its base rev, and every log it has sent since, any of which may have landed with
+    the reply lost. A server holding one of them holds nothing this phone has not seen, so the
+    phone's newest log is its own next step and is retried at the new rev, WHATEVER `classify`
+    makes of the two. Without it the rev was the only signal, and two things move the rev without
+    a rally: a scoring change (every match of the event) and a write whose reply was lost. An
+    undo after either is SHORTER than the server's log — "behind" — and was dropped as redundant,
+    so the point the referee took off came back (a mis-tapped winning rally stayed won and rated).
+    A log the phone has not seen is another device's, and is judged by `classify` as before —
+    except one SHORTER than the log the phone knew the server held: another device took rallies
+    off, and pushing ours ("ahead" of it) put them back with nobody asked, so it is a conflict.
+  - **A pause with nothing queued is CLOCK-ONLY** (`clockOnly` in `flushMatch`): it sends the log
+    the server was known to hold, and on a stale reply sends the server's own log back instead —
+    never judged as rallies. Judged, it wrote a removed rally back, or asked the referee about
+    rallies they never scored.
+  - **The server says what it STORED** (`log` on an ok reply) when it cut a log at the finish.
+    The phone took the uncut log as the server's and built its next undos on taps the server had
+    thrown away; each was cut back to the same finish and changed nothing.
+  - **"flushed" says whether THIS write `landed`.** A log the server already held, or more,
+    wrote nothing: its time goes back to the clock. A tap made meanwhile goes at the server's rev
+    only when the server holds exactly what this phone sent — landed now, or by an earlier attempt
+    whose reply was lost (an undo during that retry used to be dropped as "behind"). Anything
+    else is judged by `flushMatch`'s rules, sent from the base the tap was built on — sent at the
+    server's rev unjudged, it wrote over another device's rallies with no dialog. A conflict offers the NEWEST log, the one the court
+    shows. A pause tapped while a push was out goes when it lands (`hasPending` on the clock).
+  - **ONE decision for rallies found on the phone** (`resume`): after a reload, when a hold is
+    released, and when a replace finds the typed result gone — send them (ahead, or known), ask
+    (diverged), or let them go (the server already has them). A reload used to adopt only a log
+    strictly AHEAD, so an undo made offline was thrown away, and so was a genuine disagreement,
+    silently, with the referee's rallies in it.
+  - **A tap builds on what the server is KNOWN to hold, never on the last render** — for a moment
+    after every write that lands, the render is a write behind; and a render never moves the
+    base BACK (one older than the write that just landed is ignored). A render at the SAME rev is
+    taken: one rev is one row, so it is the truth about that rev.
+  - **A hold follows the match** (an effect on the rev and the typed result): typed again → the
+    card shows the new result; rev moved by a scoring change → same result, new rev, and "Use
+    this phone's score" lands rather than claiming a re-type; typed result replaced by another
+    phone → the hold is released and the difference is put to the referee as a conflict.
+  - **Only QUEUED rallies are held** (`kept` on a "typed" outcome). A pause sent with nothing
+    queued carries the server's own log; filed as held, a reload offered to "put back" rallies
+    the organiser had replaced on purpose.
+  - Record rewrites after a push are ONE IndexedDB readwrite transaction (`rewrite` in the
+    queue): a read and a separate delete let a tap's save fall between them and be deleted. The
+    tests run with no IndexedDB, so this one is argued from IDB's creation-order rule, not tested.
+    The reload's own read-then-save is two transactions, made safe differently: **the court takes
+    no tap until the stored queue has been read** (`ready`) — a tap in that first moment built on
+    the render's log, and one of the two was lost.
+  - **A choice whose reply never came may have landed** (`uncertainRef`). "Use this phone's
+    score" or "Keep this phone's score" that got no answer says so ("may or may not have been
+    saved") rather than "not replaced", and the OTHER choice made next first asks the server: Keep
+    the typed result probes without `replaceTyped` (answered "typed" while it stands, writing
+    nothing); "Keep the saved score" writes the other device's log back if ours had landed.
+  - A typed match's court is locked and shows the typed score; the pre-match panel is hidden.
+- **Test fixtures and the bundle-leak cap.** A separate `pushResult.ts` failed
+  `bundle-leak.test.ts`'s ceiling of four client-safe modules; the type moved into `queue.ts`
+  rather than raising the cap.
+- Proof: `app/t/[slug]/results.test.ts` (53, through the real actions and the real manage
+  action), `record.test.ts` (13, pure), `queue.test.ts` (+14), `useOfflineScoring.test.ts` (40),
+  `RefConsole.test.ts` (7: the typed card's heading, `sendTap`), lock-order tests,
+  `schema.test.ts` (the three 0021 CHECKs, each by name), `e2e/scoring.mjs` (a
+  finished 11–0 still FINAL after the event moves to 15 — it read as live before; carrom's card
+  not offering boards yet, and following what is stored after a reset; tennis with no court and
+  no promise of a control that is not there). **36 plausible wrong versions** of the
+  writer, the typing rules, the freeze, the scoring change, the queue and the display, each
+  caught (one survivor, the "never malformed" guard unreachable through the action, now pinned
+  in `record.test.ts`).
+- **Reviewed adversarially** (four reviewers, every finding proved by a scratch test or a traced
+  interleaving). Five majors, all fixed:
+  - **A rally read before a scoring change and written after it was judged by the old rules**
+    (three reviewers found it): a game the organiser had just been told "plays on to 15"
+    finished at 11; one that counted as won under 11 had no rating and no freeze. The row locks
+    only queued the write — it had already READ the scoring. `changeScoring` now moves the `rev`
+    of EVERY match of the event, so the write goes stale and is worked out again on a fresh
+    read, and it reads the event row under its own lock rather than trusting the caller's copy.
+    `results.test.ts` lands the save in exactly that gap through a seam in `principalFor`
+    (called between a scoring action's read and its write).
+  - **Changing how points are scored re-counted rallies already played**: service → rally turned
+    a live 5–3 into a finished 11–9 and rated it. "Apply to matches being played" is about how
+    they END. A change that would count a live game's rallies differently is now refused,
+    naming the match — a product call made conservatively; Faisal may prefer "keep that match on
+    its old rules".
+  - **A knockout match scored before its slots were filled could never be rated** — no teams,
+    so the apply skipped it, and filling the slots later took the cheap path. Rallies are now
+    refused until both teams are known (`courtRefusal`, `pushLog` → `refused`), the same rule
+    `recordResult` keeps. Step 9 was to add this; it moved forward.
+  - **"Use this phone's score" could never land after the result was typed AGAIN** — the replace
+    went out at the old rev and got "stale", which left the card on the old score for ever.
+    `pushLog` with `replaceTyped` on a re-typed match now answers `typed` with the current
+    result, so the card shows it and asks again.
+  - **Two older phone bugs** (pre-step 7): a rally tapped while the previous push was on the
+    wire was deleted when that push landed (`settleReply` cleared the queue unconditionally),
+    and an undo back to an empty log was never sent (`flush` dropped empty logs). The hook now
+    keeps its newest log in a ref and LOOPS until what landed is the newest; the queue clears
+    only when the stored log is exactly what landed (`clearIfLanded`). (The empty-log half was
+    only half fixed — see round two.)
+  Smaller, all fixed: a result recorded WITHOUT a rating now stops short of the end, never past
+  it (111–4 "retired" was stored; tennis waives only the set it stopped in —
+  `stoppedSetsProblem`); a "typed" reply holds the phone's NEWEST log, not the in-flight
+  snapshot; a refused phone sends nothing more, not even a pause, and keeps its "N rallies"
+  line; the typed card says "walkover to X" / "— the other side retired"; the no-court page
+  names the winner; `expectedRev` is validated on every action that takes one (a fraction threw
+  a raw 22P02, a string wrote rev "51"); setting the serve on a typed match is refused (it moved
+  the rev under a held phone); a write of the same FINISHED result asks the engine again, mending a
+  match left unrated (two queries when it is rated — a mid-game rally still does nothing extra); the scoring
+  change takes back a stale rating before rating a game it ends, names a reopened game ("still
+  finishes to 11"), and says when a live game loses its court to a set number of boards; the
+  Scoring card follows the stored settings after a save (adjusted during render, so the status
+  box stays); the print pack and the event poster say "8 boards"; and the event row is taken
+  FIRST by the scoring change, the order of play and every draw, so they queue instead of
+  deadlocking (the draw deleted, and the schedule updated, matches in their own order).
+- **Reviewed adversarially again** (three reviewers on the fixes above; 29 findings, 37 refuted).
+  The phone fixes had a hole each, and moving every match's rev had costs nobody had traced:
+  - **An undo or a point off after a scoring save was dropped** (major) — the moved rev read as
+    "the server is ahead". Fixed by what the phone KNOWS the server holds (above).
+  - **An undo back to 0–0 that could not go at once was never sent** (major): the retry timer and
+    the online event read an empty log as "nothing queued", and a reload threw it away.
+  - **A knockout match whose slots resolve but were not FILLED refused every rally, said to wait
+    for matches already over, and dropped a game scored offline** (major). Its page now has no
+    court and says what unlocks it (above); step 9 fills slots automatically.
+  - **After a "behind" reply the loop sent a newer tap at the server's rev**, over another device's
+    rally; the conflict offered one rally fewer than the court; time for a write that did not land
+    was dropped; a pause tapped during a push waited for the next point; a hold never followed the
+    match; "Keep this phone's score" was wedged on a moved rev; a pause on a typed match filed the
+    server's log as held; a read-then-delete in IndexedDB could delete a tap — all fixed above.
+  - **Single-rally actions answer `stale: true` and the console reloads.** It said "reloading" and
+    did not: a console that cannot score offline (carrom, chess, OSL) failed every tap after one
+    scoring save, on every live court of the event at once.
+  - **A stale `pushLog` names the match AS IT IS NOW** — it named the rev the push was judged
+    against, so the phone's retry was stale again and settled only on its last attempt.
+  - **`setMatchSetup` is guarded on the rev AND an empty log** — it checked "not started" on its
+    read and wrote unguarded, so rallies landing in between had the serve changed under them at
+    the very rev the push had written.
+  - **A retirement in tennis/padel**: the set it stopped in must be a score that set passes
+    through (no set stands at 9–2; a match tie-break short of its end only as the decider), and a
+    match the sets show already WON is not awarded to the other side (`stoppedSetsProblem`).
+  - **`clearSchedule` and `removeDivision` take the event row first**, like every other writer of
+    many of an event's matches; `locks.test.ts` pins all of them.
+  - Tests: the three 0021 CHECKs by name (`refusedBy` reads `constraint` AND `constraint_name`),
+    `typedHeading` and `resultSentence` pure, and the phone harness gained a counting clock, a
+    reload and gated pushes, with a test per finding. `e2e/scoring.mjs` opens entries before
+    reading the poster (a draft's poster 404s) and its `/s+/g` was the letter s; `e2e/event.mjs`
+    counts a match only when it FINISHES and checks the unfilled final says so.
+- **Reviewed a third time** (three reviewers on the round-two fixes; 18 findings, 31 refuted).
+  Each fix is above; the shape of what was found:
+  - **The phone still lost work at two edges** (major): an undo made while a retry of an
+    unheard write was out read as "behind" and was dropped; and another device's correction was
+    undone by this phone's next tap — or by a PAUSE with nothing queued — because "ahead" was
+    trusted. Both follow from judging a reply without asking whether the phone wrote what the
+    server holds; the loop now asks, and `flushMatch` refuses to push over removed rallies.
+  - **"A set number of boards" was a dead end** (major) while nothing can type a result: held
+    back, and the no-court notes stopped promising a manage-screen control.
+  - Smaller, all fixed: a retirement during the deciding tie-break at 6–4 was refused as "the
+    match already won"; a decided match could be recorded at a count the sets contradict; the
+    server's cut at the finish was invisible to the phone; "Keep" after a choice whose reply never
+    came cleared blind; a tap in the first moment after a reload was lost; a console that cannot
+    score offline dropped the claimed clock time on every stale tap (`sendTap` puts it back) and
+    said "reloading" after it had reloaded (it now says the tap was not recorded, and why); the
+    public page called a match with rallies and no result "not started" (live is now "rallies and
+    no result"); the fraction half of the revision test passed on the database's own error
+    (now `ZodError`); and the notes' "one query", "the base only ever moves forward" and
+    "ONE reading of a reply" were each a little more than true.
+  - Accepted, not fixed: play time can be counted twice after a write whose reply was lost (see
+    the match clock section) — it needs an idempotency key per tick and moves no rating.
+- **The phone is tested end to end now** — `components/useOfflineScoring.test.ts` runs the REAL
+  hook against the REAL `pushLog` on PGlite, with a few lines standing in for React's hooks
+  (state and refs by call order, effects after each render, a re-render a microtask after a
+  state change) and a pretend `window`/`navigator`. **Install the pretend `window` only after
+  the database is up**: PGlite sees a `window`, takes itself for a browser, and fails to start
+  ("Cannot read properties of undefined (reading 'pathname')").
+- **A shutdown mid-session zero-filled files being written** — `package.json`, `e2e/README.md`,
+  and earlier `.next/types/validator.ts` — all NUL bytes, same size as intended. `tsc` reported
+  "Invalid character" on the build file; the two source files showed as "Binary files differ".
+  After an abrupt stop, scan the working tree for NUL-filled files before trusting it; restore
+  from git and redo the edit.
 
 ## Access: the site is deliberately open, and the switch is a trap
 

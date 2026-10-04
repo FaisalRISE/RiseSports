@@ -16,8 +16,8 @@ import "server-only";
  * result whose sides are still placeholders — and it stays at those call sites.
  */
 
-import { viewMatch, allowsDraws, type MatchView } from "@/lib/matchState";
-import type { Match } from "@/lib/db/schema";
+import { viewMatch, allowsDraws, noLiveCourt, type MatchView } from "@/lib/matchState";
+import type { Match, Outcome } from "@/lib/db/schema";
 
 export type MatchResult = {
   a: number;
@@ -28,21 +28,30 @@ export type MatchResult = {
   /** Level AND the sport allows draws (chess, carrom). */
   draw: boolean;
   source: "typed" | "live";
-  /** The score as every screen prints it. */
+  /** Why this result moves no rating — a walkover, a retirement, a game
+   *  stopped early — or null for an ordinary result. It counts in the table
+   *  either way. */
+  outcome: Outcome | null;
+  /** The score as every screen prints it: "11–7", "11–0 w/o", "9–7 ret.". */
   display: string;
 };
 
 type ResultTournament = Parameters<typeof viewMatch>[0];
 type ResultMatch = Parameters<typeof viewMatch>[1];
 
-function build(t: ResultTournament, a: number, b: number, source: MatchResult["source"]): MatchResult {
+const SUFFIX: Record<Outcome, string> = { walkover: " w/o", retired: " ret.", unrated: "" };
+
+function build(
+  t: ResultTournament, a: number, b: number, source: MatchResult["source"], outcome: Outcome | null = null,
+): MatchResult {
   return {
     a,
     b,
     winner: a > b ? "a" : b > a ? "b" : null,
     draw: a === b && allowsDraws(t.sport),
     source,
-    display: `${a}–${b}`,
+    outcome,
+    display: `${a}–${b}${outcome ? SUFFIX[outcome] : ""}`,
   };
 }
 
@@ -54,9 +63,19 @@ function build(t: ResultTournament, a: number, b: number, source: MatchResult["s
  */
 export function matchResult(t: ResultTournament, m: ResultMatch, view?: MatchView): MatchResult | null {
   const v = view ?? viewMatch(t, m);
-  if (v.typed) return build(t, m.typedScoreA!, m.typedScoreB!, "typed");
-  if (v.over) return build(t, v.a, v.b, "live");
+  if (v.typed) return build(t, m.typedScoreA!, m.typedScoreB!, "typed", v.outcome);
+  /* Rallies finish a match only where the court can: a carrom event moved to
+     a set number of boards still replays its rallies against carrom's default
+     target, and 26–10 read as a finished game — frozen, and rated — although
+     under a number of boards no point count ever ends a match. */
+  if (v.over && !noLiveCourt(t, m)) return build(t, v.a, v.b, "live");
   return null;
+}
+
+/** "Aces win, 2–1": who won and how, in the words every other screen uses —
+ *  "0–2 w/o", "9–7 ret.". A draw is just its score. */
+export function resultSentence(r: MatchResult, nameA: string, nameB: string): string {
+  return r.winner ? `${r.winner === "a" ? nameA : nameB} win, ${r.display}` : r.display;
 }
 
 /**
