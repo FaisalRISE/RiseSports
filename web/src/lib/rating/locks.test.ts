@@ -30,7 +30,7 @@ vi.mock("@/lib/db", () => ({ db: testDb }));
 vi.mock("server-only", () => ({}));
 /* The score actions, for the writer every score change goes through. */
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
-vi.mock("next/navigation", () => ({ redirect: () => { throw new Error("redirect"); }, notFound: () => {} }));
+vi.mock("next/navigation", () => ({ redirect: (url: string) => { throw new Error(`redirect ${url}`); }, notFound: () => {} }));
 vi.mock("next/headers", () => ({
   cookies: async () => ({ get: () => undefined, set: () => {}, delete: () => {} }),
 }));
@@ -296,10 +296,39 @@ describe("every rating writer locks the match, then the people in id order", () 
     expect(clearing?.[0]).toMatch(/^select .* from "tournaments" .* for no key update$/);
     expect(cleared.bare.filter((s) => s.startsWith('update "matches"')), "nothing outside it").toEqual([]);
 
+    /* Removing a category: refused for this one, whose match has a result — and
+       the refusal is decided under the same lock, after it, so it cannot race
+       a removal or a draw that is allowed. */
     const { removeDivision } = await import("@/app/t/[slug]/manage/registration/actions");
-    const removed = await recorded(() => removeDivision(row.tournamentId, row.divisionId).catch(() => {}));
+    let refusal = "";
+    const refused = await recorded(() => removeDivision(row.tournamentId, row.divisionId).catch((e: Error) => { refusal = e.message; }));
+    expect(refusal, "refused for the played match, not for a missing confirmation").toContain("problem=category-played");
+    const checking = refused.txs.find((tx) => tx.some((s) => s.includes('from "divisions"')));
+    expect(checking?.[0]).toMatch(/^select .* from "tournaments" .* for no key update$/);
+    expect(refused.txs.flat().filter((s) => s.startsWith("delete")), "a played category deletes nothing").toEqual([]);
+    expect(refused.bare.filter((s) => s.includes('"matches"')), "its matches are read under the locks, never before").toEqual([]);
+
+    /* One with nothing played goes: the event row, then the category as a draw
+       locks it (FOR UPDATE, so nothing new is filed under it meanwhile), and
+       only then its matches are read and deleted. */
+    const spare = randomUUID();
+    const friendly = randomUUID();
+    await testDb.insert(schema.divisions).values({ id: spare, tournamentId: row.tournamentId, name: "Spare" });
+    await testDb.insert(schema.matches).values({
+      id: friendly, tournamentId: row.tournamentId, divisionId: spare, round: "Friendly",
+      log: [], lineupA: [], lineupB: [], ackedGates: [],
+    });
+    const { categorySignature } = await import("@/lib/draw/guard");
+    const confirmed = new FormData();
+    confirmed.set("confirm", categorySignature([], [friendly]));
+    const removed = await recorded(() => removeDivision(row.tournamentId, spare, confirmed));
     const removing = removed.txs.find((tx) => tx.some((s) => s.startsWith('delete from "divisions"')));
     expect(removing?.[0]).toMatch(/^select .* from "tournaments" .* for no key update$/);
+    expect(removing?.[1]).toMatch(/^select .* from "divisions" .* for update$/);
+    expect(removing?.[2], "the matches are READ right after both locks").toMatch(/^select .* from "matches" /);
+    expect(removed.bare.filter((s) => s.includes('"matches"')), "and never outside them").toEqual([]);
+    expect(removing!.some((s) => s.startsWith('delete from "matches"'))).toBe(true);
+    expect(removed.bare.filter((s) => s.startsWith("delete")), "nothing outside it").toEqual([]);
   });
 
   /* A scoring change locks the EVENT row, then every match of it in id order,

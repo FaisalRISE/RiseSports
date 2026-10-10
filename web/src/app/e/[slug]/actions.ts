@@ -188,7 +188,10 @@ export async function submitEntry(slug: string, formData: FormData): Promise<Sub
       dupr: needs.dupr ? duprToX100(p.dupr) : null,
     })),
   );
-  if (!written) return already;
+  if (written === "taken") return already;
+  if (written === "category-gone") {
+    return { ok: false, problems: [{ field: "form", message: "That category has just been removed by the organiser. Choose another and send it again." }] };
+  }
 
   revalidatePath(`/t/${s}/manage`);
   /* A short human-quotable reference, so a registrant chasing an organiser on

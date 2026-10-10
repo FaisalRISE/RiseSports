@@ -94,6 +94,18 @@ export function drawSignature(ids: string[]): string {
 }
 
 /**
+ * The same fingerprint for REMOVING a category: what removing it would take
+ * that an organiser could lose without noticing — its teams, its (unplayed)
+ * matches, and the entries WAITING for approval in it, which are withdrawn with
+ * it. The registration page puts it on "Yes, remove", and the server removes
+ * only if it finds exactly those, so a page opened before entries arrived or
+ * were approved into an empty category cannot take them with one tap.
+ */
+export function categorySignature(teamIds: string[], matchIds: string[], waitingIds: string[] = []): string {
+  return drawSignature([...teamIds, ...matchIds, ...waitingIds]);
+}
+
+/**
  * The category a draw is for — REFUSING one that is not this event's.
  *
  * The old path (`resolveDivisionId`) quietly swapped an unknown or foreign id

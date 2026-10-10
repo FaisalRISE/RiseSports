@@ -3,8 +3,8 @@
 #
 # Format/ and "Files for claude code/" are excluded because three files in them
 # carry live credentials:
-#   Format/OSL-2026-tournament-app_24.html   Supabase anon JWT + ADMIN_DEFAULT
-#   Format/pickleboss-35split 12.html        Supabase anon JWT + ADMIN_DEFAULT
+#   Format/OSL-2026-tournament-app_24.html   Supabase anon JWT (ADMIN_DEFAULT removed 2026-09-14)
+#   Format/pickleboss 9.html                 Supabase anon JWT (ADMIN_DEFAULT removed 2026-09-14)
 #   Files for claude code/claude-code-brief.md   Supabase key in plaintext
 #
 # They are reference material, not build inputs (see CLAUDE.md), so excluding
@@ -53,5 +53,6 @@ tmp/
 court-ledger/
 
 # The real secret patterns for tools/scan-staged.js. Never commit this — a
-# check for secrets must not itself contain any. See tools/secret-patterns.example.json.
+# check for secrets must not itself contain any. tools/scan-staged.js creates it on its
+# first run; there is deliberately no committed template beside it (see CLAUDE.md).
 tools/secret-patterns.local.json

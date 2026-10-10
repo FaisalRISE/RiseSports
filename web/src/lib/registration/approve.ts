@@ -42,6 +42,8 @@ export type ApproveResult =
  *
  * @param decidedBy the organiser's user id, recorded for the audit trail
  */
+const CATEGORY_GONE = "This entry's category has just been removed, so it was not approved.";
+
 export async function approveRegistration(
   registrationId: string,
   decidedBy?: string | null,
@@ -89,6 +91,11 @@ export async function approveRegistration(
     };
   }
   const divisionId = await resolveDivisionId(t.id, reg.divisionId);
+  /* Removed between reading the entry and resolving it: the resolver falls
+     back to the event's first category, and the pair would be approved into
+     one they did not choose. The same answer as a removal the transaction
+     finds below. */
+  if (reg.divisionId && divisionId !== reg.divisionId) return { ok: false, error: CATEGORY_GONE };
   const [division] = await db.select().from(divisions).where(eq(divisions.id, divisionId)).limit(1);
   const rules = division ? rulesOfDivision(division) : null;
 
@@ -186,8 +193,17 @@ export async function approveRegistration(
     resolved.push({ entrant: e, personId: person.id, rating: carriedRating(person, t.sport, format) });
   }
 
-  const claimed = await db.transaction(async (tx) => {
-    /* Claim the entry FIRST, conditionally. The check at the top of this
+  const claimed = await db.transaction(async (tx): Promise<boolean | "category-gone"> => {
+    /* The CATEGORY first, before the entry. Removing a category locks it FOR
+       UPDATE and, last of all, nulls the category on its entries — so an
+       approval that claimed the entry first and then inserted the team (whose
+       foreign key needs the category) held what the removal wanted while
+       waiting for what the removal held, and the database killed one of them.
+       Taken first, an approval simply queues behind a removal and then finds
+       the category gone. */
+    const [cat] = await tx.select({ id: divisions.id }).from(divisions).where(eq(divisions.id, divisionId)).for("key share");
+    if (!cat) return "category-gone";
+    /* Claim the entry, conditionally. The check at the top of this
        function reads the status outside any transaction, so two approvals of
        the same entry — a double tap, or two organisers on two phones — both saw
        "pending" and both built a team. This update succeeds for exactly one of
@@ -265,6 +281,7 @@ export async function approveRegistration(
     return true;
   });
 
+  if (claimed === "category-gone") return { ok: false, error: CATEGORY_GONE };
   if (!claimed) return { ok: false, error: "That entry is already approved." };
 
   void decidedBy;

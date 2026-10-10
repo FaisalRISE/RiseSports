@@ -98,11 +98,14 @@ export function knownToPhone(rec: Pick<QueuedMatch, "baseLog" | "sent">, serverL
   return (rec.sent ?? []).some((s) => sameLog(s, serverLog));
 }
 
-/** Add a log to the ones sent, once, keeping the last few. A log sent more
- *  than eight pushes ago and still not confirmed is not worth remembering. */
+/** Add a log to the ones sent, once. NONE is forgotten until a reply says
+ *  what the server holds (`learn` empties the list): any push whose reply was
+ *  lost may have landed, whichever it was. A cap of eight pushed out a log that
+ *  HAD landed after eight more failed taps, and the referee was then asked
+ *  about their own write — or their own undo — as if another device had made
+ *  it. The list is bounded by the taps between two replies, a log by 500. */
 export function withSent(sent: readonly Side[][] | undefined, log: readonly Side[]): Side[][] {
-  const rest = (sent ?? []).filter((s) => !sameLog(s, log));
-  return [...rest, [...log]].slice(-8);
+  return [...(sent ?? []).filter((s) => !sameLog(s, log)), [...log]];
 }
 
 /** How a device's log relates to the server's. */
@@ -120,6 +123,53 @@ export const sameLog = (x: readonly Side[], y: readonly Side[]) => x.length === 
 
 const isPrefix = (short: readonly Side[], long: readonly Side[]): boolean =>
   short.length <= long.length && short.every((v, i) => v === long[i]);
+
+/**
+ * Did ANOTHER device take rallies off that OUR log would put back? The server's
+ * log is shorter than the log this phone knew it held, a prefix of it, not a
+ * log this phone sent — and our log still continues the base past the server's
+ * end.
+ *
+ * Our log reads as "ahead" of such a log, and pushing it put the removed rallies
+ * back with nobody asked — a winning rally taken off by mistake won the game
+ * again. ONE rule, asked by the send loop (`flushMatch`) and by the reload
+ * decision (`resume` in useOfflineScoring) alike: the reload path once lacked
+ * it, so a refreshed phone quietly undid the correction the send loop refused.
+ * The last clause keeps it from asking when both devices took the same rally
+ * off and this one then tapped a new one: pushing that restores nothing.
+ * Rallies have no identity, so "continues the base" is judged by sequence.
+ */
+export function removedElsewhere(
+  rec: Pick<QueuedMatch, "baseLog" | "sent">, serverLog: readonly Side[], local: readonly Side[],
+): boolean {
+  const base = rec.baseLog;
+  if (!base || knownToPhone(rec, serverLog)) return false;
+  if (!(serverLog.length < base.length && isPrefix(serverLog, base))) return false;
+  return local.length > serverLog.length && local[serverLog.length] === base[serverLog.length];
+}
+
+/**
+ * Does the server still hold a rally THIS phone took off? Asked when the
+ * server's log is longer than ours and ours a prefix of it ("behind"), which
+ * otherwise reads as "ours adds nothing" and is dropped. If a log this phone
+ * built on or sent — its base, or a write it never heard back about, perhaps
+ * cut at the finish by the server — went on past ours, and the server's next
+ * rally is THAT log's next rally, the server has the rally the referee removed,
+ * and dropping ours brought it back. If the server's next rally is a different
+ * one, the server took it off too and another device scored after; ours adds
+ * nothing, and goes without a question. The mirror of `removedElsewhere`,
+ * asked in the same two places. Rallies have no identity, so "the same rally"
+ * is judged by sequence.
+ */
+export function removedHere(
+  rec: Pick<QueuedMatch, "baseLog" | "sent">, serverLog: readonly Side[], local: readonly Side[],
+): boolean {
+  if (serverLog.length <= local.length) return false;
+  const next = serverLog[local.length];
+  return [rec.baseLog, ...(rec.sent ?? [])].some(
+    (l) => !!l && l.length > local.length && isPrefix(local, l) && l[local.length] === next,
+  );
+}
 
 /**
  * Compare a device's log against the server's.
@@ -332,9 +382,6 @@ export async function settleReply(res: PushResult, rec: QueuedMatch): Promise<Fl
   }
 }
 
-const isShorterPrefix = (short: readonly Side[], long: readonly Side[]) =>
-  short.length < long.length && isPrefix(short, long);
-
 /**
  * Push one queued match, resolving a stale rev where it is safe to do so.
  *
@@ -406,11 +453,8 @@ export async function flushMatch(
       known = { baseLog: res.serverLog, sent: [] };
       continue;
     }
-    /* Shorter than the log this phone KNEW the server held, and not one it
-       sent: another device took rallies off. Our log is "ahead" of it, and
-       pushing it would put the removed rallies back with nobody asked —
-       a winning rally taken off by mistake would win the game again. */
-    if (known.baseLog && isShorterPrefix(res.serverLog, known.baseLog)) {
+    /* Another device took rallies off: put to the referee, never pushed over. */
+    if (removedElsewhere(known, res.serverLog, sending.log)) {
       return { status: "conflict", matchId: rec.matchId, serverLog: res.serverLog, localLog: sending.log, rev: res.rev };
     }
     switch (relation) {
@@ -418,6 +462,10 @@ export async function flushMatch(
         base = res.rev;   // stale read only; retry at the current rev
         continue;
       case "behind":
+        /* The server still has a rally this phone took off: ask. */
+        if (removedHere(known, res.serverLog, sending.log)) {
+          return { status: "conflict", matchId: rec.matchId, serverLog: res.serverLog, localLog: sending.log, rev: res.rev };
+        }
         /* Another device has everything we have and more. Ours is redundant. */
         await clearIfLanded(rec.matchId, sending.log);
         return { status: "flushed", matchId: rec.matchId, rev: res.rev, landed: false, serverLog: res.serverLog };

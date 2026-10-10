@@ -5,10 +5,11 @@
  *     save says so, and names the match being played that follows the new
  *     rules. DIFFERENTIAL: before step 7 the same match read as live again —
  *     not over at 15 — and dropped out of the table.
- *   - Carrom can be set to a number of boards; the save says so, and that
- *     event's match page offers no court (it counts points, not boards).
- *   - A tennis match page offers no court either, and points to the manage
- *     screen where tennis results are typed.
+ *   - Carrom does not offer a set number of boards yet (held back until a
+ *     result can be typed in, step 10); its target saves and the poster says
+ *     so, and "Back to the sport's defaults" shows what is stored.
+ *   - A tennis match page offers no court, says how tennis is recorded, and
+ *     promises no manage-screen control that is not there yet.
  *
  * Run against a production build on a FRESH database — see e2e/README.md. */
 

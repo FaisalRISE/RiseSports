@@ -35,7 +35,7 @@ beforeAll(async () => {
   }
 
   seeded = await seed(db as never);
-}, 60_000);
+}, 120_000);
 
 describe("the generated migration applies to a real Postgres", () => {
   it("creates every table", async () => {

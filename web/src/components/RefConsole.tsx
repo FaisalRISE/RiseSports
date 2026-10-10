@@ -40,6 +40,31 @@ export function typedHeading(
   return `Typed in: ${winner} win ${score}`;
 }
 
+/** What the conflict dialog says, read off the two logs. Three situations
+ *  reach it, and one sentence for all three misdescribed two of them: the
+ *  saved score still has a rally this phone took off (ours is a prefix of it);
+ *  another device took rallies off (the saved score is a prefix of ours); or
+ *  each has rallies the other lacks. */
+export function conflictWords(serverLog: readonly Side[], localLog: readonly Side[]): { heading: string; body: string } {
+  const prefix = (s: readonly Side[], l: readonly Side[]) => s.length < l.length && s.every((v, i) => v === l[i]);
+  if (prefix(localLog, serverLog)) {
+    return {
+      heading: "The saved score has a rally this phone took off",
+      body: `This phone took a rally off, but the saved score still has it${serverLog.length > localLog.length + 1 ? ", and more after it" : ""}.`,
+    };
+  }
+  if (prefix(serverLog, localLog)) {
+    return {
+      heading: "Another device took rallies off",
+      body: "The saved score has fewer rallies than this phone: they were taken off on another device. Keeping this phone's score puts them back.",
+    };
+  }
+  return {
+    heading: "Another device also scored this match",
+    body: "Both versions have rallies the other does not, so they cannot be merged automatically.",
+  };
+}
+
 /** A single-rally action's answer. `stale`: the match moved on since this
  *  view of it, and the console reloads. */
 export type Reply = { ok: true } | { ok: false; error: string; stale?: true };
@@ -384,16 +409,16 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
         </p>
       )}
 
-      {/* Two devices scored the same match. There is no safe automatic answer:
-          picking one silently discards real rallies from a real court. */}
+      {/* This phone and the saved score disagree. There is no safe automatic
+          answer: picking one silently discards real rallies from a real court. */}
       {off.conflict && (
-        <div className="rounded-xl border-2 border-rose-500 bg-rose-500/10 p-4">
+        <div data-testid="score-conflict" className="rounded-xl border-2 border-rose-500 bg-rose-500/10 p-4">
           <h2 className="text-sm font-black uppercase tracking-wide text-rose-300">
-            Another device also scored this match
+            {conflictWords(off.conflict.serverLog, off.conflict.localLog).heading}
           </h2>
           <p className="mt-1 text-[13px] font-semibold text-neutral-300">
-            Both versions have rallies the other does not, so they cannot be merged automatically.
-            Check the court and choose which is right.
+            {conflictWords(off.conflict.serverLog, off.conflict.localLog).body}
+            {" "}Check the court and choose which is right.
           </p>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             <button

@@ -61,7 +61,11 @@ export async function addTeam(tournamentId: string, formData: FormData) {
   const wanted = String(formData.get("divisionId") ?? "").trim();
   if (wanted && !(await divisionsOf(t.id)).some((d) => d.id === wanted)) return;
 
-  const divisionId = await divisionFrom(t.id, formData);
+  /* The category CHOSEN, never re-resolved: resolving falls back to the first
+     category when the chosen one has just been removed, and the team would be
+     filed where the organiser did not put it. Gone by the time of the insert,
+     the transaction below finds that and adds nothing. */
+  const divisionId = wanted || (await divisionFrom(t.id, formData));
   /* Seed and colour run per CATEGORY, not per event: Mixed starting at seed 9
      because Men's Doubles filled the first eight would be nonsense. */
   const existing = await db
@@ -70,13 +74,19 @@ export async function addTeam(tournamentId: string, formData: FormData) {
     .where(and(eq(teams.tournamentId, t.id), eq(teams.divisionId, divisionId)));
   const COLOURS = ["#2450c8", "#c98d1c", "#07705b", "#ab1730", "#5f28c4", "#a85400", "#0b6f68", "#a8256e"];
 
-  await db.insert(teams).values({
-    id: randomUUID(),
-    tournamentId: t.id,
-    divisionId,
-    name: parsed.data,
-    seed: existing.length + 1,
-    colour: COLOURS[existing.length % COLOURS.length],
+  /* The category taken first, so a removal of it under way finishes, and this
+     finds it gone instead of failing on the foreign key. */
+  await db.transaction(async (tx) => {
+    const [cat] = await tx.select({ id: divisions.id }).from(divisions).where(eq(divisions.id, divisionId)).for("key share");
+    if (!cat) return;
+    await tx.insert(teams).values({
+      id: randomUUID(),
+      tournamentId: t.id,
+      divisionId,
+      name: parsed.data,
+      seed: existing.length + 1,
+      colour: COLOURS[existing.length % COLOURS.length],
+    });
   });
   revalidatePath(`/t/${t.slug}/manage`);
 }
@@ -207,6 +217,7 @@ export async function addPlayer(tournamentId: string, teamId: string, formData: 
     }
 
     const added = await insertPlayer(t, team, division?.genderRule ?? null, parsed.data, gender, { pickedId, phone, duprRaw, bandRaw, dob, duprX100 });
+    if (!added) return { ok: false, message: TEAM_GONE };
 
     /* Let in anyway: what was waived is recorded on the team, so the card can
        say so — and a rule tightened later, which is a different rule, still
@@ -223,10 +234,14 @@ export async function addPlayer(tournamentId: string, teamId: string, formData: 
     return { ok: true, notes: mine.filter((f) => f.severity === "note").map((f) => `${parsed.data}: ${f.text}`) };
   }
 
-  await insertPlayer(t, team, division?.genderRule ?? null, parsed.data, gender, { pickedId, phone, duprRaw, bandRaw, dob, duprX100 });
+  if (!(await insertPlayer(t, team, division?.genderRule ?? null, parsed.data, gender, { pickedId, phone, duprRaw, bandRaw, dob, duprX100 }))) {
+    return { ok: false, message: TEAM_GONE };
+  }
   revalidatePath(`/t/${t.slug}/manage`);
   return { ok: true, notes: [] };
 }
+
+const TEAM_GONE = "This team's category has just been removed, so the player was not added.";
 
 /* The write half of adding a player, unchanged in what it does for a category
    with no rules: link or create the person by phone, carry their rating in. */
@@ -237,7 +252,7 @@ async function insertPlayer(
   playerName: string,
   gender: "M" | "F",
   form: { pickedId: string; phone: string; duprRaw: string; bandRaw: string; dob: string | null; duprX100: number | null },
-): Promise<string> {
+): Promise<string | null> {
   /* THIS CATEGORY's roster — a Men's Doubles add must not be filed as mixed
      because the event also runs Women's Doubles. */
   const roster = await categoryRoster(team.divisionId);
@@ -278,21 +293,32 @@ async function insertPlayer(
   }
 
   const id = randomUUID();
-  await db.insert(players).values({
-    id,
-    tournamentId: t.id,
-    teamId: team.id,
-    personId,
-    name: playerName,
-    gender,
-    /* The rating they bring IN. The per-event view starts here; the person's
-       own record is what actually moves. */
-    ratings: carried == null ? {} : { [formatKey]: carried },
-    /* What the organiser declared for this player on this team — the evidence
-       the category's rules and the "doesn't fit" flags read first. */
-    dob: form.dob,
-    dupr: form.duprX100,
+  /* The CATEGORY first (KEY SHARE), like every writer that files something
+     under one: a removal of it holds it FOR UPDATE from its first statement, so
+     this waits and then finds the team gone, instead of failing on the foreign
+     key — or committing between the removal's delete of the players and its
+     delete of the teams, which left a players row with no team behind. */
+  const added = await db.transaction(async (tx) => {
+    const [cat] = await tx.select({ id: divisions.id }).from(divisions).where(eq(divisions.id, team.divisionId)).for("key share");
+    if (!cat) return false;
+    await tx.insert(players).values({
+      id,
+      tournamentId: t.id,
+      teamId: team.id,
+      personId,
+      name: playerName,
+      gender,
+      /* The rating they bring IN. The per-event view starts here; the person's
+         own record is what actually moves. */
+      ratings: carried == null ? {} : { [formatKey]: carried },
+      /* What the organiser declared for this player on this team — the evidence
+         the category's rules and the "doesn't fit" flags read first. */
+      dob: form.dob,
+      dupr: form.duprX100,
+    });
+    return true;
   });
+  if (!added) return null;
 
   /* A typed date of birth also fills the person's record, but only where it is
      empty — never overwriting one that is already there. */
@@ -401,17 +427,26 @@ export async function addMatch(tournamentId: string, formData: FormData) {
   const squad = await db.select().from(players).where(eq(players.tournamentId, t.id));
   const six = (teamId: string) => squad.filter((p) => p.teamId === teamId).slice(0, 6).map((p) => p.id);
 
-  await db.insert(matches).values({
-    id: randomUUID(),
-    tournamentId: t.id,
-    divisionId: first.divisionId,
-    round,
-    teamAId: a,
-    teamBId: b,
-    lineupA: six(a),
-    lineupB: six(b),
-    log: [],
-    server: "a",
+  /* The category first (KEY SHARE), as every writer that files something
+     under one does. The insert's own foreign-key checks take the two TEAMS
+     before the category, so a removal holding the category and then deleting
+     those teams closed a circle with it; taken first, this simply waits, then
+     finds the category gone and adds nothing. */
+  await db.transaction(async (tx) => {
+    const [cat] = await tx.select({ id: divisions.id }).from(divisions).where(eq(divisions.id, first.divisionId)).for("key share");
+    if (!cat) return;
+    await tx.insert(matches).values({
+      id: randomUUID(),
+      tournamentId: t.id,
+      divisionId: first.divisionId,
+      round,
+      teamAId: a,
+      teamBId: b,
+      lineupA: six(a),
+      lineupB: six(b),
+      log: [],
+      server: "a",
+    });
   });
   revalidatePath(`/t/${t.slug}/manage`);
   revalidatePath(`/t/${t.slug}`);

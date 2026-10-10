@@ -21,7 +21,8 @@ import { rewindIndex } from "@/lib/scoring/rewind";
 import type { MatchClock } from "./useMatchClock";
 import type { Tick } from "@/lib/scoring/clock";
 import {
-  classify, flushMatch, loadQueued, saveQueued, clearQueued, clearIfLanded, settleReply, knownToPhone, sameLog, withSent,
+  classify, flushMatch, loadQueued, saveQueued, clearQueued, clearIfLanded, settleReply, knownToPhone, removedElsewhere,
+  removedHere, sameLog, withSent,
   type FlushOutcome, type PushResult, type QueuedMatch, type TypedOutcome,
 } from "@/lib/offline/queue";
 
@@ -127,7 +128,15 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
      has a connection, and a referee page rendered on the server got one too. */
   const online = useSyncExternalStore(subscribeOnline, () => navigator.onLine, () => true);
   const [localLog, setLocalLog] = useState<Side[] | null>(null);
-  const [conflict, setConflict] = useState<Conflict | null>(null);
+  const [conflict, setConflictState] = useState<Conflict | null>(null);
+  /* A ref as well as state, like "held": while the referee is being asked,
+     NOTHING is sent — the retry timer and the online event reach `flush`
+     through a ref and cannot wait for a render. Without it a conflict found on
+     RELOAD (where the base had already been learnt at the server's rev) was
+     written over by the next timer tick, fifteen seconds later, with the
+     referee's question still on screen. */
+  const conflictRef = useRef<Conflict | null>(null);
+  const setConflict = useCallback((c: Conflict | null) => { conflictRef.current = c; setConflictState(c); }, []);
   const [syncing, setSyncing] = useState(false);
   const [stalled, setStalled] = useState(false);
   const [held, setHeldState] = useState<Held | null>(null);
@@ -220,7 +229,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
     /* Held for the referee (the match was typed in, and only their choice
        sends these rallies), or refused for good. The fifteen-second retry
        would otherwise send them straight back into the same answer. */
-    if (heldRef.current || refusedRef.current) return;
+    if (heldRef.current || refusedRef.current || conflictRef.current) return;
     /* A ref, not the `syncing` state: the retry timer and a tap can both call
        this within the same tick, before any re-render has happened, and two
        concurrent pushes of the same log would make the second one look like a
@@ -360,7 +369,17 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
         setStalled(false);
         return;
       }
-      if (relation === "ahead" || knownToPhone(known, server.log) || known.baseRev === server.rev) {
+      const mine = knownToPhone(known, server.log) || known.baseRev === server.rev;
+      /* Another device took rallies off since this phone's base: our log is
+         "ahead" of the server's, and sending it would put them back. The send
+         loop already asked this; a reload did not, so a refreshed phone undid
+         the correction silently. */
+      if (!mine && removedElsewhere(known, server.log, log)) {
+        setLog(log);
+        setConflict({ serverLog: server.log, localLog: log, rev: server.rev });
+        return;
+      }
+      if (mine || relation === "ahead") {
         learn(server.rev, server.log);
         setLog(log);
         /* Unsaved work, by definition — say so straight away rather than
@@ -375,12 +394,18 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
         setConflict({ serverLog: server.log, localLog: log, rev: server.rev });
         return;
       }
+      /* The server still has a rally this phone took off: ask. */
+      if (removedHere(known, server.log, log)) {
+        setLog(log);
+        setConflict({ serverLog: server.log, localLog: log, rev: server.rev });
+        return;
+      }
       /* Another device has everything this phone had, and more. */
       void clearIfLanded(matchId, log);
       setLog(null);
       setStalled(false);
     },
-    [matchId, learn, setLog, flush],
+    [matchId, learn, setLog, flush, setConflict],
   );
 
   /* Restore anything left queued by a previous session — a phone that died
@@ -392,13 +417,19 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
       loadedRef.current = true;
       setReady(true);
       if (!rec) return;
-      /* Held for a choice on a match that is still typed in: show the choice
-         again, and send nothing. Held, but the typed result has gone since
-         (cleared on the manage screen): an ordinary queue again. */
-      if (rec.held && args.typed) {
+      /* Rallies on a match that is typed in: show the choice — keep the typed
+         result, or use this phone's — and send nothing. Whether or not a push
+         had come back "typed" before the reload: the organiser may have typed
+         the result over rallies this phone queued with no signal, and judged as
+         rallies the typed match's empty log read as another device taking every
+         rally off, a two-device question about a typed result. Held, but the
+         typed result has gone since (cleared on the manage screen): an ordinary
+         queue again. */
+      if (args.typed && (rec.held || rec.log.length > 0)) {
         baseRev.current = rec.baseRev;
         baseLog.current = rec.baseLog ?? [];
         sent.current = rec.sent ?? [];
+        if (!rec.held) void saveQueued({ ...rec, held: true });
         setLog(rec.log);
         setHeld({ ...args.typed, rev: serverRev });
         return;

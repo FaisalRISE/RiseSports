@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   classify, flushMatch, flushAll, saveQueued, loadQueued, clearQueued, allQueued, __resetQueue, settleReply,
-  knownToPhone, withSent, clearIfLanded,
+  knownToPhone, withSent, clearIfLanded, removedElsewhere, removedHere,
   type PushResult, type QueuedMatch,
 } from "./queue";
 import type { Side } from "@/lib/scoring/replayLite";
@@ -153,12 +153,69 @@ describe("flushing", () => {
 
   /* The other half of the rule: a log this phone has NOT seen is another
      device's work, and is judged by `classify` exactly as before. */
-  it("still drops an undo, and still asks about a difference, against another device's rallies", async () => {
+  it("still asks about a difference, and drops only what adds nothing, against another device's rallies", async () => {
     const theirs = async (): Promise<PushResult> => ({ ok: false, reason: "stale", serverLog: L("aabb"), rev: 4 });
-    const based: QueuedMatch = { ...rec("m1", "aa", 3), baseLog: L("aab") };
-    expect(await flushMatch(based, theirs)).toMatchObject({ status: "flushed", landed: false });
+    /* This phone's taps that the other device's log already holds: nothing to send. */
+    const covered: QueuedMatch = { ...rec("m1", "aab", 3), baseLog: L("aa") };
+    expect(await flushMatch(covered, theirs)).toMatchObject({ status: "flushed", landed: false });
     const tapped: QueuedMatch = { ...rec("m1", "aaba", 3), baseLog: L("aab") };
     expect(await flushMatch(tapped, theirs)).toMatchObject({ status: "conflict" });
+  });
+
+  /* This phone took a rally off its base while another device scored on top
+     of it. Ours is a prefix of theirs — "behind" — and was dropped as already
+     there, so the point the referee took off came back. It is a question. */
+  it("asks, rather than dropping, when this phone took a rally off and another scored on top", async () => {
+    const theirs = async (): Promise<PushResult> => ({ ok: false, reason: "stale", serverLog: L("aabb"), rev: 4 });
+    const undone: QueuedMatch = { ...rec("m1", "aa", 3), baseLog: L("aab") };
+    expect(await flushMatch(undone, theirs)).toEqual({
+      status: "conflict", matchId: "m1", serverLog: L("aabb"), localLog: L("aa"), rev: 4,
+    });
+  });
+
+  /* Both devices took the same rally off, and this one then tapped a new one.
+     Pushing ours keeps their correction and adds our rally: no question. */
+  it("does not ask when both devices took the same rally off", async () => {
+    const pushed: number[] = [];
+    const push = async (_id: string, _log: Side[], base: number): Promise<PushResult> => {
+      pushed.push(base);
+      return base === 3 ? { ok: false, reason: "stale", serverLog: L("aa"), rev: 4 } : { ok: true, rev: 5 };
+    };
+    const retapped: QueuedMatch = { ...rec("m1", "aab", 3), baseLog: L("aaa") };
+    expect(await flushMatch(retapped, push)).toMatchObject({ status: "flushed", landed: true });
+    expect(pushed).toEqual([3, 4]);
+  });
+
+  /* Every log sent and never heard back about stays recognisable however many
+     failed taps follow it: eight used to push the oldest out of the list, and
+     the referee was then asked about their own write — or undo — as if another
+     device had made it. A log sent twice is listed once. */
+  it("remembers every log sent since the last reply", () => {
+    let sent = withSent([], L("a"));
+    sent = withSent(sent, L(""));
+    for (let i = 1; i <= 12; i++) sent = withSent(sent, L("b".repeat(i)));
+    sent = withSent(sent, L("a"));
+    expect(sent.map((s) => s.join(""))).toEqual(["", ...Array.from({ length: 12 }, (_, i) => "b".repeat(i + 1)), "a"]);
+  });
+
+  /* Both devices took the same rally off, and the OTHER then scored. The
+     server has everything this phone has and nothing it removed: ours adds
+     nothing, and goes without a question — the mirror of the case above. */
+  it("does not ask when both devices took the same rally off and the other then scored", async () => {
+    const theirs = async (): Promise<PushResult> => ({ ok: false, reason: "stale", serverLog: L("aab"), rev: 4 });
+    const undone: QueuedMatch = { ...rec("m1", "aa", 3), baseLog: L("aaa") };
+    expect(await flushMatch(undone, theirs)).toMatchObject({ status: "flushed", landed: false });
+  });
+
+  /* This phone's write, cut at the finish by the server, landed and its reply
+     was lost; the referee then took rallies off below the finish. The server's
+     log is one this phone never sent whole, so it used to read as another
+     device's — and ours, "behind" it, was dropped: the correction lost with no
+     word. The server still has a rally this phone took off, so it asks. */
+  it("asks when the server holds this phone's own write, cut at the finish, below which it undid", async () => {
+    const cut = async (): Promise<PushResult> => ({ ok: false, reason: "stale", serverLog: L("aaa"), rev: 2 });
+    const undone: QueuedMatch = { ...rec("m1", "aa", 1), baseLog: L(""), sent: [L("aaaa")] };
+    expect(await flushMatch(undone, cut)).toMatchObject({ status: "conflict", serverLog: L("aaa"), localLog: L("aa") });
   });
 
   /* Shorter than the log this phone knew the server held, and not one it
@@ -210,7 +267,7 @@ describe("flushing", () => {
     expect(knownToPhone({}, L("ab"))).toBe(false);
     expect(knownToPhone({}, [])).toBe(false);
     expect(withSent([L("a"), L("ab")], L("a"))).toEqual([L("ab"), L("a")]);
-    expect(withSent(Array.from({ length: 9 }, (_, i) => L("a".repeat(i + 1))), L("b"))).toHaveLength(8);
+    expect(withSent(Array.from({ length: 9 }, (_, i) => L("a".repeat(i + 1))), L("b"))).toHaveLength(10);
   });
 
   /* The stored record is the phone's NEWEST log. Clearing it because an older
@@ -357,5 +414,26 @@ describe("a reply that ends the attempt for good", () => {
     expect(await settleReply({ ok: false, reason: "stale", serverLog: [], rev: 3 }, r)).toBeNull();
     expect(await settleReply({ ok: false, reason: "typed", a: 1, b: 0, rev: 3 }, r)).toMatchObject({ status: "typed" });
     expect(await settleReply({ ok: false, reason: "refused", title: "t", error: "e" }, r)).toMatchObject({ status: "refused" });
+  });
+});
+
+/* The two rules on their own, so each keeps its whole contract whatever its
+   callers check first: both callers ask knownToPhone before removedElsewhere
+   today, which would hide a removedElsewhere that forgot it. */
+describe("who took a rally off", () => {
+  it("removedElsewhere: shorter than the base, a prefix of it, ours continues it — and not a log this phone sent", () => {
+    expect(removedElsewhere({ baseLog: L("aab") }, L("aa"), L("aab"))).toBe(true);
+    expect(removedElsewhere({ baseLog: L("aab"), sent: [L("aa")] }, L("aa"), L("aab"))).toBe(false);
+    expect(removedElsewhere({ baseLog: L("aab") }, L("aa"), L("aaa"))).toBe(false);
+    expect(removedElsewhere({ baseLog: L("aab") }, L("ab"), L("aab"))).toBe(false);
+    expect(removedElsewhere({}, L("aa"), L("aab"))).toBe(false);
+  });
+
+  it("removedHere: the server's next rally is one this phone built on or sent past its own log", () => {
+    expect(removedHere({ baseLog: L("aab") }, L("aabb"), L("aa"))).toBe(true);
+    expect(removedHere({ baseLog: L("aaa") }, L("aab"), L("aa"))).toBe(false);
+    expect(removedHere({ baseLog: L(""), sent: [L("aaaa")] }, L("aaa"), L("aa"))).toBe(true);
+    expect(removedHere({ baseLog: L("aa") }, L("aabb"), L("aab"))).toBe(false);
+    expect(removedHere({ baseLog: L("aab") }, L("aa"), L("aa"))).toBe(false);
   });
 });

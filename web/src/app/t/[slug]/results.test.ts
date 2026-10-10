@@ -813,3 +813,25 @@ describe("the rules stay with a finished match", () => {
     expect((await stored(matchId)).rules).toMatchObject({ boards: null, rules: { target: 25 } });
   });
 });
+
+/* Two checks the writer and the engine get right, which no test held: a
+   correction that moves the score of a loser named FIRST (side A) — the
+   11–7 → 11–9 test above has the loser on side B — and a sets result won by
+   the second-named side. Each was let through by a plausible wrong version. */
+describe("corrections and sets, from either side", () => {
+  it("re-rates 7–11 corrected to 9–11, where only the loser's score moved", async () => {
+    const { matchId } = await setup();
+    await actions.recordResult(matchId, { a: 7, b: 11, expectedRev: 0 });
+    expect(await actions.recordResult(matchId, { a: 9, b: 11, expectedRev: 1 })).toEqual({ ok: true, rev: 2 });
+    const rows = await history(matchId);
+    expect(rows).toHaveLength(4);
+    expect(rows.every((r) => r.marginMultiplier === Math.round(marginMultiplier(11, 9) * 1000))).toBe(true);
+  });
+
+  it("rates a tennis match won 1–2 by the second side, with its sets", async () => {
+    const { matchId } = await setup({ sport: "tn" });
+    expect(await actions.recordResult(matchId, { a: 1, b: 2, sets: [[6, 4], [3, 6], [8, 10]], expectedRev: 0 }))
+      .toEqual({ ok: true, rev: 1 });
+    expect(await history(matchId)).toHaveLength(4);
+  });
+});

@@ -103,7 +103,7 @@ export default async function ManagePage({
   const drawControl = (token: string, label: string, played: string[], count: number, replaces: string) =>
     played.length > 0 ? (
       <p data-draw-locked className="self-center text-[11px] font-semibold text-amber-300">
-        Can’t redraw — {played.length === 1 ? "a match here has a result" : `${played.length} matches here have results`}{" "}
+        Can’t redraw — {played.length === 1 ? "a match here has been played or started" : `${played.length} matches here have been played or started`}{" "}
         ({played.slice(0, 3).join(", ")}{played.length > 3 ? ", …" : ""}), and a redraw would throw{" "}
         {played.length === 1 ? "it" : "them"} away.
       </p>

@@ -424,3 +424,66 @@ describe("an event with more than one category", () => {
     expect(seedOf("WHigh")).toBeLessThan(seedOf("Low"));
   });
 });
+
+/* ── Step 2's promises, pinned ─────────────────────────────────────────────
+ * A person entered in Men's Doubles AND Mixed is two teams and two player rows
+ * (one person, two teams). Each category moves its own rating of them — a
+ * Mixed match never touches their men's doubles, and the reverse. */
+describe("one person in two categories", () => {
+  async function playTyped(tournamentId: string, divisionId: string, teamA: string, teamB: string) {
+    const id = randomUUID();
+    await db.insert(schema.matches).values({
+      id, tournamentId, divisionId, round: "Round 1", teamAId: teamA, teamBId: teamB,
+      log: [], lineupA: [], lineupB: [], ackedGates: [], typedScoreA: 11, typedScoreB: 3, rev: 1,
+    });
+    return id;
+  }
+
+  it("moves their men's doubles in one and their mixed in the other", async () => {
+    const t = await multiEvent("md-and-mixed", { min: 2, max: 2 }, [
+      { name: "Men's Doubles", rule: "M", teams: ["PMD1", "PMD2"] },
+      { name: "Mixed", rule: "MX", teams: ["PMX1", "PMX2"] },
+    ]);
+    const md = t.cats["Men's Doubles"].teamIds;
+    const mx = t.cats["Mixed"].teamIds;
+    const ravi = await add(t.id, md[0], { name: "Ravi P", gender: "M", band: 1000 });
+    await add(t.id, md[0], { name: "Sami P", gender: "M", band: 1000 });
+    await add(t.id, md[1], { name: "Tarun P", gender: "M", band: 1000 });
+    await add(t.id, md[1], { name: "Uday P", gender: "M", band: 1000 });
+    await add(t.id, mx[0], { name: "Ravi P2", gender: "M", personId: ravi.personId! });
+    await add(t.id, mx[0], { name: "Vani P", gender: "F", band: 1000 });
+    await add(t.id, mx[1], { name: "Waqar P", gender: "M", band: 1000 });
+    await add(t.id, mx[1], { name: "Xena P", gender: "F", band: 1000 });
+
+    const mdMatch = await playTyped(t.id, t.cats["Men's Doubles"].divisionId, md[0], md[1]);
+    expect((await apply.applyMatchRatings(mdMatch)).status).toBe("applied");
+    const mxMatch = await playTyped(t.id, t.cats["Mixed"].divisionId, mx[0], mx[1]);
+    expect((await apply.applyMatchRatings(mxMatch)).status).toBe("applied");
+
+    const rows = await db.select().from(schema.ratingHistory).where(eq(schema.ratingHistory.personId, ravi.personId!));
+    const byMatch = Object.fromEntries(rows.map((r) => [r.matchId, r]));
+    expect(rows).toHaveLength(2);
+    expect(byMatch[mdMatch].format).toBe("pb:md");
+    expect(byMatch[mxMatch].format).toBe("pb:mx");
+    const person = await personOf(ravi.personId);
+    expect(person.riseRatings["pb:md"]).toBe(byMatch[mdMatch].ratingAfter);
+    expect(person.riseRatings["pb:mx"]).toBe(byMatch[mxMatch].ratingAfter);
+  });
+
+  /* One person on both sides cannot beat themselves. It reached the unique
+     index on (match, person, format) inside a swallowed catch; it is skipped
+     now, with a reason, and records nothing. */
+  it("skips a match with one person on both sides, and records nothing", async () => {
+    const t = await multiEvent("both-sides", { min: 1, max: 2 }, [
+      { name: "Main", rule: null, teams: ["Q1", "Q2"] },
+    ]);
+    const [q1, q2] = t.cats["Main"].teamIds;
+    const yash = await add(t.id, q1, { name: "Yash Q", gender: "M", band: 1000 });
+    await db.insert(schema.players).values({
+      id: randomUUID(), tournamentId: t.id, teamId: q2, personId: yash.personId, name: "Yash Q", gender: "M", ratings: {},
+    });
+    const id = await playTyped(t.id, t.cats["Main"].divisionId, q1, q2);
+    expect(await apply.applyMatchRatings(id)).toMatchObject({ status: "skipped", reason: "the same person is on both sides" });
+    expect(await db.select().from(schema.ratingHistory).where(eq(schema.ratingHistory.matchId, id))).toEqual([]);
+  });
+});

@@ -73,9 +73,12 @@ export type ScoreProblem = {
  * The ending a match in this sport is judged by.
  *
  * `bestOf` above one makes a points sport a games-won match; `carromBoards`
- * makes carrom a fixed number of boards. Neither has a setting yet — they come
- * with the result screens (step 7 onwards) — so every caller today gets one
- * game, first-to-the-target carrom, and best-of-3 sets.
+ * makes carrom a fixed number of boards. `endingOf` passes `carromBoards` from
+ * the scoring the match is judged by — its frozen rules, else the event's
+ * (step 7) — though the Scoring card does not offer it until results can be
+ * typed in (RESULT_ENTRY_ON_SCREEN). `bestOf` has no
+ * setting yet — chosen per stage, it is planned with the typing screen (step
+ * 10) — so every caller today gets one game, and tennis and padel best of 3 sets.
  */
 export function endingFor(
   sport: SportId,

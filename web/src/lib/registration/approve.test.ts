@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +14,41 @@ import { randomUUID } from "node:crypto";
  * Driven through the real path for the reason recorded in
  * lib/rating/pipeline.test.ts: unit tests that hand-build their inputs go
  * around the pipeline and can keep a dead feature green. */
+
+/* A seam between approval's checks and its transaction, where a category can
+   be removed: approval reads who the entrants are (peopleByPhones) after it
+   has read the category and before it takes anything. Off unless a test arms
+   it, and it fires once. */
+const between = vi.hoisted(() => ({
+  hook: null as null | (() => Promise<void>),
+  /* Before approval resolves the entry's category: removed there, the
+     resolver used to fall back to the event's first category. */
+  beforeResolve: null as null | (() => Promise<void>),
+}));
+vi.mock("@/lib/divisions", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/divisions")>();
+  return {
+    ...real,
+    resolveDivisionId: async (...args: Parameters<typeof real.resolveDivisionId>) => {
+      const hook = between.beforeResolve;
+      between.beforeResolve = null;
+      if (hook) await hook();
+      return real.resolveDivisionId(...args);
+    },
+  };
+});
+vi.mock("@/lib/people", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/people")>();
+  return {
+    ...real,
+    peopleByPhones: async (...args: Parameters<typeof real.peopleByPhones>) => {
+      const hook = between.hook;
+      between.hook = null;
+      if (hook) await hook();
+      return real.peopleByPhones(...args);
+    },
+  };
+});
 
 const dir = path.join(os.tmpdir(), `rise-approve-${randomUUID()}`);
 process.env.DATABASE_URL = `pglite://${dir.replace(/\\/g, "/")}`;
@@ -321,6 +356,14 @@ describe("approving into a category with rules", () => {
   });
 
   it("approves a pair that fits, and carries what they declared onto the players", async () => {
+    /* Men in the event first, so reading the whole event's roster (the old
+       decision) would file the women's pair as MIXED, and the assertion below
+       fails on it. */
+    const men = await ruledEntry(rules.other, [
+      { name: "Kabir", phone: "+919000000381", gender: "M" },
+      { name: "Lalit", phone: "+919000000382", gender: "M" },
+    ], "Open Men");
+    expect((await approve.approveRegistration(men)).ok).toBe(true);
     const id = await ruledEntry(rules.wd, [
       { name: "Asha", phone: "+919000000303", gender: "F", dob: "1990-05-17", dupr: 375 },
       { name: "Meera", phone: "+919000000304", gender: "F" },
@@ -333,6 +376,9 @@ describe("approving into a category with rules", () => {
     const asha = squad.find((p) => p.name === "Asha")!;
     expect(asha.dob).toBe("1990-05-17");
     expect(asha.dupr).toBe(375);
+    /* Filed under the category's OWN rating: women's doubles, not the mixed
+       an event with men and women in it used to read everybody as. */
+    expect(Object.keys(asha.ratings)).toEqual(["pb:wd"]);
   });
 
   it("refuses an entry that fitted when sent but not the category as it is now", async () => {
@@ -422,6 +468,9 @@ describe("approving into a category with rules", () => {
 
     const tx = sent.find((t) => t.some((s) => s.startsWith('update "people"')));
     expect(tx, "the approval wrote people in a transaction").toBeDefined();
+    /* The category first, before the entry is claimed: a removal of it then
+       makes this wait, instead of the two each holding what the other wants. */
+    expect(tx![0]).toMatch(/^select .* from "divisions" .* for key share$/);
     const lock = tx!.findIndex((s) => /from "people" .*order by "people"\."id"( asc)? for no key update$/.test(s));
     const firstWrite = tx!.findIndex((s) => s.startsWith('update "people"'));
     expect(lock, "people locked in one sorted statement").toBeGreaterThan(-1);
@@ -429,6 +478,60 @@ describe("approving into a category with rules", () => {
 
     const filled = await db.select().from(schema.people).where(eq(schema.people.phone, "+919000000392"));
     expect(filled[0].dob).toBe("1991-01-01");
+  });
+
+  /* The category removed after approval read it and before its transaction.
+     The transaction takes the category first and finds it gone: a refusal in
+     words, no team, and the entry still waiting. Without that check the entry
+     was claimed and the team's insert died on the foreign key, a raw error to
+     the organiser. (The people are found or created BEFORE the transaction, by
+     design — an orphaned person is harmless — so they are not counted here.) */
+  it("refuses in words when its category is removed while it is being approved", async () => {
+    const gone = randomUUID();
+    await db.insert(schema.divisions).values({
+      id: gone, tournamentId: rules.tournament, name: "Short-lived", position: 6, genderRule: "F",
+    });
+    const id = await ruledEntry(gone, [
+      { name: "Mira", phone: "+919000000371", gender: "F" },
+      { name: "Nina", phone: "+919000000372", gender: "F" },
+    ], "Too Late");
+    const teamsBefore = await teamCount();
+    between.hook = async () => {
+      await db.delete(schema.divisions).where(eq(schema.divisions.id, gone));
+    };
+
+    expect(await approve.approveRegistration(id)).toEqual({
+      ok: false, error: "This entry's category has just been removed, so it was not approved.",
+    });
+    expect(between.hook, "the seam fired").toBeNull();
+    expect(await teamCount()).toBe(teamsBefore);
+    expect(await statusOf(id)).toBe("pending");
+  });
+
+  /* Removed after approval read the entry and before it resolved the
+     category: the resolver fell back to the event's first category — here
+     Women's Doubles — and the pair was approved into a category they never
+     chose. The same refusal as a removal found inside the transaction. */
+  it("refuses in words when its category is removed before approval resolves it, and files it nowhere else", async () => {
+    const gone = randomUUID();
+    await db.insert(schema.divisions).values({
+      id: gone, tournamentId: rules.tournament, name: "Gone Early", position: 7,
+    });
+    const id = await ruledEntry(gone, [
+      { name: "Olga", phone: "+919000000373", gender: "F" },
+      { name: "Pia", phone: "+919000000374", gender: "F" },
+    ], "Gone Early Pair");
+    const teamsBefore = await teamCount();
+    between.beforeResolve = async () => {
+      await db.delete(schema.divisions).where(eq(schema.divisions.id, gone));
+    };
+
+    expect(await approve.approveRegistration(id)).toEqual({
+      ok: false, error: "This entry's category has just been removed, so it was not approved.",
+    });
+    expect(between.beforeResolve, "the seam fired").toBeNull();
+    expect(await teamCount()).toBe(teamsBefore);
+    expect(await statusOf(id)).toBe("pending");
   });
 
   it("keeps a returning strong player out of a capped category, and lets newcomers in", async () => {
@@ -541,7 +644,7 @@ describe("one live entry per phone, decided by the database", () => {
 
   it("writes an entry and its players together", async () => {
     const id = randomUUID();
-    expect(await writeEntry(newEntry(id, "+919000000401"), players(2))).toBe(true);
+    expect(await writeEntry(newEntry(id, "+919000000401"), players(2))).toBe("written");
     const rows = await db.select().from(schema.registrationPlayers).where(eq(schema.registrationPlayers.registrationId, id));
     expect(rows).toHaveLength(2);
   });
@@ -554,7 +657,7 @@ describe("one live entry per phone, decided by the database", () => {
        violated constraint differently. */
     await writeEntry(newEntry(randomUUID(), "+919000000402"), players(2));
     const second = randomUUID();
-    expect(await writeEntry(newEntry(second, "+919000000402"), players(2))).toBe(false);
+    expect(await writeEntry(newEntry(second, "+919000000402"), players(2))).toBe("taken");
     expect(await db.select().from(schema.registrations).where(eq(schema.registrations.id, second))).toEqual([]);
     expect(
       await db.select().from(schema.registrationPlayers).where(eq(schema.registrationPlayers.registrationId, second)),
@@ -565,12 +668,61 @@ describe("one live entry per phone, decided by the database", () => {
     const old = await entryWith([{ name: "Once", phone: "+919000000403" }], "Declined Once");
     await approve.setRegistrationStatus(old, "declined", "Full");
     /* The same phone enters again, and that entry is live. */
-    expect(await writeEntry(newEntry(randomUUID(), "+919000000403"), players(1))).toBe(true);
+    expect(await writeEntry(newEntry(randomUUID(), "+919000000403"), players(1))).toBe("written");
 
     const res = await approve.approveRegistration(old);
     expect(res.ok).toBe(false);
     expect(!res.ok && res.error).toMatch(/declined/);
     const [still] = await db.select().from(schema.registrations).where(eq(schema.registrations.id, old));
     expect(still.status).toBe("declined");
+  });
+});
+
+/* An entry naming a category removed while the entrant filled the form in is
+   refused in words, not with the foreign-key error the insert would hit. */
+describe("a category removed while an entry is on its way", () => {
+  it("is answered in words, and nothing is written", async () => {
+    const { writeEntry } = await import("./store");
+    const id = randomUUID();
+    expect(await writeEntry({
+      id, tournamentId: ids.tournament, divisionId: randomUUID(), teamName: "Late",
+      contactName: "Late", contactPhone: "+919000000499", status: "pending",
+    }, [])).toBe("category-gone");
+    expect(await db.select().from(schema.registrations).where(eq(schema.registrations.id, id))).toEqual([]);
+  });
+
+  /* KEY SHARE, and first: it waits for a removal under way (FOR UPDATE) and
+     for nothing else. Taken any later, or not at all, the insert met the
+     removal on the foreign key instead. PGlite runs one transaction at a time,
+     so the order is read off the statements. */
+  it("takes the category first, with the lock a removal waits on", async () => {
+    const { writeEntry } = await import("./store");
+    type Q = { query: (sql: string, ...rest: unknown[]) => Promise<unknown> };
+    const client = (db as unknown as { $client: { transaction: (cb: (tx: Q) => Promise<unknown>) => Promise<unknown> } }).$client;
+    const original = client.transaction.bind(client);
+    const sent: string[][] = [];
+    client.transaction = (cb) =>
+      original(async (tx) => {
+        const mine: string[] = [];
+        sent.push(mine);
+        const query = tx.query.bind(tx);
+        tx.query = (sql: string, ...rest: unknown[]) => {
+          mine.push(sql.replace(/\s+/g, " ").trim().toLowerCase());
+          return query(sql, ...rest);
+        };
+        return cb(tx);
+      });
+    const category = { id: randomUUID() };
+    await db.insert(schema.divisions).values({ id: category.id, tournamentId: ids.tournament, name: "On Time", position: 9 });
+    try {
+      expect(await writeEntry({
+        id: randomUUID(), tournamentId: ids.tournament, divisionId: category.id, teamName: "On Time",
+        contactName: "On Time", contactPhone: "+919000000498", status: "pending",
+      }, [])).toBe("written");
+    } finally {
+      client.transaction = original;
+    }
+    expect(sent).toHaveLength(1);
+    expect(sent[0][0]).toMatch(/^select .* from "divisions" .* for key share$/);
   });
 });

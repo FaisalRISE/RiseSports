@@ -1509,7 +1509,8 @@ ratings page, which is now one table per category (`[data-category]`).
   Finals used to give two golds on profiles against one champion on the event page.
 - Step 3 was reviewed adversarially: 8 findings, 6 confirmed and fixed above, 1 refuted (a
   match being scored with no signal cannot be protected server-side — the page says "nothing
-  in it has a recorded result" rather than "has been played" for that reason).
+  in it has a recorded result" rather than "has been played" for that reason). What became of
+  the eighth was not written down, and a search of the session history did not find it.
 - What each draw replaces: groups → the category's groups, fixtures AND the knockout drawn from
   them; straight knockout → the same; knockout → its bracket rows only. A hand-added match is
   never touched. `removeMatch` and `setLineup` are scoped to their event.
@@ -1711,7 +1712,7 @@ migration, no visible change yet — step 7 puts it in front of the organiser).
       ceiling a crafted score in the millions made the server walk that many rallies.
   - `games` — games won in a best-of-N match. Faisal: best of 3 happens, typed as games won
     (2–1), and is chosen **per stage** (e.g. groups one game, knockout best of 3). No stage setting
-    exists yet, so every caller gets one game until step 7/11 adds it.
+    exists yet, so every caller gets one game until step 10 adds it with the typing screen.
   - `boards` — carrom, **both endings** (Faisal: "can be both"): first to 25, where the last board
     can carry the winner past 25 and it never ends level; or a fixed number of boards, most points
     wins, level allowed. A level carrom result is a result for the table and moves no rating.
@@ -2040,6 +2041,11 @@ Faisal approved a picture of the screens first (the "Saving Results" artifact, 2
     "ONE reading of a reply" were each a little more than true.
   - Accepted, not fixed: play time can be counted twice after a write whose reply was lost (see
     the match clock section) — it needs an idempotency key per tick and moves no rating.
+- **Shipped as `11e2052` on 2026-10-04.** Migration 0021 was applied to production BEFORE the
+  push and verified by query: `matches.sets`, `outcome` and `rules` exist, the three CHECKs
+  are in place, `matches` still has RLS on with no policies, and the security advisors were
+  unchanged. All twelve e2e suites passed on a fresh database against the final build, and
+  the live site's pages and `/api/health/db` answered after the deploy.
 - **The phone is tested end to end now** — `components/useOfflineScoring.test.ts` runs the REAL
   hook against the REAL `pushLog` on PGlite, with a few lines standing in for React's hooks
   (state and refs by call order, effects after each render, a re-render a microtask after a
@@ -2051,6 +2057,136 @@ Faisal approved a picture of the screens first (the "Saving Results" artifact, 2
   "Invalid character" on the build file; the two source files showed as "Binary files differ".
   After an abrupt stop, scan the working tree for NUL-filled files before trusting it; restore
   from git and redo the edit.
+
+### Cleared before step 8 (2026-10-07)
+
+An audit of everything steps 1-7 left open — the plan, these notes, the code, every review
+finding and the repo — found about thirty items once duplicates were merged. Faisal asked for
+the work among them to be cleared before step 8; the decisions are his and are listed in the
+plan file, and the rest belong to later steps by design.
+
+- **A reload put back a point another device had taken off.** Round three taught the send loop
+  to refuse it, but `resume` — the reload's decision — still trusted "ahead", learnt the
+  server's shorter log as its base and pushed straight over the correction. ONE rule now,
+  `removedElsewhere` in lib/offline/queue, asked by `flushMatch` and `resume` alike: the
+  server's log is shorter than the log the phone KNEW it held, a prefix of it, not a log the
+  phone sent — **and our log still continues the base past the server's end**. Without that
+  last clause, two devices that took the SAME rally off were asked about it the moment this one
+  tapped a new rally, though pushing it restores nothing. Rallies have no identity, so
+  "continues" is judged by sequence. Step 8 must keep it in mind: a reset_rev guard that only
+  refuses pushes at an OLD rev does not stop a reloaded phone, which pushes at the new one.
+- **Its mirror: the server still has a rally THIS phone took off** (older than this round, both
+  paths). Ours is a prefix of theirs — "behind" — and was dropped as already there, so the point
+  the referee removed came back. `removedHere` turns that "behind" into a question, in the send
+  loop and on reload: some log this phone built on or sent — its base, or a write it never heard
+  back about — went on past ours, and the server's NEXT rally is that log's next rally. If the
+  server's next rally is a different one, it took that rally off too and another device scored
+  after, and ours goes without a question — the mirror of removedElsewhere's last clause; the
+  first version asked about it. The sent half also catches this phone's own write CUT at the
+  finish by the server with its reply lost, then undone below the finish: a log the phone never
+  sent whole, so it read as another device's, and the undo was dropped with no word.
+- **Nothing is sent while the referee is being asked.** A conflict found on RELOAD had already
+  learnt the server's rev, so the fifteen-second retry timer — or the online event — pushed the
+  phone's log over the server's with the question still on screen. The hook keeps the conflict
+  in a ref as well as state (`conflictRef`, like `heldRef`), and `flush` returns while it is
+  set.
+- **A log this phone sent and never heard back about is never forgotten.** `sent` kept the last
+  eight, so eight failed taps after a write whose reply was lost — the hall's ordinary
+  dead spell — pushed it out, and when the signal came back the server holding it read as
+  another device's work: the referee was asked about their own write, and "Keep the saved score"
+  would have thrown away everything since. `withSent` keeps every log until a reply says what
+  the server holds (`learn` empties the list); the list is bounded by the taps between two
+  replies, a log by 500 rallies. (The first fix kept only undos, and missed exactly this.)
+- **The conflict dialog says what was found** (`conflictWords` in RefConsole): "The saved score
+  has a rally this phone took off", "Another device took rallies off" — "keeping this phone's
+  score puts them back" — or, only when each has rallies the other lacks, the old "Another
+  device also scored this match". One sentence for all three misdescribed two of them, while one
+  of the choices overwrites real rallies.
+- **A reload of a match typed in over this phone's queued rallies offers the typed result's
+  choice** ("Keep 11–7" / "Use this phone's score"), as the signal coming back does. Judged as
+  rallies, the typed match's empty log read as another device taking every rally off.
+- **Removing a category never destroys a result** — the hole a redraw had, on a different
+  button. `removeDivision` (manage/registration/actions.ts) is refused while any match in the
+  category has play or rating history (`lockedIds`), deletes its matches through
+  `deleteUnplayed` (re-checked inside the DELETE; `DrawChanged` rolls everything back), and
+  takes the event row, then the category `FOR UPDATE`, so nothing is filed under it between
+  the check and the delete. A category with teams or fixtures takes two taps
+  (`RemoveCategoryButton`), and the second carries `categorySignature` — a fingerprint of the
+  teams, matches and waiting entries the page SAW — so a page opened while it was empty cannot
+  remove what arrived since. Refusals are codes (`category-played`, `category-changed`,
+  `confirm-needed`, `category-stale`) shown once by `ProblemNotice`. In place of a button
+  the server would refuse, the page names what is in the way: "Can’t remove — Group A · R1 has
+  been played or started, and removing the category would delete it." (a live match counts —
+  `lockedIds` is any play, not a result). Written by a separate session that never saved it,
+  then moved onto main.
+- **What goes with a category, and what waits for it.** The cascade left its APPROVED entries
+  "approved" with no team and no category: impossible to decline, still counted by the
+  one-live-entry-per-phone index (so the pair could not enter another category), and its
+  `players` rows stayed in the event with no team, where the refile guard counts them as
+  another holder of a seed and pinned a misfiled one for ever. Entries still WAITING in it went
+  on one tap, pending with no category and no record of which they chose, their phone still
+  counted as entered. The removal now withdraws both kinds with a note ("Its category, Mixed,
+  was removed."), deletes the players (nothing is played, so no history points at them), and
+  the confirmation says what it takes: "Removes 4 teams and 6 unplayed matches, and withdraws 1
+  approved entry and 1 entry waiting for approval." A category with only waiting entries asks
+  twice, and its fingerprint covers them.
+  - **Postgres re-checks a foreign key on a row updated earlier in the same transaction**, so
+    the withdrawn entries must have `team_id` and `division_id` cleared IN that update — left
+    for the cascade's SET NULL, the delete failed on `registrations_team_id_teams_id_fk`.
+  - **Every writer that files something under a category takes it `FOR KEY SHARE` as its
+    transaction's first statement** — approval, a public entry (`writeEntry`), and the
+    organiser's `addTeam`, `addPlayer` and `addMatch` — and answers in words when it is gone
+    ("category-gone", "This team's category has just been removed, so the player was not
+    added."), not with a raw foreign-key error. KEY SHARE waits for a removal's (or a draw's) FOR
+    UPDATE on the category and for nothing else; the foreign-key checks always took it, only
+    later. Later was the trouble: approval took it at its SECOND statement, after claiming the
+    entry, and a removal holding the category while waiting for that entry closed a circle;
+    `addMatch`'s insert checks its two TEAMS before the category, and a removal deleting those
+    teams closed another; and a player inserted between the removal's delete of the players and
+    its delete of the teams was left with no team. Taken first, each simply queues.
+  - **A category removed before a writer resolved it is not swapped for another.** Resolving an
+    id that no longer exists falls back to the event's first category, so approval filed the pair
+    there and `addTeam` the team. Approval refuses when the category it resolves is not the one
+    the entry named; `addTeam` uses the category chosen and never re-resolves it.
+- **`tournamentState.test.ts` gave its setup 60 seconds**, so under the full parallel run the
+  migrations once outran it and the file failed to load with its tests skipped — the one
+  unexplained failure of step 7. Every database test that runs the migrations now gives 120
+  (the in-memory `schema.test` and `migration-0005` were at 60 too). It also never removed its
+  database: 156 copies, 1.5 GB, had piled up in the temp folder.
+- **Tests that were promised or only ever lived in a scratch folder**: one person in Men's
+  Doubles and Mixed moves each category's own rating of them; a person on both sides is skipped
+  with a reason and records nothing; an entry approved into Women's Doubles is filed under it
+  (in an event that already has men, so the old whole-event reading would file it mixed); a
+  correction that moves the score of a loser named FIRST (side A — the existing 11–7 → 11–9
+  test has the loser on side B) is re-rated; a sets result won by the second-named side is
+  rated; the conflict dialog meeting a match typed in or deleted meanwhile; a hold that came
+  back after a reload, with a choice whose reply never came; a released hold carrying an undo;
+  each phone rule above, by the send loop and on reload where both decide it; each writer's
+  KEY SHARE, as the first statement of its transaction, with the category removed at exactly
+  that moment; the registration page rendered and its OWN token posted; and `e2e/redraw.mjs`
+  now removes categories in a browser — refused when played, one tap when empty, two with
+  teams, and a page opened before a team was added is refused with the reason.
+- Step 2's promised browser check of `/people?format=md` was not added. The per-category
+  filing is pinned in the database tests above, and the SQL fragments the list is built from
+  are pinned by `people/sportRating.test.ts` — but the page's own query (and how `?format=md`
+  becomes a key) is not tested. The browser half would have meant playing matches in a suite
+  that plays none.
+- **Reviewed adversarially twice** (three reviewers each, every finding proved by a scratch
+  test). Round one: 20 findings, 37 refuted. Round two, on round one's fixes: 16 findings, 39
+  refuted, no majors — the waiting entries, the writers resolved or locked too late, the
+  undo's same-rally mirror, the eight-log cap, the typed reload, the dialog's one sentence, and
+  tests that could not fail. All fixed above, plus wording: notes and comments that said a
+  little more than was true.
+- **43 plausible wrong versions** of the new rules — each phone rule and its clauses, the
+  dialog's wording, every guard and lock of the removal, the page's token and words, and each
+  writer's KEY SHARE and its "gone" answer — were applied to the real files one at a time, and
+  every one is caught by the test aimed at it. One first survived: `removedElsewhere` forgetting
+  what the phone sent, which both callers check before asking, so nothing could reach it; both
+  rules now have direct tests of their whole contract.
+- **Accepted, not fixed**: rallies have no identity, so "the same rally" is judged by sequence.
+  When two devices each take a rally off and one taps a new rally on the SAME side, the two can
+  look like one log, and a removal can be undone or asked about wrongly. Telling them apart needs
+  an id per rally.
 
 ## Access: the site is deliberately open, and the switch is a trap
 

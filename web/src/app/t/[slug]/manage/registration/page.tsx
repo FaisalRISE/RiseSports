@@ -1,8 +1,9 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { registrationPlayers } from "@/lib/db/schema";
+import { matches, registrationPlayers, teams } from "@/lib/db/schema";
+import { categorySignature, lockedIds } from "@/lib/draw/guard";
 import { principalFor } from "@/lib/auth/guard";
 import { canManage } from "@/lib/auth/policy";
 import { entrantEvidence, entryWindow, indiaLocalInput } from "@/lib/registration";
@@ -10,6 +11,8 @@ import { maskPhone, normalisePhone, peopleByPhones } from "@/lib/people";
 import { entryFailures, hasRules, rulesOfDivision } from "@/lib/eligibility";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { EntryDecisions } from "@/components/EntryDecisions";
+import { ProblemNotice } from "../ProblemNotice";
+import { RemoveCategoryButton } from "./RemoveCategoryButton";
 import {
   loadRegistrationTab, saveRegistrationSettings, setStatus,
   addDivision, removeDivision, addFormField, removeFormField, addWaiver, removeWaiver,
@@ -32,10 +35,10 @@ export default async function RegistrationPage({
   params, searchParams,
 }: {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ problem?: string }>;
+  searchParams: Promise<{ problem?: string; category?: string }>;
 }) {
   const { slug } = await params;
-  const { problem } = await searchParams;
+  const { problem, category: problemCategory } = await searchParams;
   const data = await loadRegistrationTab(slug);
   if (!data) notFound();
   const { tournament: t, divisions: divs, entries } = data;
@@ -95,6 +98,65 @@ export default async function RegistrationPage({
     problem === "mixed-team-size" && mixedName
       ? `${mixedName} is Mixed and needs teams of at least two. Change that category's rules first, or keep team size at 2 or more.`
       : null;
+
+  /* A category that was not removed (removeDivision): the same — a code, and
+     the category's name read from the database. */
+  const problemName = (problemCategory && divisionOf.get(problemCategory)?.name) || "That category";
+  const categoryProblem =
+    problem === "category-played"
+      ? `${problemName} was not removed: some of its matches have been played or started, and removing it would delete them, along with the record of any rating changes they made.`
+      : problem === "category-changed"
+        ? `${problemName} changed while it was being removed — a match in it was scored or deleted — so nothing was changed. Look at it again.`
+        : problem === "confirm-needed"
+          ? `${problemName} was not removed: it has teams, fixtures or entries waiting, so removing it needs “Yes, remove”.`
+          : problem === "category-stale"
+            ? `${problemName} changed since this page was opened, so it was not removed. Look at it again, then remove it if you still want to.`
+            : null;
+
+  /* ── What removing each category would take ─────────────────────────────
+     The server refuses to remove a category while any of its matches has play
+     or a moved rating (removeDivision), so the page says why instead of
+     offering the button — judged by the server's own `lockedIds`, so the two
+     cannot disagree. One with teams, fixtures or waiting entries asks twice, and the
+     second tap carries the fingerprint the server checks. Sequential queries
+     after everything above, never a fan-out (lib/db/index.ts). */
+  const squadRows = divs.length
+    ? await db.select({ id: teams.id, divisionId: teams.divisionId }).from(teams).where(eq(teams.tournamentId, t.id))
+    : [];
+  const fixtureRows = divs.length
+    ? await db
+      .select({ id: matches.id, divisionId: matches.divisionId, round: matches.round, log: matches.log, typedScoreA: matches.typedScoreA, typedScoreB: matches.typedScoreB })
+      .from(matches)
+      .where(eq(matches.tournamentId, t.id))
+    : [];
+  const recorded = await lockedIds(fixtureRows);
+  const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const removalOf = (divisionId: string) => {
+    const squads = squadRows.filter((x) => x.divisionId === divisionId);
+    const squadIds = new Set(squads.map((x) => x.id));
+    const fixtures = fixtureRows.filter((m) => m.divisionId === divisionId);
+    /* What removeDivision withdraws: the approved entries of its teams, and
+       the entries still waiting in it — the second are in the fingerprint. */
+    const approvedHere = entries.filter((e) => e.status === "approved" && e.teamId && squadIds.has(e.teamId)).length;
+    const waiting = entries.filter((e) => e.status === "pending" && e.divisionId === divisionId);
+    const goes = [
+      squads.length > 0 ? count(squads.length, "team", "teams") : null,
+      fixtures.length > 0 ? count(fixtures.length, "unplayed match", "unplayed matches") : null,
+    ].filter(Boolean).join(" and ");
+    const leaves = [
+      approvedHere > 0 ? count(approvedHere, "approved entry", "approved entries") : null,
+      waiting.length > 0 ? count(waiting.length, "entry waiting for approval", "entries waiting for approval") : null,
+    ].filter(Boolean).join(" and ");
+    return {
+      /* Named, as the draw's lock names them: "Group A · R1, Final". */
+      played: fixtures.filter((m) => recorded.has(m.id)).map((m) => m.round),
+      what: goes && leaves ? `Removes ${goes}, and withdraws ${leaves}.`
+        : goes ? `Removes ${goes}.`
+          : leaves ? `Withdraws ${leaves}.`
+            : null,
+      token: categorySignature(squads.map((x) => x.id), fixtures.map((m) => m.id), waiting.map((e) => e.id)),
+    };
+  };
 
   const approved = entries.filter((e) => e.status === "approved");
   const window = entryWindow(t);
@@ -308,19 +370,31 @@ export default async function RegistrationPage({
         <section className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
           <h2 className="text-[11px] font-black uppercase tracking-widest text-neutral-400">Divisions</h2>
           <p className="mt-1 text-[11px] text-neutral-500">Optional. Registrants pick one when entering.</p>
+          {categoryProblem && <ProblemNotice code={problem ?? ""} text={categoryProblem} />}
           {divs.length > 0 && (
             <ul className="mt-3 space-y-1">
-              {divs.map((d) => (
-                <li key={d.id} className="flex items-center gap-2 text-sm">
-                  <span className="flex-1 truncate">
-                    {d.name}
-                    {d.description && <span className="text-neutral-500"> — {d.description}</span>}
-                  </span>
-                  <form action={removeDivision.bind(null, t.id, d.id)}>
-                    <button className="text-[11px] font-bold text-neutral-500 hover:text-rose-400">remove</button>
-                  </form>
-                </li>
-              ))}
+              {divs.map((d) => {
+                const r = removalOf(d.id);
+                return (
+                  <li key={d.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                    <span className="min-w-0 flex-1 truncate">
+                      {d.name}
+                      {d.description && <span className="text-neutral-500"> — {d.description}</span>}
+                    </span>
+                    {r.played.length > 0 ? (
+                      <span data-category-locked className="text-[11px] font-semibold text-amber-300">
+                        Can’t remove — {r.played.slice(0, 3).join(", ")}{r.played.length > 3 ? `, and ${r.played.length - 3} more,` : ""}{" "}
+                        {r.played.length === 1 ? "has" : "have"} been played or started, and removing the category would delete{" "}
+                        {r.played.length === 1 ? "it" : "them"}.
+                      </span>
+                    ) : (
+                      <form action={removeDivision.bind(null, t.id, d.id)} className="max-w-full">
+                        <RemoveCategoryButton key={r.token} name={d.name} what={r.what} token={r.token} />
+                      </form>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
           <form action={addDivision.bind(null, t.id)} className="mt-3 flex flex-wrap gap-2">

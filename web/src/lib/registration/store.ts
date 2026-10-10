@@ -18,7 +18,8 @@ import "server-only";
  * `findOrCreatePerson` settles its race the same way. */
 
 import { db } from "@/lib/db";
-import { registrationPlayers, registrations } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
+import { divisions, registrationPlayers, registrations } from "@/lib/db/schema";
 
 export type NewEntry = typeof registrations.$inferInsert & { id: string };
 export type NewEntrant = Omit<typeof registrationPlayers.$inferInsert, "registrationId">;
@@ -26,21 +27,29 @@ export type NewEntrant = Omit<typeof registrationPlayers.$inferInsert, "registra
 /**
  * Write an entry and its players together, or nothing at all.
  *
- * False when the phone already has a live entry in this event. Nothing is
- * written then — no entry, and no players pointing at one.
+ * "taken" when the phone already has a live entry in this event, and
+ * "category-gone" when the category it names was removed while the entrant
+ * filled the form in. Nothing is written then — no entry, and no players
+ * pointing at one. The category is taken (KEY SHARE) before the insert, so a
+ * removal under way finishes first and this answers in words rather than with
+ * the foreign-key error the insert would have hit.
  */
-export async function writeEntry(entry: NewEntry, players: NewEntrant[]): Promise<boolean> {
+export async function writeEntry(entry: NewEntry, players: NewEntrant[]): Promise<"written" | "taken" | "category-gone"> {
   return db.transaction(async (tx) => {
+    if (entry.divisionId) {
+      const [cat] = await tx.select({ id: divisions.id }).from(divisions).where(eq(divisions.id, entry.divisionId)).for("key share");
+      if (!cat) return "category-gone";
+    }
     const [made] = await tx
       .insert(registrations)
       .values(entry)
       .onConflictDoNothing()
       .returning({ id: registrations.id });
-    if (!made) return false;
+    if (!made) return "taken";
 
     if (players.length > 0) {
       await tx.insert(registrationPlayers).values(players.map((p) => ({ ...p, registrationId: made.id })));
     }
-    return true;
+    return "written";
   });
 }

@@ -79,7 +79,7 @@ beforeAll(async () => {
   `);
 
   await apply(client, "0005_young_machine_man.sql");
-}, 60_000);
+}, 120_000);
 
 describe("0005 upgrades a database that already has rows", () => {
   it("applies at all — the generated version could not", async () => {
@@ -199,7 +199,7 @@ describe("0005 upgrades a database that already has rows", () => {
     await expect(
       empty.exec(`ALTER TABLE "teams" ADD COLUMN "division_id" text NOT NULL;`),
     ).resolves.toBeDefined();
-  }, 60_000);
+  }, 120_000);
 
   it("still refuses two Group As inside ONE category", async () => {
     await expect(

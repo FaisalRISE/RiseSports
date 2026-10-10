@@ -991,3 +991,290 @@ describe("a reload", () => {
     expect((await stored(id)).log).toEqual(["a", "b"]);
   });
 });
+
+/* A reload asks the same question the send loop asks. The send loop refused to
+   push over a point another device had taken off; a RELOAD did not, and a
+   refreshed phone quietly put the point back. */
+describe("a reload after another device took a point off", () => {
+  it("puts the difference to the referee instead of writing the point back", async () => {
+    const id = await match(["a", "a", "a"]);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.scoreOffline("b");
+    await settle();
+    expect(await actions.pushLog(id, ["a", "a"], 0)).toEqual({ ok: true, rev: 1 });
+    setOnline(true);
+    const again = await reload(id);
+    await settle();
+    expect((await stored(id)).log).toEqual(["a", "a"]);
+    expect(again.now.conflict).toMatchObject({ serverLog: ["a", "a"], localLog: ["a", "a", "a", "b"] });
+    /* And nothing is sent while the referee is being asked: the retry timer
+       wrote it over fifteen seconds later, the question still on screen. */
+    tickTimers();
+    fire("online");
+    await settle();
+    expect((await stored(id)).log).toEqual(["a", "a"]);
+    expect(again.now.conflict).not.toBeNull();
+  });
+
+  it("a disagreement found on reload is not sent by the timer either", async () => {
+    const id = await match(["a", "a", "a"]);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.scoreOffline("b");
+    await settle();
+    expect(await actions.pushLog(id, ["a", "a", "a", "a"], 0)).toEqual({ ok: true, rev: 1 });
+    setOnline(true);
+    const again = await reload(id);
+    await settle();
+    expect(again.now.conflict).toMatchObject({ serverLog: ["a", "a", "a", "a"], localLog: ["a", "a", "a", "b"] });
+    tickTimers();
+    await settle();
+    expect((await stored(id)).log).toEqual(["a", "a", "a", "a"]);
+  });
+
+  /* A hold released with an undo in it: the organiser typed over the rallies
+     (the log went to nothing), then the typed result went. The phone's log is
+     shorter than its base and the server holds less still — not this phone's
+     work to overwrite without asking. */
+  it("a released hold carrying an undo is put to the referee too", async () => {
+    const id = await match(["a", "a", "a"]);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.undoOffline();
+    await settle();
+    expect(await actions.recordResult(id, { a: 11, b: 7, expectedRev: 0, replaceLive: true })).toMatchObject({ ok: true });
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(phone.now.held).toMatchObject({ a: 11, b: 7 });
+    await db.update(schema.matches).set({ typedScoreA: null, typedScoreB: null, rev: 9 }).where(eq(schema.matches.id, id));
+    await phone.refresh();
+    await settle();
+    expect(phone.now.held).toBeNull();
+    expect(phone.now.conflict).toMatchObject({ serverLog: [], localLog: ["a", "a"] });
+    expect((await stored(id)).log).toEqual([]);
+  });
+});
+
+describe("the conflict dialog meeting a match that changed in other ways", () => {
+  async function inConflict() {
+    const id = await match();
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.scoreOffline("a");
+    await settle();
+    expect(await actions.pushLog(id, ["b"], 0)).toEqual({ ok: true, rev: 1 });
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(phone.now.conflict).toMatchObject({ serverLog: ["b"], localLog: ["a"] });
+    return { id, phone };
+  }
+
+  it("'Keep this phone's score' on a match typed in meanwhile holds the rallies for that choice", async () => {
+    const { id, phone } = await inConflict();
+    expect(await actions.recordResult(id, { a: 11, b: 7, expectedRev: 1, replaceLive: true })).toMatchObject({ ok: true });
+    expect(await phone.now.resolveConflict("mine")).toBeNull();
+    await settle();
+    expect(phone.now.conflict).toBeNull();
+    expect(phone.now.held).toMatchObject({ a: 11, b: 7 });
+    const m = await stored(id);
+    expect([m.typedScoreA, m.typedScoreB]).toEqual([11, 7]);
+  });
+
+  it("'Keep this phone's score' on a match deleted meanwhile says so and keeps nothing", async () => {
+    const { id, phone } = await inConflict();
+    await db.delete(schema.matches).where(eq(schema.matches.id, id));
+    expect(await phone.now.resolveConflict("mine")).toBeNull();
+    await settle();
+    expect(phone.now.conflict).toBeNull();
+    expect(phone.now.refused).toMatchObject({ title: "This match was deleted" });
+    expect(await queue.loadQueued(id)).toBeNull();
+  });
+});
+
+/* After a reload, a hold comes back — and a choice made on it whose reply never
+   came is checked before the other choice clears anything. */
+describe("a choice on a hold that came back after a reload", () => {
+  it("'Use this phone's score' lost on the way back, then Keep, says the phone's score stands", async () => {
+    const id = await match();
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.scoreOffline("a");
+    await settle();
+    phone.now.scoreOffline("a");
+    await settle();
+    expect(await actions.recordResult(id, { a: 11, b: 7, expectedRev: 0 })).toEqual({ ok: true, rev: 1 });
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(phone.now.held).toMatchObject({ a: 11, b: 7 });
+
+    let lose = true;
+    const lossy: typeof actions.pushLog = async (...p) => {
+      const r = await actions.pushLog(...p);
+      if (lose) { lose = false; throw new Error("reply lost"); }
+      return r;
+    };
+    const again = await reload(id, lossy);
+    await settle();
+    expect(again.now.held).toMatchObject({ a: 11, b: 7 });
+    expect(await again.now.replaceTyped()).toBe(
+      "The signal dropped before the server answered, so this may or may not have been saved. Try again when the signal is back.",
+    );
+    expect(await again.now.keepTyped()).toBe("This phone's score had already reached the server, so it replaced the typed result.");
+    await settle();
+    const m = await stored(id);
+    expect([m.typedScoreA, m.log]).toEqual([null, ["a", "a"]]);
+  });
+});
+
+/* This phone took a rally off while another device scored on top. Ours is a
+   prefix of theirs, "behind", and was dropped as already there: the point the
+   referee removed came back. It is a question, by the send loop and on reload. */
+describe("this phone's undo against another device's rally", () => {
+  async function undoneBeneath() {
+    const id = await match(["a", "a", "a"]);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.undoOffline();
+    await settle();
+    expect(await actions.pushLog(id, ["a", "a", "a", "b"], 0)).toEqual({ ok: true, rev: 1 });
+    return { id, phone };
+  }
+
+  it("is put to the referee by the send loop", async () => {
+    const { id, phone } = await undoneBeneath();
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(phone.now.conflict).toMatchObject({ serverLog: ["a", "a", "a", "b"], localLog: ["a", "a"] });
+    expect((await stored(id)).log).toEqual(["a", "a", "a", "b"]);
+  });
+
+  it("is put to the referee on reload", async () => {
+    const { id } = await undoneBeneath();
+    setOnline(true);
+    const again = await reload(id);
+    await settle();
+    expect(again.now.conflict).toMatchObject({ serverLog: ["a", "a", "a", "b"], localLog: ["a", "a"] });
+    expect(await queue.loadQueued(id)).not.toBeNull();
+  });
+});
+
+/* Round two of the review, each by the send loop and on reload where both
+   decide it. */
+describe("both devices took the same rally off, and the other then scored", () => {
+  async function bothUndid() {
+    const id = await match(["a", "a", "a"]);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.undoOffline();
+    await settle();
+    expect(await actions.pushLog(id, ["a", "a"], 0)).toEqual({ ok: true, rev: 1 });
+    expect(await actions.pushLog(id, ["a", "a", "b"], 1)).toEqual({ ok: true, rev: 2 });
+    return { id, phone };
+  }
+
+  it("asks nothing in the send loop: the server has what this phone has, and not what it removed", async () => {
+    const { id, phone } = await bothUndid();
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(phone.now.conflict).toBeNull();
+    expect((await stored(id)).log).toEqual(["a", "a", "b"]);
+    expect(await queue.loadQueued(id)).toBeNull();
+  });
+
+  it("asks nothing on reload either", async () => {
+    const { id } = await bothUndid();
+    setOnline(true);
+    const again = await reload(id);
+    await settle();
+    expect(again.now.conflict).toBeNull();
+    expect((await stored(id)).log).toEqual(["a", "a", "b"]);
+    expect(await queue.loadQueued(id)).toBeNull();
+  });
+});
+
+/* The reload's half of removedElsewhere's last clause: another device took a
+   rally off, and this phone took the SAME one off and tapped the other side.
+   Pushing ours restores nothing, so it goes without a question. */
+describe("a reload after both devices took the same rally off and this one tapped anew", () => {
+  it("sends this phone's rallies with no question", async () => {
+    const id = await match(["a", "a", "a"]);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.undoOffline();
+    await settle();
+    phone.now.scoreOffline("b");
+    await settle();
+    expect(await actions.pushLog(id, ["a", "a"], 0)).toEqual({ ok: true, rev: 1 });
+    setOnline(true);
+    const again = await reload(id);
+    await settle();
+    expect(again.now.conflict).toBeNull();
+    expect((await stored(id)).log).toEqual(["a", "a", "b"]);
+  });
+});
+
+/* A write lands and its reply is lost; the signal then dies, and the referee
+   takes that rally off and scores on, every push failing. Eight failed pushes
+   used to push the landed write out of the phone's list, and when the signal
+   came back the referee was asked about their own write as if another device
+   had made it — "Keep the saved score" would have thrown away eight rallies. */
+describe("a landed write followed by a long dead spell", () => {
+  it("is still recognised as this phone's own", async () => {
+    const id = await match();
+    let call = 0;
+    let dead = false;
+    const flaky: typeof actions.pushLog = async (...p) => {
+      call++;
+      if (call === 1) { await actions.pushLog(...p); throw new Error("reply lost"); }
+      if (dead) throw new Error("no route");
+      return actions.pushLog(...p);
+    };
+    const phone = await mount(id, flaky);
+    phone.now.scoreOffline("a");
+    await settle();
+    expect((await stored(id)).log).toEqual(["a"]);
+    dead = true;
+    phone.now.undoOffline();
+    await settle();
+    for (let i = 0; i < 8; i++) {
+      phone.now.scoreOffline("b");
+      await settle();
+    }
+    expect(phone.now.queued).toBe(8);
+    dead = false;
+    tickTimers();
+    await settle();
+    expect(phone.now.conflict).toBeNull();
+    expect((await stored(id)).log).toEqual(Array(8).fill("b"));
+    /* Ten settles: Windows timers make each one slow. */
+  }, 30_000);
+});
+
+/* The organiser typed a result over rallies this phone queued with no signal,
+   and the phone reloaded before any push came back "typed". Judged as
+   rallies, the typed match's empty log read as another device taking every
+   rally off: a two-device question beside a locked court. It is the typed
+   result's choice, as the signal coming back gives. */
+describe("a reload of a match typed in over this phone's queued rallies", () => {
+  it("offers the typed result's choice, not a two-device conflict", async () => {
+    const id = await match(["a", "a", "a"]);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.scoreOffline("b");
+    await settle();
+    expect(await actions.recordResult(id, { a: 11, b: 7, expectedRev: 0, replaceLive: true })).toMatchObject({ ok: true, rev: 1 });
+    setOnline(true);
+    const again = await reload(id);
+    await settle();
+    expect(again.now.conflict).toBeNull();
+    expect(again.now.held).toEqual({ a: 11, b: 7, rev: 1, outcome: null });
+    expect((await queue.loadQueued(id))?.held).toBe(true);
+    expect((await stored(id)).typedScoreA).toBe(11);
+  });
+});

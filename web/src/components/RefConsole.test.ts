@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: () => {} }) }));
 
-const { typedHeading, sendTap } = await import("./RefConsole");
+const { typedHeading, sendTap, conflictWords } = await import("./RefConsole");
 
 /* The heading on the referee's card when a result was typed in. A walkover or
    a retirement says so, as every other screen does, rather than reading as a
@@ -67,5 +67,24 @@ describe("one tap from a console that cannot score offline", () => {
     let tick: unknown = "unset";
     await sendTap(async (t) => { tick = t; return { ok: true }; }, null);
     expect(tick).toBeUndefined();
+  });
+});
+
+/* The conflict dialog says what was found. One sentence — "both versions have
+   rallies the other does not" — was false for two of the three situations that
+   reach it, and one of the choices then overwrites real rallies. */
+describe("what the conflict dialog says", () => {
+  const L = (s: string) => s.split("") as ("a" | "b")[];
+  it("the saved score still has a rally this phone took off", () => {
+    expect(conflictWords(L("aab"), L("aa")).heading).toBe("The saved score has a rally this phone took off");
+    expect(conflictWords(L("aab"), L("aa")).body).toBe("This phone took a rally off, but the saved score still has it.");
+    expect(conflictWords(L("aabb"), L("aa")).body).toBe("This phone took a rally off, but the saved score still has it, and more after it.");
+  });
+  it("another device took rallies off", () => {
+    expect(conflictWords(L("aa"), L("aaab")).heading).toBe("Another device took rallies off");
+    expect(conflictWords(L(""), L("ab")).body).toContain("Keeping this phone's score puts them back.");
+  });
+  it("each has rallies the other lacks", () => {
+    expect(conflictWords(L("aab"), L("aaa")).heading).toBe("Another device also scored this match");
   });
 });

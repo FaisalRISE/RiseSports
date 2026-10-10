@@ -15,8 +15,8 @@ Twelve scripts, all driving the real app in a real browser (`npm run …` works 
 | `pnpm e2e:registration` | players entering from the public page, approval turning an entry into a team and people |
 | `pnpm e2e:skills` | peer ratings: who may rate whom, and rating twice replaces rather than stacks |
 | `pnpm e2e:eligibility` | category rules: every refusal has an accepted twin — gender, Mixed, age on the day, DUPR, a capped rating by phone, approval re-checking, "add anyway", flags that remove nobody, and a category with no rules unchanged |
-| `pnpm e2e:redraw` | a first draw is one tap, a redraw asks twice and replaces the fixtures, and one scored point locks the draw with the reason shown |
-| `pnpm e2e:scoring` | changing an event's scoring keeps finished results and says so; carrom over a set number of boards; tennis and board matches offer no live court |
+| `pnpm e2e:redraw` | a first draw is one tap, a redraw asks twice and replaces the fixtures, and one scored point locks the draw with the reason shown; removing a category is refused once played, one tap when empty, two with teams, and refused from a page opened before a team was added |
+| `pnpm e2e:scoring` | changing an event's scoring keeps finished results and says so; carrom's card does not offer a set number of boards until results can be typed in; tennis offers no live court and promises no control that is not there |
 
 Playwright is a devDependency. Once per machine:
 
@@ -32,7 +32,10 @@ rm -rf .pgdata
 DATABASE_URL=pglite://.pgdata pnpm db:setup
 ```
 
-The offline and divergence scripts need a **production build**:
+Every script is written against a **production build** (`pnpm build`, then `pnpm start`); the
+offline and divergence scripts cannot run against anything else, because the service worker —
+which lets the page reload with no signal — is only registered in one. The offline queue itself
+runs under `next dev` too:
 
 ```bash
 pnpm build
@@ -100,7 +103,7 @@ that matters gets dismissed as well.
 ## Give each script a fresh database
 
 These scripts are written against a freshly seeded database and use fixed
-`waitForTimeout` waits rather than waiting on a condition. Run all eight back to
+`waitForTimeout` waits rather than waiting on a condition. Run them all back to
 back against one PGlite file and the last few start failing — not because
 anything is broken, but because a database carrying ten tournaments answers more
 slowly than a two-second wait allows. Measured: `event` and `carryover` fail

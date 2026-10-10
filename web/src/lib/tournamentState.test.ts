@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -115,7 +115,15 @@ beforeAll(async () => {
        over W:Semi-Final 1 — the old Map kept whichever row came last. */
     { ...settled(ids.md, "Semi-Final 1", ids.mdLoser, ids.mdWinner, null), bracket: null },
   ]);
-}, 60_000);
+/* 120 seconds, like every other database test. Under the full parallel run
+   setting up every migration took longer than 60 here once, and the whole file
+   failed to load with its tests skipped — the one unexplained failure seen in
+   step 7. */
+}, 120_000);
+
+/* Every run made a fresh database in the temp folder and never removed it:
+   150-odd copies had piled up. */
+afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 describe("seed references stay inside their own category", () => {
   const load = async () => {
