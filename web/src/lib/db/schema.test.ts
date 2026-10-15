@@ -479,10 +479,13 @@ describe("a match's result, enforced by the database", () => {
     await refusedBy(set({ typedScoreA: null, typedScoreB: null, outcome: null, sets: [[6, 4]] }), "matches_sets_typed");
   });
 
+  /* With no rallies beside it: a typed result replaces the log, and since
+     0022 the database refuses the two together. The seed's ids are random, so
+     "the first match" is sometimes one with rallies. */
   it("accepts a typed walkover with its sets", async () => {
     const was = await anyMatch();
-    await expect(set({ typedScoreA: 2, typedScoreB: 0, outcome: "walkover", sets: [[6, 0], [6, 0]] })).resolves.toBeDefined();
-    await set({ typedScoreA: was.typedScoreA, typedScoreB: was.typedScoreB, outcome: was.outcome, sets: was.sets });
+    await expect(set({ typedScoreA: 2, typedScoreB: 0, outcome: "walkover", sets: [[6, 0], [6, 0]], log: [] })).resolves.toBeDefined();
+    await set({ typedScoreA: was.typedScoreA, typedScoreB: was.typedScoreB, outcome: was.outcome, sets: was.sets, log: was.log });
   });
 });
 
@@ -629,5 +632,72 @@ describe("buildLog", () => {
       expect(log.filter((x) => x === "a").length).toBe(a);
       expect(log.filter((x) => x === "b").length).toBe(b);
     }
+  });
+});
+
+/* Step 8 (migration 0022). A rating change and the match that made it go
+   together or not at all: RESTRICT refuses deleting a match that still has a
+   record of a rating — it used to CASCADE, taking the record while the
+   players' ratings stayed moved. And four CHECKs on the result columns, each
+   matched to its own name. */
+describe("clearing and deleting, enforced by the database", () => {
+  const ids = { t: "rst-t", d: "rst-d", m: "rst-m", p: "rst-p" };
+
+  beforeAll(async () => {
+    await db.insert(schema.tournaments).values({ id: ids.t, slug: "rst", name: "Restrict", ownerId: seeded.ownerId });
+    await db.insert(schema.divisions).values({ id: ids.d, tournamentId: ids.t, name: "Main" });
+    await db.insert(schema.matches).values({ id: ids.m, tournamentId: ids.t, divisionId: ids.d, round: "R1" });
+    await db.insert(schema.people).values({ id: ids.p, name: "Rafi" });
+  });
+
+  const set = (over: Record<string, unknown>) => db.update(schema.matches).set(over as never).where(eq(schema.matches.id, ids.m));
+
+  it("starts every match at reset_rev 0", async () => {
+    const [m] = await db.select().from(schema.matches).where(eq(schema.matches.id, ids.m));
+    expect([m.rev, m.resetRev]).toEqual([0, 0]);
+  });
+
+  it("refuses a reset_rev ahead of the match, or below nought", async () => {
+    await refusedBy(set({ rev: 2, resetRev: 3 }), "matches_reset_rev_sane");
+    await refusedBy(set({ resetRev: -1 }), "matches_reset_rev_sane");
+    await expect(set({ rev: 2, resetRev: 2 })).resolves.toBeDefined();
+  });
+
+  it("refuses half a typed result", async () => {
+    await refusedBy(set({ typedScoreA: 11, typedScoreB: null }), "matches_typed_pair");
+    await refusedBy(set({ typedScoreA: null, typedScoreB: 4 }), "matches_typed_pair");
+  });
+
+  it("refuses a negative typed score", async () => {
+    await refusedBy(set({ typedScoreA: -1, typedScoreB: 11 }), "matches_typed_nonneg");
+  });
+
+  it("refuses a typed result standing beside a rally log", async () => {
+    await refusedBy(set({ typedScoreA: 11, typedScoreB: 4, log: ["a"] }), "matches_typed_or_log");
+    await expect(set({ typedScoreA: 11, typedScoreB: 4, log: [] })).resolves.toBeDefined();
+    await expect(set({ typedScoreA: null, typedScoreB: null, log: ["a", "b"] })).resolves.toBeDefined();
+  });
+
+  it("refuses deleting a match with a rating on record, or its event, and keeps both", async () => {
+    await db.insert(schema.ratingHistory).values({
+      id: "rst-h", personId: ids.p, matchId: ids.m, format: "pb:md",
+      ratingBefore: 1000, ratingAfter: 1012, deltaApplied: 12,
+      expected: 500, marginMultiplier: 1000, stageMultiplier: 1000,
+      verificationWeight: 1000, provisionalMultiplier: 1000,
+    } as never);
+    await refusedBy(db.delete(schema.matches).where(eq(schema.matches.id, ids.m)), "rating_history_match_id_matches_id_fk");
+    await refusedBy(db.delete(schema.tournaments).where(eq(schema.tournaments.id, ids.t)), "rating_history_match_id_matches_id_fk");
+    expect(await db.select().from(schema.matches).where(eq(schema.matches.id, ids.m))).toHaveLength(1);
+    expect(await db.select().from(schema.ratingHistory).where(eq(schema.ratingHistory.id, "rst-h"))).toHaveLength(1);
+    await db.delete(schema.ratingHistory).where(eq(schema.ratingHistory.id, "rst-h"));
+  });
+
+  it("refuses deleting a match with an imbalance on the ledger, too", async () => {
+    await db.insert(schema.ratingLedger).values({ id: "rst-l", matchId: ids.m, imbalance: 3, reason: "carry" });
+    await refusedBy(db.delete(schema.matches).where(eq(schema.matches.id, ids.m)), "rating_ledger_match_id_matches_id_fk");
+    expect(await db.select().from(schema.ratingLedger).where(eq(schema.ratingLedger.id, "rst-l"))).toHaveLength(1);
+    await db.delete(schema.ratingLedger).where(eq(schema.ratingLedger.id, "rst-l"));
+    /* With nothing on record, the match goes. */
+    await expect(db.delete(schema.matches).where(eq(schema.matches.id, ids.m))).resolves.toBeDefined();
   });
 });

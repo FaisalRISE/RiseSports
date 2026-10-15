@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition, type Dispatch, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import type { MatchView, CourtNotes } from "@/lib/matchState";
 import type { Side } from "@/lib/scoring/replay";
@@ -122,9 +122,130 @@ export type RefConsoleProps = {
   };
 };
 
-export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offline, eventHref }: RefConsoleProps) {
+/** What the reset card says (step 8). Pure, tested. */
+export function resetWords(rallies: number): { heading: string; body: string } {
+  return {
+    heading: "The organiser reset this match",
+    body: `It starts again at 0–0.${rallies > 0 ? ` This phone's ${rallies} ${rallies === 1 ? "rally was" : "rallies were"} not kept.` : ""}`,
+  };
+}
+
+/**
+ * The reset card's state, kept by the console's OUTER part (step 8).
+ *  - `seen`: the newest reset this phone has been told of. Only moves
+ *    forward: a page served from the cache can be OLDER than a reset the court
+ *    already knows of, and the fresh page arriving after it is not news.
+ *  - `replied`: the card came from a "reset" REPLY — the page with the new
+ *    reset has not arrived yet.
+ *  - `read`: the referee tapped "Start from 0–0" on such a card before the
+ *    page arrived (no signal). When it does arrive, that reset is not
+ *    announced again (`quiet`), nor is the remounted court's drop of the very
+ *    rallies the card already counted.
+ * Pure, so the rules are tested without a browser (RefConsole.test.ts).
+ */
+export type ResetCard = { seen: number; notice: { rallies: number } | null; replied: boolean; read: boolean; quiet: boolean };
+
+/** The page has come back with a newer reset. */
+export function pageReset(c: ResetCard, resetRev: number): ResetCard {
+  if (resetRev <= c.seen) return c;
+  if (c.read) return { seen: resetRev, notice: null, replied: false, read: false, quiet: true };
+  return { seen: resetRev, notice: c.notice ?? { rallies: 0 }, replied: false, read: false, quiet: false };
+}
+
+/** The court reports rallies it let go: a "reset" reply, or a drop as it loaded. */
+export function courtReset(c: ResetCard, rallies: number, kind: "reply" | "drop"): ResetCard {
+  if (kind === "drop" && c.quiet) return { ...c, quiet: false };
+  return {
+    ...c,
+    notice: { rallies: Math.max(c.notice?.rallies ?? 0, rallies) },
+    replied: c.replied || kind === "reply",
+    quiet: false,
+  };
+}
+
+/** "Start from 0–0". */
+export const readCard = (c: ResetCard): ResetCard => ({ ...c, notice: null, read: c.replied, replied: false });
+
+/**
+ * The referee console, in two parts.
+ *
+ * The COURT — the clock, the offline queue, keep-awake and the court itself —
+ * is keyed on the match's reset_rev, so when the organiser clears or resets the
+ * match (step 8) the next render starts it afresh: every ref the queue keeps,
+ * the clock's measured time and a pause made before the reset go with the old
+ * instance, by construction rather than by a list of things to reset by hand.
+ *
+ * THIS part survives a reset: "Flip my view" (a court drawn the wrong way round
+ * guarantees mis-taps), the error line, and the reset card. The card shows when
+ * this part SEES reset_rev change between two renders — so a referee whose phone
+ * held nothing, or who chose "Keep 11–7" just before, is told too — and when the
+ * court reports rallies it dropped or a "reset" reply. The court takes no tap
+ * until the referee has read it ("Start from 0–0").
+ */
+export function RefConsole(props: RefConsoleProps) {
   const [flipped, setFlipped] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+  const resetRev = props.view.resetRev;
+  const [card, setCard] = useState<ResetCard>(() => ({ seen: resetRev, notice: null, replied: false, read: false, quiet: false }));
+  /* Adjusted during render, not in an effect: the remount and the card must
+     land in the same paint, or the court is tappable for a moment at 0–0. */
+  if (resetRev > card.seen) {
+    setCard((c) => pageReset(c, resetRev));
+    setError(null);
+  }
+  const onReset = useCallback((rallies: number, kind: "reply" | "drop") => setCard((c) => courtReset(c, rallies, kind)), []);
+  const onKnownReset = useCallback((rev: number) => setCard((c) => ({ ...c, seen: Math.max(c.seen, rev) })), []);
+  const notice = card.notice;
+  const words = notice ? resetWords(notice.rallies) : null;
+
+  return (
+    <div className="space-y-3">
+      {words && (
+        <div role="alert" data-testid="reset-notice" className="rounded-xl border border-sky-500 bg-sky-500/10 p-4">
+          <h2 className="text-base font-black text-sky-200">{words.heading}</h2>
+          <p className="mt-1 text-sm font-semibold text-sky-100">{words.body}</p>
+          <button
+            type="button"
+            onClick={() => { setCard(readCard); router.refresh(); }}
+            className="mt-3 rounded-lg bg-neutral-100 px-4 py-2.5 text-sm font-black text-neutral-900"
+          >
+            Start from 0–0
+          </button>
+        </div>
+      )}
+      <RefConsoleCourt
+        key={resetRev}
+        {...props}
+        flipped={flipped}
+        setFlipped={setFlipped}
+        error={error}
+        setError={setError}
+        resetShown={!!notice}
+        onReset={onReset}
+        onKnownReset={onKnownReset}
+      />
+    </div>
+  );
+}
+
+type CourtProps = RefConsoleProps & {
+  flipped: boolean;
+  setFlipped: Dispatch<SetStateAction<boolean>>;
+  error: string | null;
+  setError: (e: string | null) => void;
+  /** The reset card is up: the court takes no tap until it is read. */
+  resetShown: boolean;
+  /** The court found rallies from before a reset ("drop"), or the server said "reset" ("reply"). */
+  onReset: (rallies: number, kind: "reply" | "drop") => void;
+  /** The court is on a page older than a reset it already knows of. */
+  onKnownReset: (rev: number) => void;
+};
+
+function RefConsoleCourt({
+  view, teamA, teamB, canScore, notes, actions, offline, eventHref,
+  flipped, setFlipped, error, setError, resetShown, onReset, onKnownReset,
+}: CourtProps) {
   const [pending, start] = useTransition();
   const router = useRouter();
 
@@ -152,10 +273,26 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
     posB: offline.posB,
     typed: view.typedScore ? { ...view.typedScore, outcome: view.outcome } : null,
     sides,
+    resetRev: view.resetRev,
     push: actions.push,
     onSynced,
     clock,
   });
+
+  /* Rallies from before a reset, dropped as this console loaded, or a "reset"
+     reply to a send: the outer part shows the card. */
+  const dropped = off.dropped;
+  useEffect(() => {
+    if (dropped) onReset(dropped.rallies, "drop");
+  }, [dropped, onReset]);
+  const replied = off.resetting;
+  useEffect(() => {
+    if (replied) onReset(replied.rallies, "reply");
+  }, [replied, onReset]);
+  const knownReset = off.knownReset;
+  useEffect(() => {
+    if (knownReset > view.resetRev) onKnownReset(knownReset);
+  }, [knownReset, view.resetRev, onKnownReset]);
 
   /* A TYPED result is the match's result, whatever this phone holds: the
      court shows it and takes no taps. `off.held` is the same thing learnt from
@@ -210,6 +347,8 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
   const locked =
     live.locked || !canScore || pending ||
     (!off.online && !off.canScoreOffline) || !!off.conflict || !!off.refused ||
+    /* The organiser reset the match: nothing before the referee has read it. */
+    resetShown || !!off.resetting ||
     /* The queue an earlier session left is still being read: a tap now would
        build on a log about to be replaced. A moment after the page opens. */
     (off.canScoreOffline && !off.ready);
@@ -391,7 +530,7 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
           itself offline. Every tap queues now, so keying this off `queued > 0`
           would flash a warning on every single point of a healthy match and
           teach the referee to ignore the one banner that matters. */}
-      {(!off.online || off.stalled) && (
+      {(!off.online || off.stalled) && !off.resetting && (
         <p
           role="status"
           className={[
@@ -462,7 +601,28 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
       {typedShown && (
         <div role="status" data-testid="typed-result" className="rounded-xl border border-emerald-500 bg-emerald-500/10 p-4">
           <h2 className="text-base font-black text-emerald-300">{typedHeading(typedShown, teamA.name, teamB.name)}</h2>
-          {off.held && off.local ? (
+          {off.held && off.local && off.local.rallies === 0 ? (
+            /* The phone had taken every point off when the result was typed
+               in. There is nothing on it to put in the typed result's place,
+               and replacing it with nothing would CLEAR it — the organiser's
+               alone. So only Keep. */
+            <>
+              <p className="mt-1 text-sm font-semibold text-neutral-300">
+                The result was typed in while this phone was taking the score back to 0–0. There is nothing on this
+                phone to put in its place.
+              </p>
+              {canScore && (
+                <button
+                  type="button"
+                  disabled={off.syncing}
+                  onClick={() => { setError(null); void off.keepTyped().then((e) => { if (e) setError(e); }); }}
+                  className="mt-3 rounded-lg bg-emerald-400 p-3 text-left text-sm font-black text-emerald-950 disabled:opacity-40"
+                >
+                  Keep {typedShown.a}–{typedShown.b}
+                </button>
+              )}
+            </>
+          ) : off.held && off.local ? (
             <>
               <p className="mt-1 text-sm font-semibold text-neutral-300">
                 The result was typed in while this phone&apos;s rallies were waiting to be sent. The {off.queued}{" "}
@@ -619,6 +779,15 @@ export function RefConsole({ view, teamA, teamB, canScore, notes, actions, offli
       {error && (
         <p role="alert" className="rounded-lg border border-rose-500 bg-rose-500/10 p-3 text-sm font-semibold text-rose-300">
           {error}
+        </p>
+      )}
+
+      {/* "Start from 0–0" was tapped, and the page has not come back yet — no
+          signal, or a slow one. The court stays locked until it does; say why,
+          rather than leave a locked court and nothing else. */}
+      {off.resetting && !resetShown && (
+        <p role="status" data-testid="reset-waiting" className="rounded-xl border border-sky-500 bg-sky-500/10 p-3 text-sm font-bold text-sky-200">
+          Fetching the match again — it starts at 0–0. With no signal it loads as soon as the signal is back.
         </p>
       )}
 

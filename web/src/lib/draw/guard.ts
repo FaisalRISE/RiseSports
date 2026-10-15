@@ -22,7 +22,7 @@ import "server-only";
 
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { divisions, matches, ratingHistory, type Division, type Match } from "@/lib/db/schema";
+import { divisions, matches, ratingHistory, ratingLedger, type Division, type Match } from "@/lib/db/schema";
 import { hasPlay } from "@/lib/results";
 
 /** A drizzle handle: the database itself, or a transaction on it. */
@@ -30,7 +30,10 @@ type Tx = Pick<typeof db, "select" | "selectDistinct" | "delete">;
 
 /**
  * The rows among these that must never be deleted by a draw: anything with a
- * rally, a typed score, or a rating that moved because of it. One query.
+ * rally, a typed score, or a rating that moved because of it — a history row OR
+ * a ledger row, since both refuse the match's deletion (RESTRICT, migration
+ * 0022) and a ledger row alone, left by an old bug, would otherwise pass every
+ * check and then fail the DELETE with a raw foreign-key error. Two queries.
  */
 export async function lockedIds(rows: Pick<Match, "id" | "log" | "typedScoreA" | "typedScoreB">[], tx: Tx = db): Promise<Set<string>> {
   const locked = new Set(rows.filter(hasPlay).map((m) => m.id));
@@ -41,6 +44,11 @@ export async function lockedIds(rows: Pick<Match, "id" | "log" | "typedScoreA" |
       .from(ratingHistory)
       .where(inArray(ratingHistory.matchId, rest));
     for (const r of rated) if (r.id) locked.add(r.id);
+    const ledgered = await tx
+      .selectDistinct({ id: ratingLedger.matchId })
+      .from(ratingLedger)
+      .where(inArray(ratingLedger.matchId, rest));
+    for (const r of ledgered) if (r.id) locked.add(r.id);
   }
   return locked;
 }
@@ -68,6 +76,7 @@ export async function deleteUnplayed(tx: Tx, ids: string[]): Promise<void> {
       isNull(matches.typedScoreA),
       isNull(matches.typedScoreB),
       sql`not exists (select 1 from ${ratingHistory} where ${ratingHistory.matchId} = ${matches.id})`,
+      sql`not exists (select 1 from ${ratingLedger} where ${ratingLedger.matchId} = ${matches.id})`,
     ))
     .returning({ id: matches.id });
   if (gone.length !== ids.length) throw new DrawChanged();

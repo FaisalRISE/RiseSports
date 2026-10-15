@@ -29,6 +29,8 @@ import { DrawChanged, deleteUnplayed, drawSignature, lockedIds, requireDivision 
 import { DEFAULT_SPORT, SPORTS, ratingKey, usesDupr } from "@/lib/sports/registry";
 import { changeScoring, type ScoringSaved } from "@/lib/scoring/change";
 import { RESULT_ENTRY_ON_SCREEN } from "@/lib/results/record";
+import { clearMatch, removeMatchIn, restartCategory } from "@/lib/results/clear";
+import { sameCategoryName } from "./sameName";
 
 /* Same discipline as the scoring actions: load, authorize server-side, write.
  * With RISE_OPEN_ACCESS unset these assertions pass for everyone; with it set
@@ -452,13 +454,65 @@ export async function addMatch(tournamentId: string, formData: FormData) {
   revalidatePath(`/t/${t.slug}`);
 }
 
-export async function removeMatch(tournamentId: string, matchId: string) {
+/** The rev the organiser's page showed, posted as the confirming button's
+    value. Absent or malformed: null, and the action asks for it. */
+function postedRev(formData: FormData | undefined): number | null {
+  const raw = formData?.get("confirm");
+  const n = typeof raw === "string" && /^\d{1,9}$/.test(raw) ? Number(raw) : NaN;
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
+ * Delete a match: only one nobody has played and no later match waits on
+ * (lib/results/clear `removeMatchIn`). A refusal comes back as a CODE on the
+ * manage page's address, with the match's id, and the page says why in that
+ * match's row. A match of another event is quietly left alone.
+ */
+export async function removeMatch(tournamentId: string, matchId: string, formData?: FormData) {
   const t = await requireManager(tournamentId);
-  /* Only a match of THIS event: deleting by id alone let a manager of one event
-     delete another's matches. (What a delete may do to a PLAYED match is step 8.) */
-  await db.delete(matches).where(and(eq(matches.id, matchId), eq(matches.tournamentId, t.id)));
+  const { problem } = await removeMatchIn(t, matchId, postedRev(formData));
   revalidatePath(`/t/${t.slug}/manage`);
   revalidatePath(`/t/${t.slug}`);
+  if (problem) redirect(`/t/${t.slug}/manage?problem=${problem}&match=${encodeURIComponent(matchId)}#match-${encodeURIComponent(matchId)}`);
+}
+
+/**
+ * "Clear result" on a finished match, "Reset to 0–0" on one being played —
+ * ORGANISER ONLY (Faisal, 2026-10-10; a PIN referee may type over a result
+ * but not clear one). Takes back every rating change the match made, in the
+ * same transaction (lib/results/clear `clearMatch`).
+ */
+export async function clearResult(tournamentId: string, matchId: string, formData: FormData) {
+  const t = await requireManager(tournamentId);
+  const token = postedRev(formData);
+  const id = encodeURIComponent(matchId);
+  if (token === null) redirect(`/t/${t.slug}/manage?problem=match-confirm&match=${id}#match-${id}`);
+  const { problem, touched, already } = await clearMatch(t, matchId, token);
+  revalidatePath(`/t/${t.slug}`);
+  revalidatePath(`/t/${t.slug}/manage`);
+  revalidatePath(`/t/${t.slug}/ratings`);
+  for (const m of touched) revalidatePath(`/t/${t.slug}/score/${m}`);
+  redirect(`/t/${t.slug}/manage?${problem ? `problem=${problem}` : already ? "done=already" : "done=cleared"}&match=${id}#match-${id}`);
+}
+
+/**
+ * "Start this category again" — ORGANISER ONLY. Clears every result in the
+ * category, live matches too, and takes back their rating changes; confirmed by
+ * the category's name typed in and the page's fingerprint (lib/results/clear
+ * `restartCategory`).
+ */
+export async function startCategoryAgain(tournamentId: string, formData: FormData) {
+  const t = await requireManager(tournamentId);
+  const wanted = String(formData.get("divisionId") ?? "").trim() || null;
+  const token = String(formData.get("confirm") ?? "");
+  const typed = String(formData.get("name") ?? "").slice(0, 80);
+  const { problem, division, touched } = await restartCategory(t, wanted, token, (name) => sameCategoryName(typed, name));
+  revalidatePath(`/t/${t.slug}`);
+  revalidatePath(`/t/${t.slug}/manage`);
+  revalidatePath(`/t/${t.slug}/ratings`);
+  for (const m of touched) revalidatePath(`/t/${t.slug}/score/${m}`);
+  const category = encodeURIComponent(division?.id ?? wanted ?? "");
+  redirect(`/t/${t.slug}/manage?${problem ? `problem=${problem}` : "done=restarted"}&category=${category}`);
 }
 
 /** Reorder a side's line-up. In the OSL format this is the declared pair order,

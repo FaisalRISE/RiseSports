@@ -1,20 +1,26 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
-import { eq } from "drizzle-orm";
+import { countDistinct, eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { matches, players, ratingHistory, teams, tournaments } from "@/lib/db/schema";
 import { DrawButton } from "./DrawButton";
-import { drawSignature } from "@/lib/draw/guard";
+import { ConfirmButton } from "./ConfirmButton";
+import { RestartCategory } from "./RestartCategory";
+import { drawSignature, lockedIds } from "@/lib/draw/guard";
 import { ProblemNotice } from "./ProblemNotice";
 import { viewMatch } from "@/lib/matchState";
-import { hasPlay, matchLine } from "@/lib/results";
+import { hasPlay, matchLine, matchResult } from "@/lib/results";
+import { restartSignature } from "@/lib/results/clear";
+import { dependentsByTarget, groupSlot } from "@/lib/brackets";
+import { principalFor } from "@/lib/auth/guard";
+import { canManage } from "@/lib/auth/policy";
 import { RESULT_ENTRY_ON_SCREEN } from "@/lib/results/record";
 import { sportOf, usesDupr } from "@/lib/sports/registry";
 import { oslLineupIssues } from "@/lib/formats/osl";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
-import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, generateGroups, generateKnockout, generateSingleElim, fillKnockoutSlots, seedByRating, searchRoster, addDivision, setDivisionShape, generateSchedule, dropSchedule } from "./actions";
+import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, clearResult, startCategoryAgain, generateGroups, generateKnockout, generateSingleElim, fillKnockoutSlots, seedByRating, searchRoster, addDivision, setDivisionShape, generateSchedule, dropSchedule } from "./actions";
 import { floatingTime, floatingDay, floatingInputValue } from "@/lib/schedule";
 import { scheduleRows, scheduleText, whatsappHref } from "@/lib/schedule/share";
 import { divisionsOf } from "@/lib/divisions";
@@ -42,12 +48,17 @@ export default async function ManagePage({
   searchParams,
 }: {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ problem?: string; category?: string }>;
+  searchParams: Promise<{ problem?: string; category?: string; match?: string; done?: string }>;
 }) {
   const { slug } = await params;
-  const { problem, category: problemCategory } = await searchParams;
+  const { problem, category: problemCategory, match: problemMatch, done } = await searchParams;
   const [t] = await db.select().from(tournaments).where(eq(tournaments.slug, slug)).limit(1);
   if (!t) notFound();
+  /* The organiser's screen — as the registration screen already was. While
+     access is open everybody passes (lib/auth/access); once sign-in exists, a
+     PIN referee gets a 404 here rather than buttons whose every press the
+     server refuses (clearing a result is the organiser's alone, Faisal). */
+  if (!canManage(await principalFor(t.id))) notFound();
 
   const [teamRows, playerRows, matchRows, divisionRows] = await Promise.all([
     db.select().from(teams).where(eq(teams.tournamentId, t.id)),
@@ -69,12 +80,27 @@ export default async function ManagePage({
      them as played (a result that was undone after its rating moved still
      locks the draw), so the page must too — or it offers a redraw the server
      then refuses with no match named. One query, AFTER the fixed Promise.all. */
-  const rated = new Set(
-    (await db.selectDistinct({ id: ratingHistory.matchId }).from(ratingHistory)
+  const locked = await lockedIds(matchRows);
+  const recorded = (m: (typeof matchRows)[number]) => locked.has(m.id);
+  /* How many people each match's rating moved, and each category's — what a
+     clear and a restart take back, said before they do. Two grouped queries,
+     sequential, after the fixed Promise.all (lib/db/index.ts). */
+  const ratedPeople = new Map(
+    (await db
+      .select({ id: ratingHistory.matchId, n: countDistinct(ratingHistory.personId) })
+      .from(ratingHistory)
       .innerJoin(matches, eq(ratingHistory.matchId, matches.id))
-      .where(eq(matches.tournamentId, t.id))).map((r) => r.id),
+      .where(eq(matches.tournamentId, t.id))
+      .groupBy(ratingHistory.matchId)).map((r) => [r.id, Number(r.n)]),
   );
-  const recorded = (m: (typeof matchRows)[number]) => hasPlay(m) || rated.has(m.id);
+  const ratedInCategory = new Map(
+    (await db
+      .select({ id: matches.divisionId, n: countDistinct(ratingHistory.personId) })
+      .from(ratingHistory)
+      .innerJoin(matches, eq(ratingHistory.matchId, matches.id))
+      .where(eq(matches.tournamentId, t.id))
+      .groupBy(matches.divisionId)).map((r) => [r.id, Number(r.n)]),
+  );
 
   /* What each draw would replace, and whether any of it has a result. A draw
      with a result in it is refused on the server (lib/draw/guard), so the page
@@ -105,7 +131,8 @@ export default async function ManagePage({
       <p data-draw-locked className="self-center text-[11px] font-semibold text-amber-300">
         Can’t redraw — {played.length === 1 ? "a match here has been played or started" : `${played.length} matches here have been played or started`}{" "}
         ({played.slice(0, 3).join(", ")}{played.length > 3 ? ", …" : ""}), and a redraw would throw{" "}
-        {played.length === 1 ? "it" : "them"} away.
+        {played.length === 1 ? "it" : "them"} away. Clear or reset {played.length === 1 ? "it" : "them"} in
+        the match list, or start this category again.
       </p>
     ) : (
       <DrawButton key={`${label}:${token}`} token={token} label={label} replaces={count > 0 ? replaces : null} />
@@ -116,9 +143,10 @@ export default async function ManagePage({
      from the database, never carried in the URL. */
   const problemName = (problemCategory && divisionName.get(problemCategory)) || "This category";
   const problemText =
-    problem === "draw-locked" ? `${problemName} already has results, so it was not redrawn: a redraw would throw them away.`
+    problem === "draw-locked" ? `${problemName} already has results, so it was not redrawn: a redraw would throw them away. Clear them, or start the category again, first.`
     : problem === "draw-changed" ? `A result came in for ${problemName} while the draw was being made, so nothing was changed.`
     : problem === "unknown-category" ? "That category is not part of this event, so nothing was drawn."
+    : problem === "restart-gone" ? "That category is no longer part of this event — it was removed — so there was nothing to start again."
     : problem === "confirm-needed" ? `Nothing in ${problemName} was redrawn: a redraw replaces its fixtures, so it needs “Yes, redraw”.`
     : problem === "draw-stale" ? `${problemName} changed since this page was opened, so nothing was redrawn. Look at it again, then redraw if you still want to.`
     : null;
@@ -204,6 +232,176 @@ export default async function ManagePage({
     if (!resolverFor) return "TBD";
     const [ra, rb] = resolveSlots(m, resolverFor(m.divisionId), teamNameOf);
     return (side === "a" ? ra : rb).label;
+  };
+
+  /* ── Clearing, resetting and deleting a match (step 8) ────────────────
+     The page shows the control the server will accept, or the reason in its
+     place — judged the way the server judges (lib/results/clear): "played" is
+     `lockedIds`, and what waits on a match is the one dependency graph. */
+  const matchById = new Map(matchRows.map((m) => [m.id, m]));
+  const dependents = dependentsByTarget(matchRows, loaded?.groups ?? []);
+  const groupKeyOf = new Map((loaded?.groups ?? []).map((g) => [g.id, g.key]));
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const hasResult = (m: (typeof matchRows)[number]) => !!matchResult(t, m);
+  const labelOf = (m: (typeof matchRows)[number]) =>
+    `${m.round} — ${slotLabel(m, "a", m.teamAId ? byTeam.get(m.teamAId)?.name : undefined)} v ${slotLabel(m, "b", m.teamBId ? byTeam.get(m.teamBId)?.name : undefined)}`;
+
+  /** Why a group fixture cannot go: the group would be left unable to fill a
+      place the knockout asks of it — the server's `group-short`. */
+  const groupShort = (m: (typeof matchRows)[number]): string | null => {
+    if (!m.groupId) return null;
+    const key = groupKeyOf.get(m.groupId) ?? "";
+    const left = matchRows.filter((r) => r.groupId === m.groupId && r.id !== m.id);
+    if (left.length === 0) {
+      return `Can’t delete — it’s Group ${key}’s only match. Without it Group ${key} could never finish, and nobody from it would reach the knockout.`;
+    }
+    const teamsLeft = new Set(left.flatMap((r) => [r.teamAId, r.teamBId]).filter(Boolean)).size;
+    const asking = matchRows
+      .filter((r) => r.divisionId === m.divisionId)
+      .flatMap((r) => [[r, r.slotA], [r, r.slotB]] as const)
+      .map(([r, ref]) => ({ r, s: groupSlot(ref) }))
+      .filter((x) => x.s && x.s.key === key && x.s.rank > teamsLeft);
+    if (asking.length === 0) return null;
+    const first = asking.sort((x, y) => y.s!.rank - x.s!.rank)[0];
+    return `Can’t delete — ${first.r.round} waits on ${key}${first.s!.rank}, and Group ${key} would be left with ${plural(teamsLeft, "team", "teams")}.`;
+  };
+
+  /** The control at the end of a match's row: a form, or the reason there is none. */
+  const rowControl = (m: (typeof matchRows)[number]) => {
+    const deps = (dependents.get(m.id) ?? []).map((d) => ({ d, row: matchById.get(d.id) })).filter((x) => x.row);
+    if (recorded(m)) {
+      const live = hasPlay(m) && !hasResult(m);
+      const verb = live ? "reset" : "clear";
+      const blocked = deps.find((x) => recorded(x.row!));
+      if (blocked) {
+        const r = blocked.row!;
+        /* Named by the control that match's own row offers: Reset while it is
+           being played, Clear otherwise — including a rating with no score,
+           which an old bug could leave and which its row offers to clear. */
+        const isLive = hasPlay(r) && !hasResult(r);
+        return (
+          <p data-row-locked className="basis-full text-[11px] font-semibold text-amber-300">
+            Can’t {verb} yet — {r.round} {isLive ? "has already started" : hasResult(r) ? "has a result" : "has a rating on record"}.{" "}
+            {isLive ? `Reset ${r.round} first.` : `Clear ${r.round} first.`}
+          </p>
+        );
+      }
+      const n = ratedPeople.get(m.id) ?? 0;
+      const line = matchLine(t, m, viewMatch(t, m));
+      const a = slotLabel(m, "a", m.teamAId ? byTeam.get(m.teamAId)?.name : undefined);
+      const b = slotLabel(m, "b", m.teamBId ? byTeam.get(m.teamBId)?.name : undefined);
+      const emptied = deps.filter((x) => (x.d.side === "a" ? x.row!.teamAId : x.row!.teamBId)).map((x) => x.row!.round);
+      const afterward = emptied.length ? ` ${[...new Set(emptied)].join(" and ")} will wait for this match’s result again.` : "";
+      const question = live
+        ? `Reset ${a} ${line.score} ${b} to 0–0? The ${plural((m.log ?? []).length, "rally", "rallies")} scored so far will be removed. If a referee is still scoring it, their phone is told, and the points on it are not kept.${afterward}`
+        : !hasPlay(m)
+          ? `This match has no score, but the rating changes it gave ${plural(n, "player", "players")} are still on record. Take them back?`
+          : n > 0
+            ? `Clear the result ${a} ${line.score} ${b}? The rating changes it gave ${plural(n, "player", "players")} will be taken back, and the match goes back to not played.${afterward}`
+            : `Clear the result ${a} ${line.score} ${b}? It didn’t change anyone’s rating. The match goes back to not played.${afterward}`;
+      return (
+        <form action={clearResult.bind(null, t.id, m.id)} className="flex max-w-full flex-wrap items-center gap-2">
+          <ConfirmButton key={m.rev} token={m.rev} hook={live ? "reset" : "clear"}
+            label={live ? "Reset to 0–0…" : "Clear result…"}
+            yes={live ? "Yes, reset to 0–0" : !hasPlay(m) ? "Yes, take them back" : "Yes, clear the result"}
+            question={question} />
+        </form>
+      );
+    }
+    const feeds = deps.find((x) => x.d.kind === "tie");
+    if (feeds) {
+      return (
+        <p data-row-locked className="basis-full text-[11px] font-semibold text-amber-300">
+          Can’t delete — {feeds.row!.round} waits on the{" "}
+          {(feeds.d.side === "a" ? feeds.row!.slotA : feeds.row!.slotB)?.startsWith("L:") ? "loser" : "winner"} of this
+          match. To change the knockout, redraw it while none of it has been played.
+        </p>
+      );
+    }
+    const short = groupShort(m);
+    if (short) return <p data-row-locked className="basis-full text-[11px] font-semibold text-amber-300">{short}</p>;
+    const key = m.groupId ? groupKeyOf.get(m.groupId) : null;
+    const a = slotLabel(m, "a", m.teamAId ? byTeam.get(m.teamAId)?.name : undefined);
+    const b = slotLabel(m, "b", m.teamBId ? byTeam.get(m.teamBId)?.name : undefined);
+    const question = `Delete ${m.round} — ${a} v ${b}? It hasn’t been played.${key ? ` Group ${key} will finish without it, and ${a} and ${b} will each play one match fewer than the rest of the group.` : ""}`;
+    return (
+      <form action={removeMatch.bind(null, t.id, m.id)} className="flex max-w-full flex-wrap items-center gap-2">
+        <ConfirmButton key={m.rev} token={m.rev} hook="delete" label="Delete match…" yes="Yes, delete" question={question} />
+      </form>
+    );
+  };
+
+  /** A refusal or a done message for one match, said in that match's row. */
+  const rowNotice = (m: (typeof matchRows)[number]): { code: string; text: string; done: boolean } | null => {
+    if (problemMatch !== m.id) return null;
+    const label = labelOf(m);
+    if (done === "cleared") {
+      return { code: done, done: true, text: `Done — ${label} is back to not played, and any rating changes it made were taken back.` };
+    }
+    /* The clear had happened before this tap arrived — another page, or a
+       retry. Whatever has happened since is left alone, and said. */
+    if (done === "already") {
+      return recorded(m)
+        ? { code: done, done: true, text: `${label} had already been cleared, and has been played again since — nothing was changed now. Look at it again if it needs clearing.` }
+        : { code: done, done: true, text: `${label} had already been cleared: it is back to not played, and its rating changes were taken back.` };
+    }
+    const after = (dependents.get(m.id) ?? []).map((d) => matchById.get(d.id)).find((r) => r && recorded(r));
+    const text =
+      problem === "match-played" ? `${label} was not deleted: it has a result. Clear the result first.`
+      : problem === "match-started" ? `${label} was not deleted: it has been started. Reset it to 0–0 first.`
+      : problem === "match-stale" ? `${label} changed since this page was opened, so nothing was done. Look at it again.`
+      : problem === "match-feeds" ? `${label} was not deleted: a later match waits on its result.`
+      : problem === "group-short" ? `${label} was not deleted: without it its group could not fill every place the knockout needs.`
+      : problem === "match-changed" ? `${label} got a score while it was being deleted, so it was kept.`
+      : problem === "match-confirm" ? `${label} was not changed: it needs the second tap.`
+      : problem === "clear-stale" ? `${label} changed since this page was opened (it is now ${matchLine(t, m, viewMatch(t, m)).score}), so it was not cleared. Look at it again — if it is being scored, ask the referee to stop first.`
+      : problem === "clear-blocked" ? (() => {
+          /* Said as the waiting match's own row says it: started (Reset), a
+             result, or a rating with no score (both Clear). Nothing waits on it
+             any more — cleared or reset since — and the clear can just be tried
+             again. */
+          if (!after) return `${label} was not cleared, because a later match had started or had a result. Nothing waits on it now: clear it again.`;
+          const isLive = hasPlay(after) && !hasResult(after);
+          const state = isLive ? "has started" : hasResult(after) ? "has a result" : "has a rating on record";
+          return `${label} was not cleared: ${after.round} ${state}. ${isLive ? "Reset" : "Clear"} ${after.round} first.`;
+        })()
+      : null;
+    return text && problem ? { code: problem, done: false, text } : null;
+  };
+
+  /** A refusal or a done message for "Start this category again", in its card. */
+  const categoryNotice = (divisionId: string, name: string): { code: string; text: string; done: boolean } | null => {
+    if (problemCategory !== divisionId) return null;
+    if (done === "restarted") {
+      return { code: done, done: true, text: `${name} has started again: every result was cleared and the rating changes taken back. You can redraw it now.` };
+    }
+    const text =
+      problem === "restart-stale" ? `${name}’s results changed since this page was opened, so nothing was cleared. Look at it again.`
+      : problem === "restart-name" ? `Nothing was cleared: type the category’s name, ${name}, to confirm.`
+      : problem === "restart-empty" ? `Nothing to start again — no match in ${name} has a result yet.`
+      : problem === "restart-confirm" ? `Nothing in ${name} was cleared: starting it again needs “Start ${name} again”.`
+      : null;
+    return text && problem ? { code: problem, done: false, text } : null;
+  };
+
+  /** "Start this category again…", with what it would clear, or nothing. */
+  const restartControl = (divisionId: string, name: string) => {
+    const rec = matchRows.filter((m) => m.divisionId === divisionId && recorded(m));
+    if (rec.length === 0) return null;
+    const live = rec.filter((m) => hasPlay(m) && !hasResult(m)).length;
+    const finished = rec.length - live;
+    const people = ratedInCategory.get(divisionId) ?? 0;
+    const parts = [
+      finished > 0 ? `${finished} finished` : null,
+      live > 0 ? `${live} being played right now` : null,
+    ].filter(Boolean).join(" and ");
+    const what = `This clears every result in ${name} — ${parts}${people > 0 ? ` — and takes back the rating changes for ${plural(people, "player", "players")}.` : "."} Teams, groups, fixtures, courts and times stay. The group tables and the knockout go back to empty.${live > 0 ? ` Referees scoring a ${name} match right now will be told it was reset.` : ""}`;
+    const token = restartSignature(t, rec);
+    return (
+      <form action={startCategoryAgain.bind(null, t.id)} className="border-t border-neutral-800 pt-3">
+        <RestartCategory key={token} divisionId={divisionId} name={name} token={token} what={what} />
+      </form>
+    );
   };
 
   return (
@@ -554,6 +752,12 @@ export default async function ManagePage({
                       )}
                     </>
                   )}
+
+                  {(() => {
+                    const n = categoryNotice(d.id, d.name);
+                    return n ? <ProblemNotice code={n.code} text={n.text} done={n.done} /> : null;
+                  })()}
+                  {restartControl(d.id, d.name)}
                 </div>
               );
             })}
@@ -727,8 +931,13 @@ export default async function ManagePage({
               const line = matchLine(t, m, v);
               const a = m.teamAId ? byTeam.get(m.teamAId) : null;
               const b = m.teamBId ? byTeam.get(m.teamBId) : null;
+              const notice = rowNotice(m);
+              /* data-match and data-round are stable hooks for e2e: a row's
+                 words now name OTHER matches ("the Final waits on…"), so a
+                 test finding a row by its text could pick the wrong one. */
               return (
-                <li key={m.id} className="flex items-center gap-3 rounded-xl border border-neutral-800 bg-neutral-900/60 p-3">
+                <li key={m.id} id={`match-${m.id}`} data-match={m.id} data-round={m.round}
+                  className="flex flex-wrap items-center gap-3 rounded-xl border border-neutral-800 bg-neutral-900/60 p-3">
                   <div className="min-w-0 flex-1">
                     <p className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
                       {m.scheduledAt ? `${floatingTime(m.scheduledAt)}${m.court ? ` · court ${m.court}` : ""} · ` : ""}
@@ -749,9 +958,12 @@ export default async function ManagePage({
                     className="rounded-lg bg-amber-400 px-3 py-1.5 text-xs font-black text-amber-950">
                     Score
                   </Link>
-                  <form action={removeMatch.bind(null, t.id, m.id)}>
-                    <button className="text-[11px] font-bold text-neutral-500 hover:text-rose-400">delete</button>
-                  </form>
+                  {rowControl(m)}
+                  {notice && (
+                    <div className="basis-full">
+                      <ProblemNotice code={notice.code} text={notice.text} done={notice.done} />
+                    </div>
+                  )}
                 </li>
               );
             })}

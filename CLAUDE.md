@@ -2188,6 +2188,148 @@ plan file, and the rest belong to later steps by design.
   look like one log, and a removal can be undone or asked about wrongly. Telling them apart needs
   an id per rally.
 
+### Step 8a — clearing, resetting, deleting and starting again (migration `0022`)
+
+Faisal's answers of 2026-10-10/11 are in the plan (`fix-live-formats.md` §8, "Faisal's
+answers"). 8a is the organiser's corrections and the referee's phone; 8b (a Walkover button,
+"Remove the pair", group membership on the team) waits for its screens to be approved.
+
+- **A rating change and the match that made it go together or not at all.**
+  `rating_history.match_id` and `rating_ledger.match_id` are ON DELETE **RESTRICT** now (they
+  cascaded: deleting a played match took the record of its rating with it while the players'
+  ratings stayed moved). Every path refuses first, so RESTRICT is the last line, not the
+  answer: `lockedIds`/`deleteUnplayed` count ledger rows as history too. **Any future delete of
+  a match, an event or a person must clear results first** — the database will refuse it.
+  Community foreign keys stay cascade (nothing deletes a scored community game since step 5).
+- `0022` also adds `matches.reset_rev` and four hand-written CHECKs, each checked against
+  production first: `matches_reset_rev_sane` (0 ≤ reset_rev ≤ rev), `matches_typed_pair` (both
+  typed boxes or neither), `matches_typed_nonneg`, `matches_typed_or_log` (a typed result never
+  stands beside a rally log). Postgres checks CHECKs in NAME order, which is why
+  `schema.test.ts`'s older outcome tests still see their own constraint fire first.
+- **The writer moved, unchanged**: `writeResult` lives in `lib/results/write.ts` (server-only),
+  as `writeResultIn(tx, …)` — the guarded UPDATE plus the revert — and the wrapper the actions
+  call. A mid-game rally is still ONE bare UPDATE and no transaction (`locks.test.ts` pins it):
+  two more round trips per tap otherwise. `CLEARED` is the one column set a clear writes; the
+  restart SPREADS it, so a column added there is cleared everywhere.
+
+**The organiser's controls** (`lib/results/clear.ts`, `manage/actions.ts`, the manage page).
+Each match row offers exactly what the server allows, or says why not, in the row:
+"Delete match…" (never played), "Reset to 0–0…" (being played), "Clear result…" (finished, or a
+rating with no score). Each is two taps (`ConfirmButton` — the confirming button does not exist
+until the first tap) carrying the match's rev as the page saw it.
+
+- **`clearMatch`**: ONE transaction — the event row, then the target AND every match that waits
+  on it in one sorted lock, then the people once (inside the revert). Refused (`clear-blocked`)
+  while anything that waits on it has started or has a result — including a knockout match fed
+  from its GROUP. A filled side that has not started is emptied (team null, rev+1, reset_rev),
+  so a phone that queued rallies for the old pairing cannot land them on whoever is filled next.
+  - **A7**: a clear that had already landed (reset_rev beyond the page's rev — a retry, another
+    organiser) answers done and touches nothing since; the page says "had already been cleared"
+    (`done=already`), and, when it was played again since, that nothing was changed now. A match
+    with nothing on it is reset whatever the page saw: harmless at 0–0, and it fences every phone.
+- **`removeMatchIn`**: refused while it has play or history (`match-played`/`match-started`),
+  without the page's rev (`match-confirm`) or from an older page (`match-stale`), while a
+  knockout match waits on it (`match-feeds` — this ends "delete a semi and add it back" until
+  step 12; Faisal: fine), and for a group fixture whose group would be left unable to fill a
+  place the knockout asks of it (`group-short`: no fixture left, or fewer teams than the highest
+  rank any slot names). A result landing mid-delete answers `match-changed`, never a 500.
+- **`restartCategory`** — "Start this category again": every result in the category cleared,
+  live matches reset too (Faisal), every rating change taken back, EVERY match rev+1 and
+  reset_rev (unplayed ones too, so rallies tapped offline before it cannot land). Teams, groups,
+  fixtures, bracket rows, courts and times stay; slotted knockout sides go back to their slots,
+  byes and first-round sides keep their team; a redraw is allowed afterwards (restart, then
+  redraw, is how a played category is redrawn).
+  - Confirmed by TYPING the category's name (Faisal) — `sameCategoryName` in
+    `manage/sameName.ts`, ONE check for the button and the server. It forgives case, spacing and
+    the SHAPE of a quote: "Men’s" (the Men's starting point's own name) has a curly apostrophe no
+    laptop or Android keyboard types, and an iPhone types the curly one where a laptop typed the
+    straight. It lives beside the page, not in lib/, because lib/ allows four browser modules.
+  - And the page's fingerprint, `restartSignature`: a finished match by `id:rev`, a LIVE one by
+    `id:live` — signed by rev, the rallies on a busy court made it stale within seconds and it
+    never got through; a correction since, or a live match finishing since, does make it stale.
+  - **`revertTournamentResultsIn`** (`lib/rating/apply.ts`) takes them all back with a FLAT
+    statement count (a 45-match category sends as many statements as a one-match one —
+    `locks.test.ts`): matches locked in one sorted statement, history and ledger deleted once
+    each, people locked ONCE, written back in one `update … from jsonb_to_recordset` with a
+    `keep_derived` flag (a failing `derivedFor` keeps flags and reliability; null is a value to
+    write). `revertMany.test.ts` holds it to the one-match revert AS IT WAS before the batch,
+    copied in as the oracle, over nine subsets of an eight-player, nine-match history.
+- Lock order, all three: the EVENT row first (as draws, scoring changes, the order of play and
+  removing a category take it), then match rows sorted in one statement, then people once.
+  The restart takes the category FOR UPDATE as a draw does.
+- The dependency graph moved into `lib/brackets` (`satisfiers`, `dependentsOf`,
+  `dependentsByTarget`, `groupSlot`) from the scheduler, which now uses it — one grammar, one
+  meaning of a label (`rowsByLabel`), and the page and the server answer "what waits on this"
+  from the same function.
+
+**The referee's phone: a reset is final** (`lib/offline/queue`, `useOfflineScoring`,
+`RefConsole`, `ResetDrop`).
+
+- **A push from before the reset never gets a reply carrying a post-reset rev** (`pushLog`
+  answers `{ reason: "reset" }`, with NO rev — every consumer that adopts a rev would otherwise
+  push pre-reset rallies at it). Order: deleted → auth → refused (no court / teams not known)
+  → reset → an empty log never replaces a typed result → typed → the rev guard; the lost-race
+  re-read asks reset before typed. The single-rally actions answer the reset sentence with
+  `stale` and are asked the rev BEFORE anything about the content.
+- The phone learns a post-reset rev only from a RENDER. Records carry the `resetRev` they were
+  built under; a record from before the page's reset is dropped at load and replaced by a
+  TOMBSTONE (so a later cold load of an older cached page starts from 0–0), and the console
+  says how many rallies it let go — counted past where the log parts from the server's
+  (`unkeptRallies`), not net. A write from an older-reset page can never replace or remove a
+  newer-reset record (`olderThan`).
+- **A page served from the cache can be OLDER than a reset the phone already knows of** (A1;
+  its stored record was built after the reset). Nothing is judged against it; and — found by the
+  review — it must WRITE under the record's reset, not its own (`workingReset`): stamped with
+  the older one, every save was refused, the court showed taps nothing kept, and a second cold
+  load lost them. Once a write lands there the court shows what the server is known to hold
+  (`staleShown`), not the cached score, and the timer keeps asking for the page.
+- `RefConsole` is two parts: the OUTER keeps "Flip my view", the error line and the reset card
+  ("The organiser reset this match. It starts again at 0–0." + "This phone's N rallies were not
+  kept." — never "not saved": they may have been saved and then cleared); the COURT is keyed on
+  `resetRev`, so a reset render discards the queue's refs and the clock by construction. The
+  card shows when the outer part sees reset_rev move FORWARD past the newest it knows of — a
+  phone that held nothing is told too, and a page that only caught up with a reset the court
+  already knew of is not.
+- **A REPLACED console does nothing more.** A reset remounts the court, and so does the fresh
+  page arriving after a cached one — while the old court's sends and replies may still be on
+  the wire. Once both courts work under the same reset, nothing in the queue can tell them
+  apart, and the old one saved its older log over the new court's record, deleted it as
+  "landed", and wrote a rally the referee had just taken off back onto the server. Every send
+  goes through `livePush`, which refuses to start, or to hand back its reply, for a console
+  whose `alive` ref its unmount cleared — so nothing after it writes. (This is amendment A17's
+  fence; the first build leaned on `olderThan` instead, which only held while the cached court
+  was stamped with the older reset.)
+- A tombstone on a cached page is nothing to send: queued, it went out as a no-op write and, on
+  a match typed in since, came back filed as held rallies. `settleReply` never holds a tombstone.
+- The reset card's rules are pure (`pageReset`, `courtReset`, `readCard` in `RefConsole`,
+  tested): it shows when the page brings a NEWER reset than the console knows of, or the court
+  reports rallies it let go; a card the referee read ("Start from 0–0") before the page came
+  back — no signal — is not raised again by that page, nor by the remounted court's drop of the
+  same rallies. No "keep scoring" banner shows over a court a reset has locked.
+- The waiting and no-court score pages have no console, so `ResetDrop` drops a record from
+  before the reset there (a Final whose side a clear emptied).
+- **The page's words are tested by rendering it.** `ManagePage` is a server component: called
+  with its params in `clear.test.ts` (next/link and `headers()` mocked), its element tree is
+  read — row reasons, notices, the label of every control. Round one's findings were all about
+  what the page SAID while the codes in the address were right, and nothing read it.
+- **Reviewed adversarially twice**, every finding proved by a scratch test. Round one (three
+  reviewers): 19 findings, 4 major — the cached page's writes refused and resumed (above, twice
+  over), and "Men’s" impossible to confirm — 36 refuted. Round two (two reviewers, on the
+  fixes): 10 findings, 1 major — the replaced console (above) — 20 refuted. All fixed. Smaller
+  ones worth knowing: the "N rallies were not kept" count is past the common prefix, not net; a
+  typed result over an undo back to 0–0 offers only Keep; `kept` on a typed reply means the
+  record WAS held (it meant "a record existed", so a tombstone raised the hold card).
+- **81 plausible wrong versions** of the new rules were applied one at a time; 78 are caught.
+  The three left cannot be told from the right code: the stale-render test's
+  `rec.resetRev > resetRev` is implied by `serverRev < rec.baseRev` (a page older than the
+  record's reset is older than its base), and the two replaced-console checks (livePush after
+  the reply, the send loop after flushMatch) each cover the other — removing BOTH is caught.
+- Tests: `manage/clear.test.ts` (through the real actions), the reset block in
+  `results.test.ts`, `revertMany.test.ts`, the step 8 blocks in `locks.test.ts`,
+  `schema.test.ts`, `queue.test.ts` and `useOfflineScoring.test.ts` (whose harness now remounts
+  on a changed reset_rev and can load a cached render), `e2e/clear.mjs`, and the match-row
+  checks in `e2e/redraw.mjs`.
+
 ## Access: the site is deliberately open, and the switch is a trap
 
 `rise-sports.vercel.app` lets any visitor create events, manage them and enter scores that move

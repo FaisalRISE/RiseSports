@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   classify, flushMatch, flushAll, saveQueued, loadQueued, clearQueued, allQueued, __resetQueue, settleReply,
-  knownToPhone, withSent, clearIfLanded, removedElsewhere, removedHere,
+  knownToPhone, withSent, clearIfLanded, removedElsewhere, removedHere, dropBefore, dropForReset, unkeptRallies,
   type PushResult, type QueuedMatch,
 } from "./queue";
 import type { Side } from "@/lib/scoring/replayLite";
@@ -435,5 +435,55 @@ describe("who took a rally off", () => {
     expect(removedHere({ baseLog: L(""), sent: [L("aaaa")] }, L("aaa"), L("aa"))).toBe(true);
     expect(removedHere({ baseLog: L("aa") }, L("aabb"), L("aab"))).toBe(false);
     expect(removedHere({ baseLog: L("aab") }, L("aa"), L("aa"))).toBe(false);
+  });
+});
+
+/* Step 8: the organiser reset the match. A record built before it is replaced
+   by a tombstone, and the page says how many rallies it let go — the console
+   and the page with no court (ResetDrop) alike. */
+describe("letting rallies go after a reset", () => {
+  it("counts every rally tapped past where the phone parted from the server", () => {
+    expect(unkeptRallies({ log: L("aabb"), baseLog: L("aa") })).toBe(2);
+    expect(unkeptRallies({ log: L("abb"), baseLog: L("aa") })).toBe(2); // an undo, then two rallies
+    expect(unkeptRallies({ log: L("a"), baseLog: L("aa") })).toBe(0); // only an undo
+    expect(unkeptRallies({ log: L("ab") })).toBe(2);
+    expect(unkeptRallies({ log: [], baseLog: [], tombstone: true })).toBe(0);
+    expect(unkeptRallies(null)).toBe(0);
+  });
+
+  it("drops a record from before the reset, leaves a tombstone, and says how many went", async () => {
+    await saveQueued({ ...rec("m", "aabb", 3), baseLog: L("aa") });
+    expect(await dropForReset("m", 5)).toBe(2);
+    expect(await loadQueued("m")).toMatchObject({ log: [], baseRev: 5, resetRev: 5, tombstone: true });
+    /* A second load finds the tombstone: nothing more to drop or to say. */
+    expect(await dropForReset("m", 5)).toBe(0);
+  });
+
+  it("keeps a record built at or after the reset", async () => {
+    await saveQueued({ ...rec("m", "b", 5), baseLog: [], resetRev: 5 });
+    expect(await dropBefore("m", 5)).toBeNull();
+    expect(await loadQueued("m")).toMatchObject({ log: L("b"), resetRev: 5 });
+  });
+
+  it("never lets a page from before a reset replace or remove what was written after it", async () => {
+    await saveQueued({ ...rec("m", "a", 5), baseLog: [], resetRev: 5 });
+    await saveQueued({ ...rec("m", "aab", 1), baseLog: L("aa"), resetRev: 0 });
+    await clearQueued("m", 0);
+    await clearIfLanded("m", L("a"), 0);
+    expect(await loadQueued("m")).toMatchObject({ log: L("a"), resetRev: 5 });
+    await clearIfLanded("m", L("a"), 5);
+    expect(await loadQueued("m")).toBeNull();
+  });
+});
+
+describe("a tombstone and a typed result", () => {
+  /* A tombstone is not this phone's rallies: a "typed" answer must never file
+     it as held, or the referee is asked about rallies nobody tapped on every
+     load until they dismiss it. */
+  it("is never held", async () => {
+    await saveQueued({ matchId: "m", log: [], baseRev: 5, baseLog: [], sent: [], queuedAt: 0, resetRev: 5, tombstone: true });
+    const out = await settleReply({ ok: false, reason: "typed", a: 11, b: 7, rev: 6 }, { matchId: "m", log: [], baseRev: 5, baseLog: [], queuedAt: 0, resetRev: 5 });
+    expect(out).toMatchObject({ status: "typed", kept: false });
+    expect((await loadQueued("m"))?.held).toBeFalsy();
   });
 });

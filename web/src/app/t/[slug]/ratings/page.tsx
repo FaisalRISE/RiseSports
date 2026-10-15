@@ -76,7 +76,10 @@ export default async function RatingsPage({ params }: { params: Promise<{ slug: 
         </thead>
         <tbody>
           {list.map((r) => (
-            <tr key={r.playerId} className="border-b border-neutral-900">
+            /* data-player / data-change / data-played: invisible hooks for the
+               e2e (clear.mjs reads a player's movement without parsing cells). */
+            <tr key={r.playerId} data-player={r.name} data-change={r.delta} data-played={r.played}
+              className="border-b border-neutral-900">
               <td className="p-2 font-semibold">
                 {r.personId ? (
                   <Link href={`/people/${r.personId}`} className="hover:text-amber-400 hover:underline">

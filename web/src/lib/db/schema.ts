@@ -268,6 +268,11 @@ export const matches = pgTable(
     /** Monotonically increasing per match. A write carrying a stale revision is
      *  rejected, so a device that was offline can never roll the score back. */
     rev: integer("rev").notNull().default(0),
+    /** The rev the organiser last cleared or reset this match AT (step 8; 0 =
+     *  never). A phone holding rallies from before it may not put them back:
+     *  pushLog answers any push at a lower rev with "reset", and never with a
+     *  reply that carries a rev from after it (lib/offline/queue). */
+    resetRev: integer("reset_rev").notNull().default(0),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: created(),
   },
@@ -591,8 +596,13 @@ export const ratingHistory = pgTable(
        score, app.source.js:9254), so its results have to land in the same
        history — otherwise a disputed rating can be explained only half the
        time. A CHECK constraint in the migration enforces the "exactly one"; it
-       cannot be expressed in Drizzle's column types. */
-    matchId: text("match_id").references(() => matches.id, { onDelete: "cascade" }),
+       cannot be expressed in Drizzle's column types.
+       RESTRICT, not cascade (step 8): deleting a match took the record of the
+       rating change it made with it, while the players' ratings stayed moved —
+       a rating no history explains. A rated match is cleared first (its rating
+       taken back), then deleted. The community link stays cascade: nothing
+       deletes a scored community game (regenerate refuses one since step 5). */
+    matchId: text("match_id").references(() => matches.id, { onDelete: "restrict" }),
     communityMatchId: text("community_match_id").references(() => communityMatches.id, { onDelete: "cascade" }),
     ratingBefore: integer("rating_before").notNull(),
     ratingAfter: integer("rating_after").notNull(),
@@ -624,8 +634,8 @@ export const ratingLedger = pgTable(
   "rating_ledger",
   {
     id: id(),
-    /** Exactly one is set, as on ratingHistory. */
-    matchId: text("match_id").references(() => matches.id, { onDelete: "cascade" }),
+    /** Exactly one is set, as on ratingHistory. RESTRICT for the same reason. */
+    matchId: text("match_id").references(() => matches.id, { onDelete: "restrict" }),
     communityMatchId: text("community_match_id").references(() => communityMatches.id, { onDelete: "cascade" }),
     /** Points created (+) or destroyed (−) by this match. */
     imbalance: integer("imbalance").notNull(),

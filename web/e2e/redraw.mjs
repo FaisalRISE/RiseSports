@@ -15,6 +15,14 @@
  *   - one with teams asks twice, and the second tap goes through;
  *   - a page opened before a team was added is refused, and says so — the
  *     second tap carries a fingerprint of what that page saw.
+ * Each match row (step 8) offers what the server allows, or says why not:
+ *   - a group's only match and a semi-final the Final waits on show the reason
+ *     and no button;
+ *   - a page opened before another rally cannot reset the match — refused in
+ *     that match's row;
+ *   - "Reset to 0–0…" asks twice, and gives the draw button back;
+ *   - "Start this category again…" says what goes, waits for the category's
+ *     name, and leaves every match at 0–0 with the draw offered again.
  * DIFFERENTIAL like the other suites: the same button that is refused after a
  * point is shown to work before it, and the stale page's refusal is followed
  * by the same removal working from an up-to-date page.
@@ -38,8 +46,10 @@ const scoreLinks = () =>
     [...new Set(as.map((a) => a.getAttribute("href")).filter((h) => /\/score\/[0-9a-f-]{36}$/.test(h)))].sort());
 const groupsForm = () => p.locator('form:has(input[name="groups"])').first();
 const koForm = () => p.locator('form:has(input[name="qualify"])').first();
+/* By each row's own round (data-round), not its words: a row can name other
+   matches since step 8 ("the Final waits on it"). */
 const knockoutRounds = () =>
-  p.$$eval("li", (lis) => lis.map((li) => li.textContent || "").filter((t) => /Semi-Final|Final/.test(t)).length);
+  p.$$eval("li[data-round]", (lis) => lis.filter((li) => /Semi-Final|Final/.test(li.getAttribute("data-round") || "")).length);
 
 try {
   const slug = await createTournament(p, `Redraw ${stamp}`, { sport: "Pickleball", format: "Standard" });
@@ -185,6 +195,85 @@ try {
   const teamsLeft = (await p.textContent("body")) ?? "";
   ok(!teamsLeft.includes(`Echo ${stamp}`) && !teamsLeft.includes(`Foxtrot ${stamp}`), "its teams went with it");
   ok((await scoreLinks()).includes(`/t/${slug}/score/${matchId}`), "and the scored match in the other category is untouched");
+
+  console.log("\n== each match row: a button, or the reason there is none ==");
+  await manage(slug);
+  const rowOf = (id, page = p) => page.locator(`li[data-match="${id}"]`);
+  const scored = rowOf(matchId);
+  ok(await scored.locator('[data-row-action="reset"]').count() === 1, "the scored match offers Reset to 0–0…");
+  const otherGroup = p.locator('li[data-round^="Group"]').filter({ hasNot: p.locator('[data-row-action="reset"]') });
+  ok(((await otherGroup.first().locator("[data-row-locked]").textContent()) ?? "").includes("only match"),
+    "the other group's only match says why it cannot be deleted, with no button");
+  const semi = p.locator('li[data-round="Semi-Final 1"]');
+  ok(((await semi.locator("[data-row-locked]").textContent()) ?? "").includes("waits on the winner"),
+    "a semi-final the Final waits on says so, with no button");
+  ok(await semi.locator("[data-row-action]").count() === 0, "and offers nothing the server would refuse");
+
+  console.log("\n== a page that saw the match before it changed cannot reset it ==");
+  const stalePage = await b.newPage({ viewport: { width: 1100, height: 1100 } });
+  await stalePage.goto(`${BASE}/t/${slug}/manage`);
+  await stalePage.waitForTimeout(1200);
+  await p.goto(`${BASE}/t/${slug}/score/${matchId}`);
+  await p.waitForTimeout(1200);
+  await tap(p, teamA);
+  ok((await stableRallyCount(p)) === 2, "another rally scored meanwhile");
+  await rowOf(matchId, stalePage).locator('[data-row-action="reset"]').click();
+  await stalePage.waitForTimeout(300);
+  await rowOf(matchId, stalePage).locator('button:has-text("Yes, reset to 0–0")').click();
+  await stalePage.waitForTimeout(2500);
+  const staleSaid = rowOf(matchId, stalePage).locator('[data-problem="clear-stale"]');
+  ok(await staleSaid.count() === 1 && ((await staleSaid.textContent()) ?? "").includes("changed since this page was opened"),
+    "the old page's reset is refused, in that match's row");
+  await stalePage.close();
+  await p.goto(`${BASE}/t/${slug}/score/${matchId}`);
+  await p.waitForTimeout(1200);
+  ok((await stableRallyCount(p)) === 2, "and the rallies are still there");
+
+  console.log("\n== Reset to 0–0 gives the draw back ==");
+  await manage(slug);
+  await scored.locator('[data-row-action="reset"]').click();
+  await p.waitForTimeout(300);
+  ok(((await scored.locator('[data-row-action-open="reset"]').textContent()) ?? "").includes("2 rallies"),
+    "the second tap says what it removes");
+  await manage(slug);
+  ok(await scored.locator('[data-row-action="reset"]').count() === 1, "the first tap changed nothing");
+  await scored.locator('[data-row-action="reset"]').click();
+  await p.waitForTimeout(300);
+  await scored.locator('button:has-text("Yes, reset to 0–0")').click();
+  await p.waitForTimeout(2500);
+  ok(await p.locator('[data-done="cleared"]').count() === 1, "it says it was done");
+  await manage(slug);
+  ok(await groupsForm().locator("[data-draw-locked]").count() === 0
+    && await groupsForm().locator("[data-draw-confirm]").count() === 1, "and the groups can be redrawn again");
+
+  console.log("\n== Start this category again ==");
+  await p.goto(`${BASE}/t/${slug}/score/${matchId}`);
+  await p.waitForTimeout(1200);
+  await tap(p, teamA);
+  ok((await stableRallyCount(p)) === 1, "a rally scored, so the category has something to clear");
+  await manage(slug);
+  const card = p.locator('[data-category="Main"]');
+  ok(await card.locator("[data-restart]").count() === 1, "the category offers Start this category again…");
+  await card.locator("[data-restart]").click();
+  await p.waitForTimeout(300);
+  const restartAsk = ((await card.locator("[data-restart-open]").textContent()) ?? "").replace(/\s+/g, " ");
+  ok(restartAsk.includes("1 being played right now") && restartAsk.includes("can’t be undone"),
+    `and says what goes: "${restartAsk.slice(0, 160)}"`);
+  const go = card.locator('button:has-text("Start Main again")');
+  ok(await go.isDisabled(), "the button waits for the category's name");
+  await card.locator('input[name="name"]').fill("Mian");
+  ok(await go.isDisabled(), "a misspelt name does not do");
+  await card.locator('input[name="name"]').fill("Main");
+  ok(!(await go.isDisabled()), "the right name does");
+  await go.click();
+  await p.waitForTimeout(2500);
+  ok(await p.locator('[data-done="restarted"]').count() === 1, "it says the category started again");
+  await manage(slug);
+  ok(await groupsForm().locator("[data-draw-locked]").count() === 0, "redraw is offered again");
+  ok(await p.locator('[data-category="Main"] [data-restart]').count() === 0, "and there is nothing left to start again");
+  await p.goto(`${BASE}/t/${slug}/score/${matchId}`);
+  await p.waitForTimeout(1200);
+  ok((await stableRallyCount(p)) === 0, "the match is back at 0–0");
 
   console.log("\n== errors ==");
   const bad = realErrors(errs);

@@ -7,13 +7,12 @@ import { z } from "zod";
 
 import { db } from "@/lib/db";
 import { matches, tournaments, scorerGrants, OUTCOMES, type Outcome } from "@/lib/db/schema";
+import { writeResult, rate } from "@/lib/results/write";
 import { principalFor, grantCookieName, GRANT_COOKIE_OPTIONS } from "@/lib/auth/guard";
 import { canScore, canManage, assert } from "@/lib/auth/policy";
 import { verifyPin, generateGrantToken } from "@/lib/auth/pin";
-import { rulesFor, viewMatch, eventRules, endingOf, noLiveCourt, teamsNotIn, allowsDraws } from "@/lib/matchState";
-import { matchResult, hasPlay, type MatchResult } from "@/lib/results";
+import { rulesFor, viewMatch, endingOf, noLiveCourt, teamsNotIn, allowsDraws } from "@/lib/matchState";
 import { normaliseResult, resultProblem, type ResultRefusalCode } from "@/lib/results/record";
-import { applyMatchRatings, revertMatchRatingsIn } from "@/lib/rating/apply";
 import { oslPruneAcks } from "@/lib/formats/osl";
 import { rewindIndex } from "@/lib/scoring/rewind";
 import { MAX_SCORE } from "@/lib/scoring/final";
@@ -104,119 +103,6 @@ function nextTiming(
   return t;
 }
 
-/** Everything a write may set about a match's score. */
-type Next = {
-  log: Side[];
-  ackedGates: number[];
-  typedScoreA: number | null;
-  typedScoreB: number | null;
-  outcome: Outcome | null;
-  sets: [number, number][] | null;
-  /** Undefined leaves the clock as it is. */
-  timing?: Timing | null;
-};
-
-/** Same result — score, winner and why it moves no rating, if it does not. */
-function sameResult(x: MatchResult | null, y: MatchResult | null): boolean {
-  if (!x || !y) return x === y;
-  return x.a === y.a && x.b === y.b && x.winner === y.winner && x.outcome === y.outcome;
-}
-
-/**
- * THE writer of a match's score. Every rally, undo, correction and typed
- * result comes through here, under a guard on `rev` so a stale device cannot
- * roll the match back.
- *
- * It asks ONE question — did the RESULT change? — rather than the three the old
- * code asked in three places, each wrong somewhere:
- *   - "was it over, is it over" from the rally log alone, so replacing a typed
- *     11–3 with rallies never took 11–3's rating back, and the real result later
- *     found history already there and answered "already";
- *   - only on the finish-line transition, so correcting 11–7 to 11–9 never
- *     re-rated at all;
- *   - with the revert in a transaction of its own after the write, so a revert
- *     queued behind an undo could run after the match had been finished again
- *     and delete the new rating.
- *
- * Unchanged (every mid-game rally): one guarded UPDATE, nothing else — the hot
- * path stays free. Changed: the UPDATE and the revert of whatever rating the
- * match had move together in ONE transaction, under the match row's lock (the
- * rating engine's lock order: match, then people). The revert runs every time,
- * result or not before: it is one idempotent DELETE … RETURNING, and running it
- * unconditionally also repairs a match an old bug left with history and no
- * result. The new rating, if the new result earns one, is applied after the
- * commit; `applyMatchRatings` re-checks the result under its own lock, so a
- * write landing in between makes it stand aside for that write.
- *
- * It also freezes the scoring the match is judged by (`matches.rules`, see
- * lib/matchState `matchRules`): stamped the moment it first has a result, kept
- * while it has any play, dropped when it has none.
- *
- * A rating failure is logged, never thrown: the score is committed, and a rally
- * that would not save because of a rating is a problem on court right now.
- */
-async function writeResult(
-  ctx: Ctx, next: Next, expectedRev: number,
-): Promise<{ ok: true; rev: number } | { ok: false; reason: "stale" }> {
-  const { tournament: t, match: m } = ctx;
-  const after = { ...m, ...next, timing: next.timing === undefined ? m.timing : next.timing };
-  const before = matchResult(t, m);
-  const result = matchResult(t, after);   // judged by the frozen rules if it has them, else today's
-  const rules = hasPlay(after) ? (m.rules ?? (result ? eventRules(t) : null)) : null;
-
-  const values = {
-    log: next.log,
-    ackedGates: next.ackedGates,
-    typedScoreA: next.typedScoreA,
-    typedScoreB: next.typedScoreB,
-    outcome: next.outcome,
-    sets: next.sets,
-    rules,
-    ...(next.timing !== undefined ? { timing: next.timing as unknown as Record<string, unknown> | null } : {}),
-    rev: expectedRev + 1,
-    updatedAt: new Date(),
-  };
-  const guard = and(eq(matches.id, m.id), eq(matches.rev, expectedRev));
-
-  if (sameResult(before, result)) {
-    const updated = await db.update(matches).set(values).where(guard).returning({ id: matches.id });
-    if (updated.length === 0) return { ok: false, reason: "stale" };
-  } else {
-    const written = await db.transaction(async (tx) => {
-      const updated = await tx.update(matches).set(values).where(guard).returning({ id: matches.id });
-      if (updated.length === 0) return false;
-      await revertMatchRatingsIn(tx, m.id);
-      return true;
-    });
-    if (!written) return { ok: false, reason: "stale" };
-  }
-  /* On EITHER path, a finished result that earns a rating is offered to the
-     engine. On the changed path that is the new rating. On the unchanged path
-     it is a repair: a match can be finished with no rating — its teams were
-     filled in after it was played, or an apply failed — and every later write
-     of the same result used to take the cheap path and leave it so for ever.
-     The engine answers "already" in two queries when the rating is there. A
-     mid-game rally has no result, so the hot path still does nothing extra. */
-  if (result?.winner && !result.outcome) await rate(m.id);
-
-  revalidatePath(`/t/${t.slug}`);
-  revalidatePath(`/t/${t.slug}/manage`);
-  revalidatePath(`/t/${t.slug}/score/${m.id}`);
-  revalidatePath(`/t/${t.slug}/ratings`);
-  return { ok: true, rev: expectedRev + 1 };
-}
-
-/** Offer a finished match to the rating engine. Logged, never thrown: the
- *  score is committed, and a rally that would not save because of a rating is
- *  a problem on court right now. */
-async function rate(matchId: string) {
-  try {
-    await applyMatchRatings(matchId);
-  } catch (e) {
-    console.error("rating apply failed for match", matchId, e);
-  }
-}
-
 /**
  * Write a rally log. A match holding a TYPED result refuses it unless the
  * caller explicitly asked to replace that result — rallies used to null a typed
@@ -282,6 +168,28 @@ const STALE = {
   error: "Not recorded — the match had just changed (on another device, or the scoring was changed). It shows the latest now: try again.",
   stale: true,
 } as const;
+/* A tap from a console that last saw the match BEFORE the organiser cleared or
+   reset it (step 8): never applied to the match as it is now. The console
+   reloads (stale) and shows 0–0. */
+const RESET = {
+  ok: false,
+  error: "Not recorded — the organiser reset this match. It starts again at 0–0.",
+  stale: true,
+} as const;
+
+/**
+ * The checks every single-rally action makes first, in this order: a console
+ * from before a reset gets the reset sentence; a console on any older rev gets
+ * STALE and reloads — BEFORE the court and content checks, which read the
+ * match as it is NOW and would answer a stale console in words only ("Nothing
+ * to undo", "That rotation is not due"), leaving a console that cannot score
+ * offline on its old view until somebody reloaded it by hand.
+ */
+function revRefusal(ctx: Ctx, rev: number): ActionResult | null {
+  if (rev < ctx.match.resetRev) return RESET;
+  if (rev !== ctx.match.rev) return STALE;
+  return null;
+}
 
 /** Record one rally to the side that won it. */
 export async function scorePoint(
@@ -293,6 +201,8 @@ export async function scorePoint(
   const rev = revSchema.parse(expectedRev);
   const ctx = await requireScorer(id);
 
+  const old = revRefusal(ctx, rev);
+  if (old) return old;
   const refused = courtRefusal(ctx);
   if (refused) return { ok: false, error: refused };
   const view = viewMatch(ctx.tournament, ctx.match);
@@ -324,6 +234,8 @@ export async function undoPoint(
   const rev = revSchema.parse(expectedRev);
   const ctx = await requireScorer(id);
 
+  const old = revRefusal(ctx, rev);
+  if (old) return old;
   const refused = courtRefusal(ctx);
   if (refused) return { ok: false, error: refused };
   const log = [...(ctx.match.log as Side[])];
@@ -356,6 +268,8 @@ export async function minusPoint(
   const rev = revSchema.parse(expectedRev);
   const ctx = await requireScorer(id);
 
+  const old = revRefusal(ctx, rev);
+  if (old) return old;
   const refused = courtRefusal(ctx);
   if (refused) return { ok: false, error: refused };
   const log = ctx.match.log as Side[];
@@ -441,6 +355,18 @@ export async function setMatchSetup(
  *     slip past it by being retried at the new rev.
  *   - "refused": the match was deleted, or has no live court. It used to come
  *     back as "error", which the phone retried every fifteen seconds for ever.
+ *   - "reset": the organiser cleared or reset the match after the rev this push
+ *     was built on (step 8). Its rallies are from before the reset.
+ *
+ * THE RESET RULE: a push at a rev below the match's reset_rev never gets a
+ * reply carrying a rev from after it. So the checks run in this order —
+ * deleted → allowed → refused (no court, teams not known: carries no rev) →
+ * RESET → typed → the rev guard — and the lost-race re-read again puts reset
+ * before typed and stale. A phone therefore learns a post-reset rev only from
+ * a RENDER (which carries reset_rev) or from a reply to a post-reset push; the
+ * typed answer used to come first, and a push that lost to a clear AND a
+ * retype was told the new rev, after which "Use this phone's score" landed
+ * pre-reset rallies over the new result.
  */
 export async function pushLog(
   matchId: string, log: Side[], expectedRev: number, tick: Tick = EMPTY,
@@ -471,6 +397,7 @@ export async function pushLog(
   if (none) return { ok: false, reason: "refused", title: none.title, error: none.body };
   const notIn = teamsNotIn(ctx.match);
   if (notIn) return { ok: false, reason: "refused", title: notIn.title, error: notIn.body };
+  if (rev < ctx.match.resetRev) return { ok: false, reason: "reset" };
 
   /* Replacing a typed result is allowed only for the result the referee SAW.
      If it was typed again since (or the row moved on any other way), answer
@@ -479,6 +406,12 @@ export async function pushLog(
      replace went out at the old rev and failed for ever. */
   const typedNow = viewMatch(ctx.tournament, ctx.match);
   if (replaceTyped && typedNow.typedScore && rev !== ctx.match.rev) {
+    return { ok: false, reason: "typed", ...typedNow.typedScore, outcome: typedNow.outcome, rev: ctx.match.rev };
+  }
+  /* An EMPTY log never replaces a typed result. That would CLEAR it — undo to
+     0–0 with no signal, then "Use this phone's score" — and clearing a result
+     is the organiser's alone (Faisal, 2026-10-10). */
+  if (replaceTyped && typedNow.typedScore && incoming.length === 0) {
     return { ok: false, reason: "typed", ...typedNow.typedScore, outcome: typedNow.outcome, rev: ctx.match.rev };
   }
 
@@ -514,6 +447,7 @@ export async function pushLog(
   if (!now) {
     return { ok: false, reason: "refused", title: "This match was deleted", error: "It was removed on the manage screen." };
   }
+  if (rev < now.match.resetRev) return { ok: false, reason: "reset" };
   const typedLater = viewMatch(now.tournament, now.match);
   if (typedLater.typedScore) {
     return { ok: false, reason: "typed", ...typedLater.typedScore, outcome: typedLater.outcome, rev: now.match.rev };
@@ -528,6 +462,8 @@ export async function confirmRotation(matchId: string, gate: number, expectedRev
   const rev = revSchema.parse(expectedRev);
   const ctx = await requireScorer(id);
 
+  const old = revRefusal(ctx, rev);
+  if (old) return old;
   const refused = courtRefusal(ctx);
   if (refused) return { ok: false, error: refused };
   const view = viewMatch(ctx.tournament, ctx.match);

@@ -204,7 +204,11 @@ const load = async (id: string) =>
 
 /* ── The lock order ─────────────────────────────────────────────────────── */
 
-describe("every rating writer locks the match, then the people in id order", () => {
+/* 30 seconds, not the default 5: several of these load the score and manage
+   actions for the first time, and under the full parallel run that import
+   alone has taken over 5 seconds (two failed the India-time pass on 2026-10-13
+   and passed every time alone). */
+describe("every rating writer locks the match, then the people in id order", { timeout: 30_000 }, () => {
   /* Nothing about a player may be written outside the rating's own
      transaction: the derived signals used to be refreshed afterwards, from an
      unlocked read, and could overwrite a newer apply's with a stale answer. */
@@ -530,3 +534,172 @@ describe("partnerStatsFromHistory — the partner record replayed", () => {
   });
 });
 
+
+/* ── Clearing, deleting and restarting (step 8) ─────────────────────────────
+ * Each is ONE transaction, and each takes its locks in the order every other
+ * writer of an event's matches does: the EVENT row first, then the match rows
+ * in ONE statement sorted by id, then the people ONCE, sorted — so none of them
+ * can wait on a rating (match, then people) or a draw (event first) in a
+ * circle. The restart takes the category FOR UPDATE as a draw does, so nothing
+ * new is filed under it meanwhile. */
+
+/** A category of `teams` pairs, every pair having played every other, rated. */
+async function playedCategory(teams: number) {
+  const tournamentId = randomUUID();
+  const divisionId = randomUUID();
+  await testDb.insert(schema.tournaments).values({
+    id: tournamentId, slug: `rs-${tournamentId.slice(0, 8)}`, name: "Event", sport: "pb",
+    format: "standard", ownerId: owner, status: "live",
+  });
+  await testDb.insert(schema.divisions).values({ id: divisionId, tournamentId, name: "Main" });
+  const teamIds: string[] = [];
+  for (let i = 0; i < teams; i++) {
+    const teamId = randomUUID();
+    teamIds.push(teamId);
+    await testDb.insert(schema.teams).values({ id: teamId, tournamentId, divisionId, name: `T${i}`, seed: i + 1 });
+    for (const personId of [await person(), await person()]) {
+      await testDb.insert(schema.players).values({
+        id: randomUUID(), tournamentId, teamId, personId, name: personId.slice(0, 4), gender: "M", ratings: {},
+      });
+    }
+  }
+  const matchIds: string[] = [];
+  for (let i = 0; i < teams; i++) {
+    for (let j = i + 1; j < teams; j++) {
+      const id = randomUUID();
+      matchIds.push(id);
+      await testDb.insert(schema.matches).values({
+        id, tournamentId, divisionId, round: `R${i}-${j}`, teamAId: teamIds[i], teamBId: teamIds[j],
+        log: [], lineupA: [], lineupB: [], ackedGates: [], typedScoreA: 11, typedScoreB: 5, rev: 1,
+      });
+      expect((await apply.applyMatchRatings(id)).status).toBe("applied");
+    }
+  }
+  const [t] = await testDb.select().from(schema.tournaments).where(eq(schema.tournaments.id, tournamentId));
+  return { t, divisionId, matchIds };
+}
+
+/** The people half of the rule, for a transaction that writes MANY people in
+ *  one statement (the batch revert's `update … from jsonb_to_recordset`) as
+ *  well as one at a time: the first statement touching people is the ONE
+ *  sorted lock, nothing reads a player's history before it, and every id ANY
+ *  people write carries — not just the last bound parameter — was in it. */
+function assertPeopleLockedOnce(tx: string[]) {
+  const touching = tx.map((s, i) => ({ s, i })).filter(({ s }) => s.includes('"people"'));
+  expect(touching.length, "people are touched").toBeGreaterThan(0);
+  expect(touching[0].s, "the first statement touching people is the sorted lock").toMatch(
+    /^select .* from "people" .*order by "people"\."id"( asc)? for no key update$/,
+  );
+  expect(touching.filter(({ s }) => / for (no key )?update$/.test(s)), "people are locked in ONE statement").toHaveLength(1);
+  const lockAt = touching[0].i;
+  expect(
+    tx.slice(0, lockAt).filter((s) => s.includes('from "rating_history"') && /"person_id" in \(/.test(s)),
+    "a player's history read before their lock",
+  ).toEqual([]);
+
+  const bound = paramsOf.get(tx)!;
+  const locked = new Set(bound[lockAt].map(String));
+  let written = 0;
+  tx.forEach((s, i) => {
+    if (!s.startsWith('update "people"')) return;
+    const ids = s.includes("jsonb_to_recordset")
+      ? (JSON.parse(String(bound[i][0])) as { id: string }[]).map((r) => r.id)
+      : [String(bound[i].at(-1))];
+    for (const id of ids) {
+      written++;
+      expect(locked.has(id), `person ${id} was written without being locked first`).toBe(true);
+    }
+  });
+  expect(written, "people are written").toBeGreaterThan(0);
+  expect(tx.filter((s) => s.includes('"people"') && / for update$/.test(s)), "people never FOR UPDATE").toEqual([]);
+}
+
+const EVENT_LOCK = /^select .* from "tournaments" .* for no key update$/;
+const SORTED_MATCHES = /^select .* from "matches" .*order by "matches"\."id"( asc)? for no key update$/;
+
+describe("clearing, deleting and restarting lock as every other writer does", { timeout: 30_000 }, () => {
+  it("clearing a result: the event, the match and what waits on it in one sorted statement, then the people once", async () => {
+    const [a, b, c, d] = await four();
+    const m = await match([a, b], [c, d]);
+    await apply.applyMatchRatings(m);
+    const [row] = await testDb.select().from(schema.matches).where(eq(schema.matches.id, m));
+    const [t] = await testDb.select().from(schema.tournaments).where(eq(schema.tournaments.id, row.tournamentId));
+    const { clearMatch } = await import("@/lib/results/clear");
+    const { txs, bare } = await recorded(() => clearMatch(t, m, row.rev));
+
+    expect(txs).toHaveLength(1);
+    const tx = txs[0];
+    expect(tx[0], "the event row first").toMatch(EVENT_LOCK);
+    const firstMatchLock = tx.findIndex((s) => s.includes('from "matches"') && / for (no key )?update$/.test(s));
+    expect(tx[firstMatchLock], "the matches in one sorted statement").toMatch(SORTED_MATCHES);
+    expect(tx.slice(0, firstMatchLock).some((s) => s.includes('"people"') || s.includes('"rating_history"')),
+      "nothing about a rating before the matches are locked").toBe(false);
+    assertPeopleLockedOnce(tx);
+    expect(tx.indexOf(tx.find((s) => s.includes('"people"'))!)).toBeGreaterThan(firstMatchLock);
+    expect(bare.filter((s) => s.startsWith("update") || s.startsWith("delete")), "nothing written outside it").toEqual([]);
+  });
+
+  it("deleting a match: the event, then the match itself FOR UPDATE, before anything else", async () => {
+    const m = await match([await person()], [await person()]);
+    await testDb.update(schema.matches).set({ typedScoreA: null, typedScoreB: null, rev: 0 }).where(eq(schema.matches.id, m));
+    const [row] = await testDb.select().from(schema.matches).where(eq(schema.matches.id, m));
+    const [t] = await testDb.select().from(schema.tournaments).where(eq(schema.tournaments.id, row.tournamentId));
+    const { removeMatchIn } = await import("@/lib/results/clear");
+    const { txs } = await recorded(() => removeMatchIn(t, m, 0));
+    expect(txs).toHaveLength(1);
+    expect(txs[0][0]).toMatch(EVENT_LOCK);
+    expect(txs[0][1]).toMatch(/^select .* from "matches" .* for update$/);
+    expect(txs[0].some((s) => s.startsWith('delete from "matches"'))).toBe(true);
+    expect((await testDb.select().from(schema.matches).where(eq(schema.matches.id, m)))).toHaveLength(0);
+  });
+
+  it("starting a category again: the event, the category FOR UPDATE, its matches sorted, the people ONCE", async () => {
+    const { t, divisionId, matchIds } = await playedCategory(3);
+    const { restartCategory, restartSignature } = await import("@/lib/results/clear");
+    const rows = await testDb.select().from(schema.matches).where(eq(schema.matches.divisionId, divisionId));
+    const { txs, bare } = await recorded(() => restartCategory(t, divisionId, restartSignature(t, rows), (name) => name === "Main"));
+
+    expect(txs).toHaveLength(1);
+    const tx = txs[0];
+    expect(tx[0], "the event row first").toMatch(EVENT_LOCK);
+    const category = tx.findIndex((s) => /^select .* from "divisions" .* for update$/.test(s));
+    expect(category, "the category is locked as a draw locks it").toBeGreaterThan(0);
+    const matchLock = tx.findIndex((s) => s.includes('from "matches"') && / for (no key )?update$/.test(s));
+    expect(matchLock).toBeGreaterThan(category);
+    expect(tx[matchLock]).toMatch(SORTED_MATCHES);
+    assertPeopleLockedOnce(tx);
+    /* ONE write for everybody and ONE for every match, whatever the size. */
+    expect(tx.filter((s) => s.startsWith('update "people"'))).toHaveLength(1);
+    expect(tx.filter((s) => s.startsWith('update "matches"'))).toHaveLength(1);
+    expect(bare.filter((s) => s.startsWith("update") || s.startsWith("delete")), "nothing written outside it").toEqual([]);
+    const left = await testDb.select().from(schema.ratingHistory);
+    expect(left.filter((r) => r.matchId && matchIds.includes(r.matchId))).toEqual([]);
+  });
+
+  /* The writer moved out of the actions file for step 8, so the clear could
+     share it. A rally in the middle of a game changes no result, and must stay
+     what it was: ONE bare guarded UPDATE, no transaction — two more round trips
+     on every tap otherwise, at ~185ms each from the live site. */
+  it("a rally in the middle of a game is one bare UPDATE and opens no transaction", async () => {
+    const m = await match([await person(), await person()], [await person(), await person()]);
+    await testDb.update(schema.matches).set({ typedScoreA: null, typedScoreB: null, rev: 0 }).where(eq(schema.matches.id, m));
+    const { pushLog } = await import("@/app/t/[slug]/actions");
+    const { txs, bare } = await recorded(() => pushLog(m, ["a", "b", "a"], 0));
+    expect(txs).toEqual([]);
+    expect(bare.filter((s) => s.startsWith("update") || s.startsWith("insert") || s.startsWith("delete")))
+      .toEqual([expect.stringMatching(/^update "matches" /)]);
+  });
+
+  /* At ~185ms a statement from the live site, a restart that grew with the
+     matches would hold the event row for minutes on a big category. */
+  it("starting a category again sends as many statements for 45 matches as for one", async () => {
+    const { restartCategory, restartSignature } = await import("@/lib/results/clear");
+    const count = async (teams: number) => {
+      const { t, divisionId } = await playedCategory(teams);
+      const rows = await testDb.select().from(schema.matches).where(eq(schema.matches.divisionId, divisionId));
+      const { txs } = await recorded(() => restartCategory(t, divisionId, restartSignature(t, rows), (name) => name === "Main"));
+      return txs[0].length;
+    };
+    expect(await count(10)).toBe(await count(2));
+  }, 120_000);
+});

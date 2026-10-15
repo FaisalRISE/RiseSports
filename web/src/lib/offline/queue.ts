@@ -53,6 +53,12 @@ export type PushResult =
   /** The server will never take this log — the match was deleted, or it has no
    *  live court. The phone drops the rallies and says why; it must not retry. */
   | { ok: false; reason: "refused"; title: string; error: string }
+  /** The organiser cleared or reset this match AFTER the rev this push was
+   *  built on (step 8). Its rallies are from before the reset and are never
+   *  put back. Deliberately carries NO rev: a phone that adopted the current
+   *  rev from this reply could push its pre-reset log at it and land. The
+   *  phone learns the match as it is now only from a fresh render. */
+  | { ok: false; reason: "reset" }
   /** Anything else: not allowed, or a fault. Kept and retried. */
   | { ok: false; reason: "error"; error: string };
 
@@ -76,7 +82,21 @@ export type QueuedMatch = {
   /** Logs this phone has sent since `baseRev`. Any of them may have landed
    *  with the reply lost on the way back. */
   sent?: Side[][];
+  /** The match's reset_rev on the page that wrote this record (step 8): the
+   *  last clear or reset this phone knew of. A page that knows of an EARLIER
+   *  one is older than this record — a cold load served from the cache with no
+   *  signal — and must not judge, overwrite or delete it. Absent: 0. */
+  resetRev?: number;
+  /** Left where a record was dropped because the organiser reset the match:
+   *  no rallies, based on the reset (log [] at reset_rev). A later cold load of
+   *  an older cached page then starts from 0–0 instead of the old score. */
+  tombstone?: boolean;
 };
+
+/** A record written under an EARLIER reset than the stored one is from a page
+ *  that has not seen that reset: it may not replace or remove the stored one. */
+const olderThan = (writer: { resetRev?: number }, stored: QueuedMatch | null) =>
+  !!stored && (stored.resetRev ?? 0) > (writer.resetRev ?? 0);
 
 /**
  * Does the server's log hold nothing this phone has not seen?
@@ -237,9 +257,12 @@ function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T
   );
 }
 
+/** Save a record — unless the stored one was written under a LATER reset (see
+ *  `olderThan`): a page from before the reset, finishing a send it started
+ *  then, must not write its pre-reset rallies over what the phone has done
+ *  since. Read and written in one transaction (`rewrite`). */
 export async function saveQueued(rec: QueuedMatch): Promise<void> {
-  memory.set(rec.matchId, rec);
-  await tx("readwrite", (s) => s.put(rec) as IDBRequest<IDBValidKey>);
+  await rewrite(rec.matchId, (stored) => (olderThan(rec, stored) ? null : { put: rec }));
 }
 
 export async function loadQueued(matchId: string): Promise<QueuedMatch | null> {
@@ -247,9 +270,15 @@ export async function loadQueued(matchId: string): Promise<QueuedMatch | null> {
   return stored ?? memory.get(matchId) ?? null;
 }
 
-export async function clearQueued(matchId: string): Promise<void> {
-  memory.delete(matchId);
-  await tx("readwrite", (s) => s.delete(matchId) as unknown as IDBRequest<undefined>);
+/** Remove a record — from a page under reset `resetRev`; a record written
+ *  under a later reset is left alone (`olderThan`). */
+export async function clearQueued(matchId: string, resetRev?: number): Promise<void> {
+  if (resetRev === undefined) {
+    memory.delete(matchId);
+    await tx("readwrite", (s) => s.delete(matchId) as unknown as IDBRequest<undefined>);
+    return;
+  }
+  await rewrite(matchId, (stored) => (olderThan({ resetRev }, stored) ? null : "delete"));
 }
 
 export async function allQueued(): Promise<QueuedMatch[]> {
@@ -318,8 +347,50 @@ async function rewrite(
  * unconditionally deleted it, so a referee's second rally vanished the moment
  * the first one landed, with nothing on screen to say so.
  */
-export async function clearIfLanded(matchId: string, log: readonly Side[]): Promise<void> {
-  await rewrite(matchId, (stored) => (stored && sameLog(stored.log, log) ? "delete" : null));
+export async function clearIfLanded(matchId: string, log: readonly Side[], resetRev?: number): Promise<void> {
+  await rewrite(matchId, (stored) =>
+    (stored && sameLog(stored.log, log) && !olderThan({ resetRev }, stored) ? "delete" : null));
+}
+
+/**
+ * The organiser reset this match at `resetRev` (step 8): a stored record built
+ * before it holds rallies that are never put back. It is replaced by a
+ * TOMBSTONE — no rallies, based on the reset — and returned so the console can
+ * say how many were not kept. A record built at or after the reset is kept.
+ */
+/**
+ * How many rallies this phone tapped that a dropped record held: the ones past
+ * where it and the server's known log part ways. Not `log − base`: an undo
+ * followed by two new rallies is two rallies the referee tapped, and a net
+ * count called it one.
+ */
+export function unkeptRallies(rec: Pick<QueuedMatch, "log" | "baseLog" | "tombstone"> | null): number {
+  if (!rec || rec.tombstone) return 0;
+  const base = rec.baseLog ?? [];
+  let shared = 0;
+  while (shared < rec.log.length && shared < base.length && rec.log[shared] === base[shared]) shared++;
+  return rec.log.length - shared;
+}
+
+/** Drop a record from before the reset (`dropBefore`) and say how many rallies
+ *  went — the one call both the console and the no-court page make. */
+export async function dropForReset(matchId: string, resetRev: number): Promise<number> {
+  return unkeptRallies(await dropBefore(matchId, resetRev));
+}
+
+export async function dropBefore(matchId: string, resetRev: number): Promise<QueuedMatch | null> {
+  let dropped: QueuedMatch | null = null;
+  await rewrite(matchId, (stored) => {
+    if (!stored || stored.baseRev >= resetRev) return null;
+    dropped = stored;
+    return {
+      put: {
+        matchId, log: [], baseRev: resetRev, baseLog: [], sent: [], queuedAt: Date.now(),
+        resetRev, tombstone: true,
+      },
+    };
+  });
+  return dropped;
 }
 
 export type FlushOutcome =
@@ -338,7 +409,11 @@ export type FlushOutcome =
    *  a pause sent on its own — which has no rallies to hold. */
   | { status: "typed"; matchId: string; a: number; b: number; rev: number; outcome: TypedOutcome | null; kept: boolean }
   /** The server will never take these rallies; the record is gone. */
-  | { status: "refused"; matchId: string; title: string; error: string };
+  | { status: "refused"; matchId: string; title: string; error: string }
+  /** The organiser reset the match after this phone's base (step 8). The
+   *  stored record is left as it is — the page that renders the reset drops it
+   *  and says what was in it — and NOTHING more is sent, at any rev. */
+  | { status: "reset"; matchId: string };
 
 /**
  * What a reply MEANS for the record, for every reply that ends the attempt —
@@ -350,7 +425,7 @@ export type FlushOutcome =
  */
 export async function settleReply(res: PushResult, rec: QueuedMatch): Promise<FlushOutcome | null> {
   if (res.ok) {
-    await clearIfLanded(rec.matchId, rec.log);
+    await clearIfLanded(rec.matchId, rec.log, rec.resetRev);
     /* What the server STORED, which is what the phone's next step builds on.
        Recorded as the log sent, a log the server had cut at the finish left
        the phone believing in rallies the server threw away, and the next
@@ -366,15 +441,23 @@ export async function settleReply(res: PushResult, rec: QueuedMatch): Promise<Fl
          the server's own log; filed as held, it came back after a reload as
          "rallies on this phone that were not saved" — rallies the organiser
          had deliberately replaced — with a button to put them back. */
-      const found = await rewrite(rec.matchId, (stored) => (stored ? { put: { ...stored, held: true } } : null));
+      /* Never a tombstone (nobody's rallies), and never a record written
+         under a later reset than this attempt's. `kept` is whether it WAS
+         held — it said "a record existed", so the card asked about a tombstone
+         even though nothing had been filed. */
+      const holds = (stored: QueuedMatch | null): stored is QueuedMatch =>
+        !!stored && !stored.tombstone && !olderThan(rec, stored);
+      const found = await rewrite(rec.matchId, (stored) => (holds(stored) ? { put: { ...stored, held: true } } : null));
       return {
         status: "typed", matchId: rec.matchId, a: res.a, b: res.b, rev: res.rev,
-        outcome: res.outcome ?? null, kept: found !== null,
+        outcome: res.outcome ?? null, kept: holds(found),
       };
     }
     case "refused":
-      await clearQueued(rec.matchId);
+      await clearQueued(rec.matchId, rec.resetRev);
       return { status: "refused", matchId: rec.matchId, title: res.title, error: res.error };
+    case "reset":
+      return { status: "reset", matchId: rec.matchId };
     case "error":
       return { status: "failed", matchId: rec.matchId, error: res.error };
     case "stale":
@@ -442,7 +525,7 @@ export async function flushMatch(
     if (relation === "same") {
       /* The log is there already — an earlier write landed and its reply was
          lost, or another device wrote the same. This attempt wrote nothing. */
-      await clearIfLanded(rec.matchId, sending.log);
+      await clearIfLanded(rec.matchId, sending.log, rec.resetRev);
       return { status: "flushed", matchId: rec.matchId, rev: res.rev, landed: false, serverLog: res.serverLog };
     }
     /* Nobody else has written a rally: the rev moved under a log this phone
@@ -467,7 +550,7 @@ export async function flushMatch(
           return { status: "conflict", matchId: rec.matchId, serverLog: res.serverLog, localLog: sending.log, rev: res.rev };
         }
         /* Another device has everything we have and more. Ours is redundant. */
-        await clearIfLanded(rec.matchId, sending.log);
+        await clearIfLanded(rec.matchId, sending.log, rec.resetRev);
         return { status: "flushed", matchId: rec.matchId, rev: res.rev, landed: false, serverLog: res.serverLog };
       case "diverged":
         return {

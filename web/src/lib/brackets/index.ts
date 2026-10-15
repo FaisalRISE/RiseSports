@@ -297,6 +297,91 @@ export function rowsByLabel<R extends LabelledRow>(rows: R[]): Map<string, R> {
   return drawn;
 }
 
+/* ── What waits on what ─────────────────────────────────────────────────
+ *
+ * ONE dependency graph, for the scheduler (a match is not timed before the
+ * matches it waits on) and for clearing and deleting (a match a later one
+ * waits on cannot change under it). It used to live in the scheduler alone;
+ * written twice, the two would disagree about the same draw.
+ *
+ * A slot names what it waits on with the grammar `resolveRef` owns: "A1" waits
+ * on EVERY match of group A — a table is final only when its last match is
+ * played — and "W:Semi-Final 1" / "L:…" on the ONE row that label means in the
+ * category (`rowsByLabel`: the drawn one, else the earliest hand-added one). */
+
+export type DependencyRow = LabelledRow & { divisionId: string; slotA: string | null; slotB: string | null };
+export type DependencyGroup = { id: string; divisionId: string; key: string };
+
+/** "A1" → { key: "A", rank: 1 }; anything else → null. */
+export function groupSlot(ref: string | null): { key: string; rank: number } | null {
+  const g = ref ? GROUP_REF.exec(ref) : null;
+  return g ? { key: g[1], rank: Number(g[2]) } : null;
+}
+
+/** The dependency key a slot waits on, or null for a slot that waits on nothing. */
+export function dependencyKey(ref: string, divisionId: string): string | null {
+  return resolveRef(ref, {
+    groupPlacing: (key) => `group:${divisionId}:${key}`,
+    tieWinner: (code) => `tie:${divisionId}:${code}`,
+    tieLoser: (code) => `tie:${divisionId}:${code}`,
+  });
+}
+
+/** Each dependency key → the match ids that satisfy it. */
+export function satisfiers(rows: DependencyRow[], groups: DependencyGroup[]): Map<string, string[]> {
+  const satisfiedBy = new Map<string, string[]>();
+  const add = (key: string, id: string) => {
+    const list = satisfiedBy.get(key) ?? [];
+    list.push(id);
+    satisfiedBy.set(key, list);
+  };
+  const groupById = new Map(groups.map((g) => [g.id, g]));
+  for (const m of rows) {
+    const g = m.groupId ? groupById.get(m.groupId) : null;
+    if (g) add(`group:${g.divisionId}:${g.key}`, m.id);
+  }
+  for (const divisionId of new Set(rows.map((m) => m.divisionId))) {
+    for (const [label, m] of rowsByLabel(rows.filter((x) => x.divisionId === divisionId))) {
+      add(`tie:${divisionId}:${label}`, m.id);
+    }
+  }
+  return satisfiedBy;
+}
+
+export type Dependent = { id: string; side: "a" | "b"; kind: "tie" | "group" };
+
+/**
+ * The match SIDES that wait on `targetId`, one level deep — each slotted side
+ * whose key the target satisfies. A match fed on both sides by one target (a
+ * one-group Final, A1 v A2) appears once per side. Deeper is not needed by its
+ * callers: a dependent must be unplayed before the target may change, and an
+ * unplayed match has filled nothing after it.
+ */
+export function dependentsOf(rows: DependencyRow[], groups: DependencyGroup[], targetId: string): Dependent[] {
+  return dependentsByTarget(rows, groups).get(targetId) ?? [];
+}
+
+/** `dependentsOf` for every match at once — the manage page asks it of every row. */
+export function dependentsByTarget(rows: DependencyRow[], groups: DependencyGroup[]): Map<string, Dependent[]> {
+  const satisfiedBy = satisfiers(rows, groups);
+  const out = new Map<string, Dependent[]>();
+  for (const m of rows) {
+    for (const [side, ref] of [["a", m.slotA], ["b", m.slotB]] as const) {
+      if (!ref) continue;
+      const key = dependencyKey(ref, m.divisionId);
+      if (!key) continue;
+      const kind = key.startsWith("group:") ? "group" : "tie";
+      for (const targetId of satisfiedBy.get(key) ?? []) {
+        if (targetId === m.id) continue;
+        const list = out.get(targetId) ?? [];
+        list.push({ id: m.id, side, kind });
+        out.set(targetId, list);
+      }
+    }
+  }
+  return out;
+}
+
 /* ── Which round each knockout row is in, read off the draw ────────────── */
 
 export type BracketRow = { id: string; round: string; slotA: string | null; slotB: string | null };

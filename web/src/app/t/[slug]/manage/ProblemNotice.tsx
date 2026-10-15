@@ -11,11 +11,20 @@
 
 import { useEffect } from "react";
 
-export function ProblemNotice({ code, text }: { code: string; text: string }) {
+export function ProblemNotice({ code, text, done = false }: { code: string; text: string; done?: boolean }) {
   useEffect(() => {
     window.history.replaceState(null, "", window.location.pathname);
   }, [code, text]);
 
+  /* `done`: what an action did, said once the same way (step 8's clears). */
+  if (done) {
+    return (
+      <p role="status" data-done={code}
+        className="mt-3 rounded-lg border border-emerald-500/50 bg-emerald-500/10 p-3 text-xs font-semibold text-emerald-200">
+        {text}
+      </p>
+    );
+  }
   return (
     <p role="alert" data-problem={code}
       className="mt-3 rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-xs font-semibold text-amber-200">

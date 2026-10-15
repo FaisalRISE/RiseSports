@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: () => {} }) }));
 
-const { typedHeading, sendTap, conflictWords } = await import("./RefConsole");
+const { typedHeading, sendTap, conflictWords, resetWords, pageReset, courtReset, readCard } = await import("./RefConsole");
 
 /* The heading on the referee's card when a result was typed in. A walkover or
    a retirement says so, as every other screen does, rather than reading as a
@@ -86,5 +86,66 @@ describe("what the conflict dialog says", () => {
   });
   it("each has rallies the other lacks", () => {
     expect(conflictWords(L("aab"), L("aaa")).heading).toBe("Another device also scored this match");
+  });
+});
+
+/* The card a referee sees when the organiser cleared or reset the match (step 8).
+   "Not kept", never "not saved": a dropped record may hold rallies that WERE
+   saved and then cleared with the rest. */
+describe("the reset card", () => {
+  it("says the match starts again, and how many of this phone's rallies went", () => {
+    expect(resetWords(0)).toEqual({ heading: "The organiser reset this match", body: "It starts again at 0–0." });
+    expect(resetWords(1).body).toBe("It starts again at 0–0. This phone's 1 rally was not kept.");
+    expect(resetWords(3).body).toBe("It starts again at 0–0. This phone's 3 rallies were not kept.");
+  });
+});
+
+/* When the reset card shows — and when it must not show again (step 8, round
+   two). The card is the console's outer part; its rules are pure. */
+describe("the reset card's rules", () => {
+  const start = (seen = 0) => ({ seen, notice: null, replied: false, read: false, quiet: false });
+
+  it("shows when the page comes back with a newer reset, even with nothing on the phone", () => {
+    expect(pageReset(start(0), 3)).toMatchObject({ seen: 3, notice: { rallies: 0 } });
+    expect(pageReset(start(3), 3)).toEqual(start(3));
+  });
+
+  it("is not news for a page catching up with a reset the court already knew of", () => {
+    const known = { ...start(0), seen: 4 };   // the cached page was older; the court reported reset 4
+    expect(pageReset(known, 4).notice).toBeNull();
+    expect(pageReset(known, 5).notice).toEqual({ rallies: 0 });   // a later reset still is
+  });
+
+  it("counts the rallies the court let go, the larger count winning", () => {
+    let c = courtReset(start(), 2, "reply");
+    expect(c).toMatchObject({ notice: { rallies: 2 }, replied: true });
+    c = pageReset(c, 3);
+    c = courtReset(c, 3, "drop");
+    expect(c.notice).toEqual({ rallies: 3 });
+  });
+
+  /* Read with no signal before the page came back: when it does, neither the
+     newer reset nor the remounted court's drop of the same rallies shows it
+     again — the referee has read it, and is looking at 0–0. */
+  it("read before the page came back, it does not come back with the page", () => {
+    let c = courtReset(start(0), 2, "reply");
+    c = readCard(c);
+    expect(c.notice).toBeNull();
+    c = pageReset(c, 3);
+    expect(c.notice).toBeNull();
+    c = courtReset(c, 2, "drop");
+    expect(c.notice).toBeNull();
+    /* …and the next reset after that is news again. */
+    c = pageReset(c, 5);
+    expect(c.notice).toEqual({ rallies: 0 });
+  });
+
+  it("read AFTER the page came back, a later drop still shows", () => {
+    let c = courtReset(start(0), 2, "reply");
+    c = pageReset(c, 3);
+    c = readCard(c);
+    expect(c.read).toBe(false);
+    c = courtReset(c, 1, "drop");
+    expect(c.notice).toEqual({ rallies: 1 });
   });
 });

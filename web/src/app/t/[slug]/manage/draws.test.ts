@@ -265,3 +265,19 @@ describe("a result that arrives mid-draw", () => {
     expect((await db.select().from(schema.matches).where(and(eq(schema.matches.id, planned[0]))))[0].log).toEqual(["a"]);
   });
 });
+
+/* Step 8: a rating can leave a ledger row (an imbalance written down) with no
+   history row behind it. The DELETE's own re-check counts it as a rating, so a
+   draw that read the match before it landed rolls back with DrawChanged — the
+   organiser is told — rather than meeting the RESTRICT foreign key as a raw
+   database error. */
+describe("a ledger row that arrives mid-draw", () => {
+  it("rolls the delete back like any other rating", async () => {
+    const t = await event("ledger-race");
+    await actions.generateGroups(t.id, await form({ divisionId: t.divisionId, groups: "1" }));
+    const planned = (await matchesOf(t.divisionId)).map((m) => m.id);
+    await db.insert(schema.ratingLedger).values({ id: "ledger-race-1", matchId: planned[0], imbalance: 2, reason: "carry" });
+    await expect(db.transaction(async (tx) => guard.deleteUnplayed(tx, planned))).rejects.toBeInstanceOf(guard.DrawChanged);
+    expect((await matchesOf(t.divisionId)).map((m) => m.id).sort()).toEqual([...planned].sort());
+  });
+});

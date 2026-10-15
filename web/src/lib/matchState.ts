@@ -42,6 +42,9 @@ export type MatchView = ReplayState & {
   /** Locked while a rotation is unconfirmed or the match is finished. */
   locked: boolean;
   rev: number;
+  /** The rev the organiser last cleared or reset this match at (step 8; 0 =
+   *  never). The referee console is keyed on it, so a reset starts it afresh. */
+  resetRev: number;
   typed: boolean;
   /** The typed result, when there is one — the replayed `a`/`b` above are the
    *  rally log's, which a typed match does not have. */
@@ -173,7 +176,7 @@ export const allowsDraws = (sport: string): boolean => sport === "ch" || sport =
 export function viewMatch(
   t: Pick<Tournament, "sport" | "format" | "scoring">,
   m: Pick<Match, "id" | "log" | "server" | "posA" | "posB" | "ackedGates" | "rev" | "typedScoreA" | "typedScoreB"> &
-     Partial<Pick<Match, "timing" | "rules" | "outcome">>,
+     Partial<Pick<Match, "timing" | "rules" | "outcome" | "resetRev">>,
 ): MatchView {
   const rules = rulesFor(t, m);
   const state = replayRallies(
@@ -203,6 +206,7 @@ export function viewMatch(
     matchId: m.id,
     locked: state.over || (osl?.pendingGate ?? 0) > 0,
     rev: m.rev,
+    resetRev: m.resetRev ?? 0,
     typed: m.typedScoreA != null && m.typedScoreB != null,
     typedScore: m.typedScoreA != null && m.typedScoreB != null ? { a: m.typedScoreA, b: m.typedScoreB } : null,
     outcome: m.outcome ?? null,

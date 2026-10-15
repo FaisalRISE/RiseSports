@@ -9,6 +9,7 @@ import { principalFor } from "@/lib/auth/guard";
 import { canScore, canView } from "@/lib/auth/policy";
 import { RefConsole, type ConsoleTeam } from "@/components/RefConsole";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
+import { ResetDrop } from "@/components/ResetDrop";
 import { scorePoint, undoPoint, minusPoint, confirmRotation, setMatchSetup, pushLog } from "../../actions";
 import type { LiteRules } from "@/lib/scoring/replayLite";
 import type { Side } from "@/lib/scoring/replay";
@@ -99,6 +100,7 @@ export default async function ScorePage({
         {canScore(principal) ? "" : " · view only"}
       </p>
 
+      {(waiting || noCourt) && <ResetDrop matchId={row.match.id} resetRev={row.match.resetRev} />}
       {waiting ? (
         <div data-testid="teams-not-in" className="space-y-3 rounded-xl border border-neutral-700 bg-neutral-900 p-4">
           <h2 className="text-base font-black">{waiting.title}</h2>

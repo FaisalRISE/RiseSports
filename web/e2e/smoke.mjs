@@ -41,7 +41,9 @@ await p.goto(B+'/t/osl-2026/manage'); await p.waitForTimeout(500);
 const links=await p.locator('a:has-text("Score")').count();
 ok(links>0,'manage page lists scoreable matches ('+links+')');
 // open the match parked at 6-4 (one point from the Pair B rotation)
-const rows=await p.locator('li').filter({hasText:'Group A'}).all();
+/* By the row's own round (data-round), not its text: since step 8 a row's
+   words can name OTHER matches ("Semi-Final has started"). */
+const rows=await p.locator('li[data-round="Group A"]').all();
 let opened=false;
 for(const r of rows){ const t=await r.textContent(); if(t.includes('6–4')){ await r.locator('a:has-text("Score")').click(); opened=true; break; } }
 ok(opened,'found the match parked one point before the rotation');
@@ -72,7 +74,7 @@ ok(undone.includes('Pair A'),'undo drops back to Pair A');
 
 console.log('\n== golden point ==');
 await p.goto(B+'/t/osl-2026/manage'); await p.waitForTimeout(500);
-const semi=p.locator('li').filter({hasText:'Semi-Final'}).first();
+const semi=p.locator('li[data-round="Semi-Final"]').first();
 await semi.locator('a:has-text("Score")').click(); await p.waitForTimeout(700);
 ok((await p.textContent('body')).includes('Golden point'),'24-24 shows the golden point');
 

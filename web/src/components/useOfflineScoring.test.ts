@@ -77,7 +77,10 @@ vi.mock("react", () => ({
 
 /* The browser the hook expects: online or not, the `online` event, a timer. */
 const listeners: Record<string, (() => void)[]> = {};
-const timers: (() => void)[] = [];
+/* Real enough to unmount: clearInterval removes the timer, as a remount's
+   cleanup needs (step 8). */
+const timers = new Map<number, () => void>();
+let nextTimer = 0;
 /* Installed only once the database is up: PGlite looks for a `window` and,
    finding one, takes itself for a browser. */
 function pretendBrowser() {
@@ -86,8 +89,8 @@ function pretendBrowser() {
     value: {
       addEventListener: (t: string, f: () => void) => { (listeners[t] ??= []).push(f); },
       removeEventListener: (t: string, f: () => void) => { listeners[t] = (listeners[t] ?? []).filter((x) => x !== f); },
-      setInterval: (f: () => void) => { timers.push(f); return timers.length; },
-      clearInterval: () => {},
+      setInterval: (f: () => void) => { timers.set(++nextTimer, f); return nextTimer; },
+      clearInterval: (id: number) => { timers.delete(id); },
     },
     configurable: true,
     writable: true,
@@ -95,7 +98,7 @@ function pretendBrowser() {
 }
 const setOnline = (on: boolean) => { (globalThis.navigator as { onLine: boolean }).onLine = on; };
 const fire = (t: string) => { for (const f of listeners[t] ?? []) f(); };
-const tickTimers = () => { for (const f of [...timers]) f(); };
+const tickTimers = () => { for (const f of [...timers.values()]) f(); };
 
 /* ── The server ───────────────────────────────────────────────────────────── */
 
@@ -109,6 +112,7 @@ const dir = path.join(os.tmpdir(), `rise-phone-${randomUUID()}`);
 process.env.DATABASE_URL = `pglite://${dir.replace(/\\/g, "/")}`;
 
 let actions: typeof import("@/app/t/[slug]/actions");
+let manage: typeof import("@/app/t/[slug]/manage/actions");
 let hook: typeof import("./useOfflineScoring");
 let queue: typeof import("@/lib/offline/queue");
 let change: typeof import("@/lib/scoring/change");
@@ -177,6 +181,9 @@ async function mount(
     autoRefresh?: boolean;
     /** Runs straight after the first render, before the stored queue is read. */
     beforeLoad?: (now: ReturnType<typeof hook.useOfflineScoring>) => void;
+    /** The FIRST render is this one, not the match as it is: a cold load with
+        no signal, answered by the service worker from its cache (step 8, A1). */
+    cached?: { serverLog: Side[]; serverRev: number; resetRev: number };
   } = {},
 ) {
   runtime.slots = [];
@@ -187,8 +194,14 @@ async function mount(
     const m = await stored(matchId);
     const typed = m && m.typedScoreA != null && m.typedScoreB != null
       ? { a: m.typedScoreA, b: m.typedScoreB, outcome: m.outcome ?? null } : null;
-    return { serverLog: (m?.log ?? []) as Side[], serverRev: m?.rev ?? 0, typed };
+    return { serverLog: (m?.log ?? []) as Side[], serverRev: m?.rev ?? 0, resetRev: m?.resetRev ?? 0, typed };
   };
+  const freshClock = () =>
+    (opts.clock ? countingClock() : { claim: () => ({ playMs: 0, pausedMs: 0 }), restore: () => {}, hasPending: () => false }) as never;
+  let clock = (opts.clock ?? freshClock()) as never;
+  let mounts = 1;
+  /* How many times the console asked for the page again (router.refresh). */
+  let syncs = 0;
   let out = {} as ReturnType<typeof hook.useOfflineScoring>;
   args = {
     matchId,
@@ -197,9 +210,10 @@ async function mount(
     server: "a", posA: 0, posB: 0,
     sides: ["A", "B"],
     push: (async (...p: Parameters<typeof actions.pushLog>) => { pushes.push([...p[1]]); return push(...p); }) as typeof actions.pushLog,
-    onSynced: () => { if (opts.autoRefresh !== false) void refresh(); },
-    clock: (opts.clock ?? { claim: () => ({ playMs: 0, pausedMs: 0 }), restore: () => {}, hasPending: () => false }) as never,
+    onSynced: () => { syncs++; if (opts.autoRefresh !== false) void refresh(); },
+    clock,
     ...(await fromServer()),
+    ...(opts.cached ? { ...opts.cached, typed: null } : {}),
   };
   runtime.render = () => {
     runtime.cursor = 0;
@@ -208,21 +222,45 @@ async function mount(
     runtime.effects = [];
     for (const e of run) e();
   };
+  /* The page re-rendering. A changed reset_rev REMOUNTS the console, as the
+     score page's key on it does (RefConsole): every effect's cleanup runs, the
+     hook starts from nothing, and the clock is a fresh one. */
   async function refresh() {
-    args = { ...args, ...(await fromServer()) };
+    const next = await fromServer();
+    if (next.resetRev !== args.resetRev) {
+      for (const s of runtime.slots) s?.cleanup?.();
+      runtime.slots = [];
+      runtime.effects = [];
+      clock = freshClock();
+      mounts++;
+      args = { ...args, ...next, clock };
+    } else {
+      args = { ...args, ...next };
+    }
     runtime.render();
   }
   runtime.render();
   opts.beforeLoad?.(out);
   await settle();
-  return { get now() { return out; }, pushes, refresh };
+  return { get now() { return out; }, pushes, refresh, get clock() { return clock as unknown as ReturnType<typeof countingClock>; }, get mounts() { return mounts; }, get syncs() { return syncs; } };
 }
 
 /** A page reload: the open console's listeners and timers go with the page. */
-async function reload(matchId: string, push = actions.pushLog) {
-  timers.length = 0;
+async function reload(matchId: string, push = actions.pushLog, cached?: NonNullable<Parameters<typeof mount>[2]>["cached"]) {
+  timers.clear();
   for (const k of Object.keys(listeners)) delete listeners[k];
-  return mount(matchId, push);
+  return mount(matchId, push, { cached });
+}
+
+/** The organiser presses "Clear result…" / "Reset to 0–0…" on the manage
+    page. Returns the match's new rev, which is its reset_rev. */
+async function organiserClears(id: string) {
+  const m = await stored(id);
+  const f = new FormData();
+  f.set("confirm", String(m.rev));
+  await expect(manage.clearResult(m.tournamentId, id, f)).rejects.toThrow("redirect");
+  expect((await stored(id)).resetRev).toBe(m.rev + 1);
+  return m.rev + 1;
 }
 
 /** A push held open until `release()`, one gate per call while `hold` says. */
@@ -243,6 +281,7 @@ beforeAll(async () => {
   ({ db } = await import("@/lib/db"));
   schema = await import("@/lib/db/schema");
   actions = await import("@/app/t/[slug]/actions");
+  manage = await import("@/app/t/[slug]/manage/actions");
   change = await import("@/lib/scoring/change");
   hook = await import("./useOfflineScoring");
   queue = await import("@/lib/offline/queue");
@@ -262,7 +301,7 @@ afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 beforeEach(() => {
   queue.__resetQueue();
-  timers.length = 0;
+  timers.clear();
   for (const k of Object.keys(listeners)) delete listeners[k];
   setOnline(true);
 });
@@ -713,13 +752,21 @@ describe("a hold kept up to date", () => {
     expect(again.pushes.length).toBe(0);
   });
 
-  it("is an ordinary queue after a reload once the typed result has gone", async () => {
+  /* The typed result went because the ORGANISER cleared it: the held rallies
+     are from before that, and are not put back (step 8). The test this
+     replaces faked the clear with a raw UPDATE and expected them SENT — which
+     is the bug. */
+  it("is dropped after a reload once the organiser has cleared the result, and the phone says so", async () => {
     const { id } = await heldAfterTyping();
-    await db.update(schema.matches).set({ typedScoreA: null, typedScoreB: null, rev: 2 }).where(eq(schema.matches.id, id));
+    await organiserClears(id);
     const again = await reload(id);
     await settle();
     expect(again.now.held).toBeNull();
-    expect((await stored(id)).log).toEqual(["a", "a"]);
+    expect(again.now.conflict).toBeNull();
+    expect(again.now.dropped).toEqual({ rallies: 2 });
+    expect(again.pushes).toEqual([]);
+    expect((await stored(id)).log).toEqual([]);
+    expect((await queue.loadQueued(id))?.tombstone).toBe(true);
   });
 });
 
@@ -1048,11 +1095,38 @@ describe("a reload after another device took a point off", () => {
     fire("online");
     await settle();
     expect(phone.now.held).toMatchObject({ a: 11, b: 7 });
-    await db.update(schema.matches).set({ typedScoreA: null, typedScoreB: null, rev: 9 }).where(eq(schema.matches.id, id));
+    /* Another phone replaces the typed result, then takes its own rally off:
+       no reset, and nothing this phone has seen. */
+    expect(await actions.pushLog(id, ["b"], 1, undefined, { replaceTyped: true })).toEqual({ ok: true, rev: 2 });
+    expect(await actions.pushLog(id, [], 2)).toEqual({ ok: true, rev: 3 });
     await phone.refresh();
     await settle();
     expect(phone.now.held).toBeNull();
     expect(phone.now.conflict).toMatchObject({ serverLog: [], localLog: ["a", "a"] });
+    expect((await stored(id)).log).toEqual([]);
+  });
+
+  /* The same hold, with the typed result cleared by the organiser: nothing to
+     ask — the rallies are from before the reset and are not put back. */
+  it("a released hold is dropped, not asked about, when the organiser cleared the result", async () => {
+    const id = await match(["a", "a", "a"]);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.undoOffline();
+    await settle();
+    expect(await actions.recordResult(id, { a: 11, b: 7, expectedRev: 0, replaceLive: true })).toMatchObject({ ok: true });
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(phone.now.held).toMatchObject({ a: 11, b: 7 });
+    const sent = phone.pushes.length;
+    await organiserClears(id);
+    await phone.refresh();
+    await settle();
+    expect(phone.mounts).toBe(2);
+    expect(phone.now.held).toBeNull();
+    expect(phone.now.conflict).toBeNull();
+    expect(phone.pushes.length).toBe(sent);
     expect((await stored(id)).log).toEqual([]);
   });
 });
@@ -1276,5 +1350,710 @@ describe("a reload of a match typed in over this phone's queued rallies", () => 
     expect(again.now.held).toEqual({ a: 11, b: 7, rev: 1, outcome: null });
     expect((await queue.loadQueued(id))?.held).toBe(true);
     expect((await stored(id)).typedScoreA).toBe(11);
+  });
+});
+
+/* ── The organiser resets the match (step 8) ─────────────────────────────────
+ * A clear or a reset on the manage screen moves the match's reset_rev. Rallies
+ * this phone built before it are never put back — not sent, held or asked
+ * about — wherever they are found: on a reload, in the send loop, behind a
+ * hold, behind a conflict. The phone says how many it let go, and the court
+ * starts again at 0–0. Each test here fails on the code before step 8, where a
+ * cleared match looked like one never started and the phone wrote its rallies
+ * back. */
+
+/** A phone that scored two rallies on top of a 1–0 with no signal, before the
+    organiser reset the match. */
+async function queuedBeforeReset() {
+  const id = await match(["a"]);
+  const phone = await mount(id);
+  setOnline(false);
+  phone.now.scoreOffline("b");
+  await settle();
+  phone.now.scoreOffline("b");
+  await settle();
+  expect((await queue.loadQueued(id))?.log).toEqual(["a", "b", "b"]);
+  const reset = await organiserClears(id);
+  return { id, phone, reset };
+}
+
+describe("rallies from before a reset, found on a reload", { timeout: 30_000 }, () => {
+  it("are dropped, never sent, and the phone says how many", async () => {
+    const { id } = await queuedBeforeReset();
+    setOnline(true);
+    const again = await reload(id);
+    await settle();
+    expect(again.pushes).toEqual([]);
+    expect(again.now.dropped).toEqual({ rallies: 2 });
+    expect(again.now.conflict).toBeNull();
+    expect(again.now.held).toBeNull();
+    expect((await stored(id)).log).toEqual([]);
+    /* Nothing is sent later either. */
+    tickTimers();
+    fire("online");
+    await settle();
+    expect(again.pushes).toEqual([]);
+  });
+
+  it("are dropped when the queue was an undo made past the reset", async () => {
+    const id = await match(["a", "a"]);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.undoOffline();
+    await settle();
+    await organiserClears(id);
+    setOnline(true);
+    const again = await reload(id);
+    await settle();
+    expect(again.pushes).toEqual([]);
+    expect(again.now.conflict).toBeNull();
+    expect((await stored(id)).log).toEqual([]);
+  });
+
+  it("leave a court that takes the next rally from 0–0", async () => {
+    const { id } = await queuedBeforeReset();
+    setOnline(true);
+    const again = await reload(id);
+    await settle();
+    again.now.scoreOffline("a");
+    await settle();
+    expect((await stored(id)).log).toEqual(["a"]);
+  });
+});
+
+describe("rallies from before a reset, in the send loop", { timeout: 30_000 }, () => {
+  it("are sent once, answered 'reset', and the page is fetched again at 0–0", async () => {
+    const { id, phone, reset } = await queuedBeforeReset();
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(phone.pushes).toEqual([["a", "b", "b"]]);
+    /* The page came back with the new reset_rev and the console remounted: the
+       remounted console found the old record and let it go. */
+    expect(phone.mounts).toBe(2);
+    expect(phone.now.dropped).toEqual({ rallies: 2 });
+    expect(phone.now.conflict).toBeNull();
+    const m = await stored(id);
+    expect([m.log, m.rev]).toEqual([[], reset]);
+    /* A tap after the remount lands. */
+    phone.now.scoreOffline("b");
+    await settle();
+    expect((await stored(id)).log).toEqual(["b"]);
+  });
+
+  /* Answered "reset" with no page coming back (the signal dropped between the
+     reply and the render): the old console takes no tap and sends nothing,
+     at any rev — the timer and the online event fetch the page instead. */
+  it("stop everything on the old console until the page comes back", async () => {
+    const id = await match(["a"]);
+    const phone = await mount(id, actions.pushLog, { autoRefresh: false });
+    setOnline(false);
+    phone.now.scoreOffline("b");
+    await settle();
+    await organiserClears(id);
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(phone.now.resetting).toEqual({ rallies: 1 });
+    phone.now.scoreOffline("a");
+    await settle();
+    expect((await queue.loadQueued(id))?.log, "the tap was not taken").toEqual(["a", "b"]);
+    tickTimers();
+    fire("online");
+    await settle();
+    expect(phone.pushes).toEqual([["a", "b"]]);
+    expect((await stored(id)).log).toEqual([]);
+  });
+
+  /* A pause with nothing queued carries the log the phone last knew. From
+     before the reset it is answered "reset" and moves nothing; the page comes
+     back, and play goes on. */
+  it("a pause from before the reset moves nothing, and the next tap lands", async () => {
+    const id = await match(["a", "a"]);
+    const phone = await mount(id, actions.pushLog, { clock: countingClock() });
+    const reset = await organiserClears(id);
+    phone.clock.pause = "injury";
+    phone.now.syncClock();
+    await settle();
+    const m = await stored(id);
+    expect([m.rev, m.timing, m.log]).toEqual([reset, null, []]);
+    expect(phone.mounts).toBe(2);
+    expect(phone.now.dropped).toBeNull();
+    phone.now.scoreOffline("b");
+    await settle();
+    expect((await stored(id)).log).toEqual(["b"]);
+  });
+});
+
+describe("rallies from before a reset, behind a choice", { timeout: 30_000 }, () => {
+  it("held for a typed result, are dropped when the organiser clears it — on the next render and on a reload", async () => {
+    const { id, phone } = await heldAfterTyping();
+    const sent = phone.pushes.length;
+    await organiserClears(id);
+    await phone.refresh();
+    await settle();
+    expect(phone.mounts).toBe(2);
+    expect(phone.now.held).toBeNull();
+    expect(phone.now.dropped).toEqual({ rallies: 2 });
+    expect(phone.pushes.length).toBe(sent);
+    const again = await reload(id);
+    await settle();
+    expect(again.now.held).toBeNull();
+    expect(again.now.dropped).toBeNull(); // already let go, and said once
+    expect(again.pushes).toEqual([]);
+    expect((await stored(id)).log).toEqual([]);
+  });
+
+  it("held, then cleared and typed in again: the new result stands and nothing is held", async () => {
+    const { id } = await heldAfterTyping();
+    const reset = await organiserClears(id);
+    expect(await actions.recordResult(id, { a: 11, b: 3, expectedRev: reset })).toMatchObject({ ok: true });
+    const again = await reload(id);
+    await settle();
+    expect(again.now.held).toBeNull();
+    expect(again.now.dropped).toEqual({ rallies: 2 });
+    expect(again.pushes).toEqual([]);
+    const m = await stored(id);
+    expect([m.typedScoreA, m.typedScoreB, m.log]).toEqual([11, 3, []]);
+  });
+
+  it("'Use this phone's score' after the organiser cleared the result is answered 'reset' and lands nothing", async () => {
+    const { id, phone } = await heldAfterTyping();
+    const reset = await organiserClears(id);
+    expect(await actions.recordResult(id, { a: 11, b: 3, expectedRev: reset })).toMatchObject({ ok: true });
+    await phone.now.replaceTyped();
+    await settle();
+    const m = await stored(id);
+    expect([m.typedScoreA, m.typedScoreB, m.log]).toEqual([11, 3, []]);
+    expect(phone.mounts).toBe(2);
+    expect(phone.now.held).toBeNull();
+    expect(phone.now.dropped).toEqual({ rallies: 2 });
+  });
+
+  it("'Keep this phone's score' after the organiser reset the match is answered 'reset' and lands nothing", async () => {
+    const id = await match(["a", "a", "a"]);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.scoreOffline("b");
+    await settle();
+    expect(await actions.pushLog(id, ["a", "a", "a", "a"], 0)).toEqual({ ok: true, rev: 1 });
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(phone.now.conflict).not.toBeNull();
+    await organiserClears(id);
+    await phone.now.resolveConflict("mine");
+    await settle();
+    expect((await stored(id)).log).toEqual([]);
+    expect(phone.mounts).toBe(2);
+    expect(phone.now.conflict).toBeNull();
+  });
+});
+
+describe("a push that landed before the reset, answered after the console remounted", { timeout: 30_000 }, () => {
+  it("does not delete the record the new console made", async () => {
+    const id = await match([]);
+    const gates: (() => void)[] = [];
+    let n = 0;
+    /* The request lands at once; its REPLY is held back. */
+    const push: typeof actions.pushLog = async (...p) => {
+      const r = await actions.pushLog(...p);
+      if (n++ === 0) await new Promise<void>((res) => gates.push(res));
+      return r;
+    };
+    const phone = await mount(id, push);
+    phone.now.scoreOffline("a");
+    await settle();
+    expect((await stored(id)).log).toEqual(["a"]);
+    const reset = await organiserClears(id);
+    await phone.refresh();
+    await settle();
+    expect(phone.mounts).toBe(2);
+    setOnline(false);
+    /* The SAME rally the old push carried: by its log alone the new record
+       looks like the one that landed, and "clear it if it landed" deleted it. */
+    phone.now.scoreOffline("a");
+    await settle();
+    expect(await queue.loadQueued(id)).toMatchObject({ log: ["a"], resetRev: reset });
+
+    gates.shift()!(); // the old push's reply arrives
+    await settle();
+    expect(await queue.loadQueued(id)).toMatchObject({ log: ["a"], resetRev: reset });
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect((await stored(id)).log).toEqual(["a"]);
+  });
+});
+
+/* A cold load with no signal is answered by the service worker from its cache:
+   the referee's last FULL page load, often from before a reset or before a
+   write this phone made since. Nothing is judged against a page OLDER than
+   the record on the phone (amendment A1). */
+describe("a cold load from a cached page older than the phone's record", { timeout: 30_000 }, () => {
+  it("does not take this phone's own writes for another device's correction", async () => {
+    const id = await match([]);
+    const phone = await mount(id);
+    phone.now.scoreOffline("a");
+    await settle();
+    phone.now.scoreOffline("a");
+    await settle();
+    expect((await stored(id)).rev).toBe(2);
+    setOnline(false);
+    phone.now.scoreOffline("b");
+    await settle();
+    /* The cached page is from the first rally. */
+    const again = await reload(id, actions.pushLog, { serverLog: ["a"], serverRev: 1, resetRev: 0 });
+    await settle();
+    expect(again.now.conflict).toBeNull();
+    expect((await queue.loadQueued(id))?.log).toEqual(["a", "a", "b"]);
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect((await stored(id)).log).toEqual(["a", "a", "b"]);
+  });
+
+  it("does not judge rallies scored after a reset against the score before it", async () => {
+    const id = await match(["a", "a"]);
+    const reset = await organiserClears(id);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.scoreOffline("a");
+    await settle();
+    expect(await queue.loadQueued(id)).toMatchObject({ log: ["a"], resetRev: reset });
+    /* The cached page still shows 2–0 from before the reset; judged against it,
+       the new 1–0 read as "behind" and was deleted with no question. */
+    const again = await reload(id, actions.pushLog, { serverLog: ["a", "a"], serverRev: 0, resetRev: 0 });
+    await settle();
+    expect(again.now.conflict).toBeNull();
+    expect((await queue.loadQueued(id))?.log).toEqual(["a"]);
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect((await stored(id)).log).toEqual(["a"]);
+  });
+
+  /* The record was let go on a load that knew about the reset. A later cold
+     load of the pre-reset page finds the tombstone and starts from 0–0, not
+     from the old score. */
+  it("starts from 0–0 when the phone already let the old rallies go", async () => {
+    const { id } = await queuedBeforeReset();
+    setOnline(true);
+    await reload(id);
+    await settle();
+    expect((await queue.loadQueued(id))?.tombstone).toBe(true);
+    setOnline(false);
+    const cold = await reload(id, actions.pushLog, { serverLog: ["a"], serverRev: 0, resetRev: 0 });
+    await settle();
+    expect(cold.now.local).toMatchObject({ a: 0, b: 0 });
+    cold.now.scoreOffline("b");
+    await settle();
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(cold.pushes).toEqual([["b"]]);
+    expect((await stored(id)).log).toEqual(["b"]);
+  });
+});
+
+/* ── Round one of step 8's review ───────────────────────────────────────────
+ * A page served from the cache with no signal can be OLDER than a reset the
+ * phone already knows of — its stored record was built after the reset. The
+ * page used to stamp everything it wrote with ITS older reset, and the queue
+ * refused every one of those writes as "from before the reset": taps shown on
+ * the court and never kept, lost on the next cold load; and the record from
+ * before the cold load never cleared, so it came back and was resumed as this
+ * phone's next step. */
+
+/** The phone starts again with no signal, and the service worker serves the
+    last full page load — from before the organiser's reset. */
+const coldFromCache = (id: string, cached: { serverLog: Side[]; serverRev: number; resetRev: number }) => {
+  setOnline(false);
+  return reload(id, actions.pushLog, cached);
+};
+const PRE_RESET = (log: Side[]) => ({ serverLog: log, serverRev: 0, resetRev: 0 });
+
+describe("a page from the cache, older than a reset the phone knows of", { timeout: 30_000 }, () => {
+  it("keeps every tap made on it, through a second cold load, and sends them", async () => {
+    const id = await match(["a", "a"]);
+    const reset = await organiserClears(id);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.scoreOffline("a");
+    await settle();
+    const cold = await coldFromCache(id, PRE_RESET(["a", "a"]));
+    await settle();
+    expect(cold.now.knownReset).toBe(reset);
+    cold.now.scoreOffline("b");
+    await settle();
+    expect(await queue.loadQueued(id)).toMatchObject({ log: ["a", "b"], resetRev: reset });
+    const again = await coldFromCache(id, PRE_RESET(["a", "a"]));
+    await settle();
+    expect(again.now.local).toMatchObject({ a: 1, b: 1 });
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect((await stored(id)).log).toEqual(["a", "b"]);
+  });
+
+  it("keeps taps made over a tombstone, too", async () => {
+    const { id } = await queuedBeforeReset();
+    setOnline(true);
+    await reload(id);
+    await settle();
+    expect((await queue.loadQueued(id))?.tombstone).toBe(true);
+    const cold = await coldFromCache(id, PRE_RESET(["a"]));
+    await settle();
+    cold.now.scoreOffline("b");
+    await settle();
+    cold.now.scoreOffline("b");
+    await settle();
+    expect((await queue.loadQueued(id))?.log).toEqual(["b", "b"]);
+    const again = await coldFromCache(id, PRE_RESET(["a"]));
+    await settle();
+    expect(again.now.local).toMatchObject({ a: 0, b: 2 });
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect((await stored(id)).log).toEqual(["b", "b"]);
+  });
+
+  /* The record from before the cold load used to survive the page's landed
+     write and be resumed after the refresh: a saved rally taken off again with
+     no question, or the phone's own undo put to the referee as another
+     device's. */
+  it("leaves nothing behind to be resumed once its write lands", async () => {
+    const id = await match(["a", "a"]);
+    const reset = await organiserClears(id);
+    const phone = await mount(id);
+    phone.now.scoreOffline("a");
+    await settle();
+    phone.now.scoreOffline("b");
+    await settle();
+    expect((await stored(id)).log).toEqual(["a", "b"]);
+    setOnline(false);
+    phone.now.undoOffline();
+    await settle();
+    const cold = await coldFromCache(id, PRE_RESET(["a", "a"]));
+    await settle();
+    cold.now.scoreOffline("b");
+    await settle();
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect((await stored(id)).log).toEqual(["a", "b"]);
+    expect(cold.now.conflict).toBeNull();
+    expect((await stored(id)).resetRev).toBe(reset);
+    expect(await queue.loadQueued(id)).toBeNull();
+  });
+
+  it("an undo of everything on it lands, and is not asked about afterwards", async () => {
+    const id = await match(["a", "a"]);
+    await organiserClears(id);
+    const phone = await mount(id);
+    phone.now.scoreOffline("a");
+    await settle();
+    phone.now.scoreOffline("b");
+    await settle();
+    setOnline(false);
+    phone.now.undoOffline();
+    await settle();
+    const cold = await coldFromCache(id, PRE_RESET(["a", "a"]));
+    await settle();
+    cold.now.undoOffline();
+    await settle();
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect((await stored(id)).log).toEqual([]);
+    expect(cold.now.conflict).toBeNull();
+  });
+
+  it("'Keep the saved score' in a conflict found on it is not asked again after the refresh", async () => {
+    const id = await match(["a", "a"]);
+    const reset = await organiserClears(id);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.scoreOffline("a");
+    await settle();
+    expect(await actions.pushLog(id, ["b", "b"], reset)).toEqual({ ok: true, rev: reset + 1 });
+    const cold = await coldFromCache(id, PRE_RESET(["a", "a"]));
+    await settle();
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(cold.now.conflict).toMatchObject({ serverLog: ["b", "b"], localLog: ["a"] });
+    await cold.now.resolveConflict("theirs");
+    await settle();
+    expect(cold.now.conflict).toBeNull();
+    expect(await queue.loadQueued(id)).toBeNull();
+    expect((await stored(id)).log).toEqual(["b", "b"]);
+  });
+
+  it("counts what is not yet saved against what the server holds, not the cached page", async () => {
+    const id = await match(["a", "a"]);
+    await organiserClears(id);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.scoreOffline("a");
+    await settle();
+    const cold = await coldFromCache(id, PRE_RESET(["a", "a"]));
+    await settle();
+    expect(cold.now.queued).toBe(1);
+    expect(cold.now.stalled).toBe(true);
+  });
+
+  /* Once the write lands, the court used to fall back to the cached page —
+     the score from before the reset — until a refresh happened to succeed. */
+  it("shows what the server holds once its write lands, not the cached score", async () => {
+    const id = await match(["a", "a"]);
+    await organiserClears(id);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.scoreOffline("b");
+    await settle();
+    timers.clear();
+    for (const k of Object.keys(listeners)) delete listeners[k];
+    const cold = await mount(id, actions.pushLog, { cached: PRE_RESET(["a", "a"]), autoRefresh: false });
+    await settle();
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect((await stored(id)).log).toEqual(["b"]);
+    expect(cold.now.local).toMatchObject({ a: 0, b: 1 });
+    /* The page has not come back (a refresh that failed): the timer keeps
+       asking for it, with nothing to send. */
+    const asked = cold.syncs;
+    tickTimers();
+    await settle();
+    expect(cold.syncs).toBeGreaterThan(asked);
+    expect(cold.pushes.length).toBe(1);
+  });
+});
+
+describe("after a 'reset' reply, before the page comes back", { timeout: 30_000 }, () => {
+  it("says nothing is waiting to be saved, and shows no score of its own", async () => {
+    const id = await match(["a"]);
+    const phone = await mount(id, actions.pushLog, { autoRefresh: false });
+    setOnline(false);
+    phone.now.scoreOffline("b");
+    await settle();
+    await organiserClears(id);
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(phone.now.resetting).toEqual({ rallies: 1 });
+    expect(phone.now.queued).toBe(0);
+    expect(phone.now.local).toBeNull();
+  });
+});
+
+describe("what the phone says it let go", { timeout: 30_000 }, () => {
+  /* An undo, then two new rallies: two rallies the referee tapped. A net count
+     (log − base) called it one. */
+  it("counts every rally tapped past where it parted from the server", async () => {
+    const id = await match(["a", "a"]);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.undoOffline();
+    await settle();
+    phone.now.scoreOffline("b");
+    await settle();
+    phone.now.scoreOffline("b");
+    await settle();
+    expect((await queue.loadQueued(id))?.log).toEqual(["a", "b", "b"]);
+    await organiserClears(id);
+    setOnline(true);
+    const again = await reload(id);
+    await settle();
+    expect(again.now.dropped).toEqual({ rallies: 2 });
+  });
+});
+
+describe("a typed result over an undo back to 0–0", { timeout: 30_000 }, () => {
+  /* Replacing a typed result with no rallies would CLEAR it — the organiser's
+     alone. The phone says so instead of blaming another device. */
+  it("offers nothing to replace it with, and sends nothing", async () => {
+    const id = await match(["a"]);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.undoOffline();
+    await settle();
+    expect(await actions.recordResult(id, { a: 11, b: 7, expectedRev: 0, replaceLive: true })).toMatchObject({ ok: true });
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(phone.now.held).toMatchObject({ a: 11, b: 7 });
+    const sent = phone.pushes.length;
+    expect(await phone.now.replaceTyped()).toBe(
+      "This phone has no rallies to put in place of the typed result — keep it, or ask the organiser to clear it.",
+    );
+    expect(phone.pushes.length).toBe(sent);
+    const m = await stored(id);
+    expect([m.typedScoreA, m.typedScoreB]).toEqual([11, 7]);
+  });
+});
+
+/* ── Round two of step 8's review ───────────────────────────────────────── */
+
+/** A push whose first request LANDS at once and whose reply is held back
+    until `release()`; every later push goes straight through. */
+function slowFirstReply() {
+  let open: (() => void) | null = null;
+  let n = 0;
+  const push: typeof actions.pushLog = async (...p) => {
+    const res = await actions.pushLog(...p);
+    if (n++ === 0) await new Promise<void>((r) => { open = r; });
+    return res;
+  };
+  return { push, release: () => open?.() };
+}
+
+/** After a reset, a cold load from the cache with the post-reset rally ["a"]
+    queued; the signal returns, the cached console sends ["a"] (it lands, the
+    reply is slow), the referee taps "b" on it, and then the fresh page arrives
+    and the console is replaced. */
+async function replacedWhileItsReplyIsOut() {
+  const id = await match(["a", "a"]);
+  await organiserClears(id);
+  const phone = await mount(id);
+  setOnline(false);
+  phone.now.scoreOffline("a");
+  await settle();
+  const slow = slowFirstReply();
+  timers.clear();
+  for (const k of Object.keys(listeners)) delete listeners[k];
+  const cached = await mount(id, slow.push, { cached: PRE_RESET(["a", "a"]), autoRefresh: false });
+  await settle();
+  setOnline(true);
+  fire("online");
+  await settle();
+  expect((await stored(id)).log).toEqual(["a"]);
+  cached.now.scoreOffline("b");
+  await settle();
+  await cached.refresh();
+  await settle();
+  expect(cached.mounts).toBe(2);
+  expect((await stored(id)).log).toEqual(["a", "b"]);
+  return { id, phone: cached, release: slow.release };
+}
+
+describe("a console that has been replaced", { timeout: 30_000 }, () => {
+  /* The old console's slow reply arrived after the new one had a tap queued:
+     it saved its own older log over the new record, sent it, and deleted it as
+     landed — the tap was gone on the next reload. */
+  it("does nothing with a reply that arrives after it was replaced", async () => {
+    const { id, phone, release } = await replacedWhileItsReplyIsOut();
+    setOnline(false);
+    phone.now.scoreOffline("b");
+    await settle();
+    expect((await queue.loadQueued(id))?.log).toEqual(["a", "b", "b"]);
+    release();
+    await settle();
+    expect((await queue.loadQueued(id))?.log).toEqual(["a", "b", "b"]);
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect((await stored(id)).log).toEqual(["a", "b", "b"]);
+  });
+
+  /* …or wrote its older log back over an undo the new console had landed. */
+  it("never writes over what the console that replaced it has done", async () => {
+    const { id, phone, release } = await replacedWhileItsReplyIsOut();
+    phone.now.undoOffline();
+    await settle();
+    expect((await stored(id)).log).toEqual(["a"]);
+    release();
+    await settle();
+    expect((await stored(id)).log).toEqual(["a"]);
+  });
+});
+
+describe("a tombstone on a page from the cache", { timeout: 30_000 }, () => {
+  /* Nothing to send, so nothing is sent — it used to go as a no-op write and,
+     on a match typed in since, came back filed as held rallies. */
+  it("is not sent, and never held over a result typed in since", async () => {
+    const { id } = await queuedBeforeReset();
+    setOnline(true);
+    await reload(id);
+    await settle();
+    expect((await queue.loadQueued(id))?.tombstone).toBe(true);
+    const reset = (await stored(id)).rev;
+    expect(await actions.recordResult(id, { a: 11, b: 7, expectedRev: reset })).toMatchObject({ ok: true });
+    const cold = await coldFromCache(id, PRE_RESET(["a"]));
+    await settle();
+    setOnline(true);
+    fire("online");
+    tickTimers();
+    await settle();
+    expect(cold.pushes).toEqual([]);
+    const fresh = await reload(id);
+    await settle();
+    expect(fresh.now.held).toBeNull();
+    expect((await queue.loadQueued(id))?.held).toBeFalsy();
+  });
+});
+
+describe("what a page from the cache shows after a choice", { timeout: 30_000 }, () => {
+  async function conflictOnACachedPage() {
+    const id = await match(["a", "a"]);
+    const reset = await organiserClears(id);
+    const phone = await mount(id);
+    setOnline(false);
+    phone.now.scoreOffline("a");
+    await settle();
+    expect(await actions.pushLog(id, ["b", "b"], reset)).toEqual({ ok: true, rev: reset + 1 });
+    timers.clear();
+    for (const k of Object.keys(listeners)) delete listeners[k];
+    const cold = await mount(id, actions.pushLog, { cached: PRE_RESET(["a", "a"]), autoRefresh: false });
+    await settle();
+    setOnline(true);
+    fire("online");
+    await settle();
+    expect(cold.now.conflict).toMatchObject({ serverLog: ["b", "b"], localLog: ["a"] });
+    return { id, cold };
+  }
+
+  it("'Keep the saved score' shows the saved score, and counts one new tap as one", async () => {
+    const { id, cold } = await conflictOnACachedPage();
+    await cold.now.resolveConflict("theirs");
+    await settle();
+    expect((await stored(id)).log).toEqual(["b", "b"]);
+    expect(cold.now.local).toMatchObject({ a: 0, b: 2 });
+    setOnline(false);
+    cold.now.scoreOffline("a");
+    await settle();
+    expect(cold.now.queued).toBe(1);
+  });
+
+  it("'Keep this phone's score' shows this phone's score", async () => {
+    const { id, cold } = await conflictOnACachedPage();
+    await cold.now.resolveConflict("mine");
+    await settle();
+    expect((await stored(id)).log).toEqual(["a"]);
+    expect(cold.now.local).toMatchObject({ a: 1, b: 0 });
+  });
+});
+
+describe("the rallies a 'reset' reply lets go", { timeout: 30_000 }, () => {
+  /* Counted from the newest log on the phone: a tap made while the push was on
+     the wire was let go too. */
+  it("include a tap made while the push was out", async () => {
+    const id = await match(["a"]);
+    const g = gated((n) => n === 0);
+    const phone = await mount(id, g.push, { autoRefresh: false });
+    setOnline(false);
+    phone.now.scoreOffline("b");
+    await settle();
+    await organiserClears(id);
+    setOnline(true);
+    fire("online");
+    await settle();
+    phone.now.scoreOffline("b");
+    await settle();
+    expect((await queue.loadQueued(id))?.log).toEqual(["a", "b", "b"]);
+    g.release();
+    await settle();
+    expect(phone.now.resetting).toEqual({ rallies: 2 });
   });
 });

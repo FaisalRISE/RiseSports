@@ -432,8 +432,11 @@ async function seededChains(tx: Tx, roster: Person[], key: string): Promise<Map<
  *
  * A player with nothing left on record goes back to how they were before they
  * played: no flag, and no snapshot (null, as a new person is created).
+ *
+ * Exported for revertMany.test.ts, whose oracle is the one-match revert as it
+ * was before the batch existed.
  */
-function derivedFor(
+export function derivedFor(
   person: Person,
   history: HistoryRow[],
   riseBest: number | null,
@@ -753,46 +756,137 @@ export async function revertResultIn(
   const remaining = await historyFor(tx, ids);
 
   for (const person of folk) {
-    const ratings = { ...(person.riseRatings ?? {}) };
-    const counts = { ...(person.matchCount ?? {}) };
-    const mine = remaining.filter((r) => r.personId === person.id);
-
-    for (const r of gone.filter((g) => g.personId === person.id)) {
-      const current = ratings[r.format] ?? r.ratingAfter;
-      ratings[r.format] = current - r.deltaApplied;
-      counts[r.format] = Math.max(0, (counts[r.format] ?? 1) - 1);
-
-      /* The last match in a format the matches created: the format goes, as it
-         was before the first one. A seed stays, at its value. */
-      const createdByMatches = (r.notes as { seeded?: unknown } | null)?.seeded === false;
-      if (createdByMatches && !mine.some((m) => m.format === r.format)) {
-        delete ratings[r.format];
-        delete counts[r.format];
-      }
-    }
-
-    const riseBest = bestOf(ratings);
-    const last = mine.reduce<Date | null>((at, r) => (at && at >= r.createdAt ? at : r.createdAt), null);
-
+    const s = revertedState(person, gone.filter((g) => g.personId === person.id), remaining, now);
     await tx
       .update(people)
       .set({
-        riseRatings: ratings,
-        riseBest,
-        matchCount: counts,
-        /* REPLAYED, not un-merged. The record keeps rounded averages, so taking
-           one match back out by arithmetic is a point out, and a second undo
-           builds on the first one's error — three undos in a row drifted by two.
-           Every history row keeps exactly what its apply merged, so replaying
-           what is left is exact, and repairs any drift rather than adding to it. */
-        partnerStats: partnerStatsFromHistory(mine),
-        lastPlayedAt: last,
-        ...(derivedFor(person, remaining, riseBest, now) ?? {}),
+        riseRatings: s.riseRatings,
+        riseBest: s.riseBest,
+        matchCount: s.matchCount,
+        partnerStats: s.partnerStats,
+        lastPlayedAt: s.lastPlayedAt,
+        ...(s.derived ?? {}),
       })
       .where(eq(people.id, person.id));
   }
 
   return { reverted: gone.length, personIds: ids };
+}
+
+type GoneRow = typeof ratingHistory.$inferSelect;
+
+/**
+ * A person once some of their matches' rows are gone — the arithmetic both
+ * reverts share, so the batch below cannot disagree with the one-match revert:
+ *  - each gone row's delta subtracted, its match count taken off;
+ *  - the last match in a format the matches CREATED takes the format with it
+ *    (see `seededChains`); a seed stays, at its value;
+ *  - the partner record REPLAYED from what is left, not un-merged — it keeps
+ *    rounded averages, so taking one match back out by arithmetic is a point out
+ *    and a second undo builds on the first one's error;
+ *  - "last played" is the latest match still on record, or never;
+ *  - the advisory signals (`derivedFor`), null when that arithmetic failed.
+ */
+function revertedState(person: Person, gone: GoneRow[], remaining: HistoryRow[], now: Date) {
+  const ratings = { ...(person.riseRatings ?? {}) };
+  const counts = { ...(person.matchCount ?? {}) };
+  const mine = remaining.filter((r) => r.personId === person.id);
+
+  for (const r of gone) {
+    const current = ratings[r.format] ?? r.ratingAfter;
+    ratings[r.format] = current - r.deltaApplied;
+    counts[r.format] = Math.max(0, (counts[r.format] ?? 1) - 1);
+    const createdByMatches = (r.notes as { seeded?: unknown } | null)?.seeded === false;
+    if (createdByMatches && !mine.some((m) => m.format === r.format)) {
+      delete ratings[r.format];
+      delete counts[r.format];
+    }
+  }
+
+  const riseBest = bestOf(ratings);
+  return {
+    riseRatings: ratings,
+    riseBest,
+    matchCount: counts,
+    partnerStats: partnerStatsFromHistory(mine),
+    lastPlayedAt: mine.reduce<Date | null>((at, r) => (at && at >= r.createdAt ? at : r.createdAt), null),
+    derived: derivedFor(person, remaining, riseBest, now),
+  };
+}
+
+/**
+ * Undo MANY tournament matches' effect at once, inside the caller's transaction
+ * — "Start this category again".
+ *
+ * One revert per match would take the people's locks in many statements — one
+ * `lockPeople` each — so a single transaction holding some of them while an apply
+ * held others could wait on each other in a circle; and at ~185ms a query from
+ * the live site, sixty matches held every lock for well over a minute. So the
+ * statement count here is flat in the number of matches:
+ *   the match rows in ONE sorted statement (a no-op where the caller has them);
+ *   their history and ledger rows deleted in ONE statement each (RETURNING, so
+ *   only the transaction that deleted a row subtracts it);
+ *   every person concerned locked ONCE, sorted (`lockPeople`);
+ *   their remaining history read ONCE;
+ *   every person written back in ONE statement.
+ * Each person ends EXACTLY as the one-match reverts one after another would
+ * leave them (the subtraction commutes; the format rule, the partner replay,
+ * "last played" and the derived signals read only what is left) — the test
+ * holds it to `revertResultIn` as the oracle.
+ *
+ * Tournament matches only: community undo keeps `revertResultIn`'s own path.
+ */
+export async function revertTournamentResultsIn(
+  tx: Tx,
+  matchIds: string[],
+  now: Date = new Date(),
+): Promise<{ reverted: number; personIds: string[] }> {
+  const ids = [...new Set(matchIds)];
+  if (ids.length === 0) return { reverted: 0, personIds: [] };
+  await tx.select({ id: matches.id }).from(matches).where(inArray(matches.id, ids)).orderBy(asc(matches.id)).for("no key update");
+
+  const gone = await tx.delete(ratingHistory).where(inArray(ratingHistory.matchId, ids)).returning();
+  await tx.delete(ratingLedger).where(inArray(ratingLedger.matchId, ids));
+  if (gone.length === 0) return { reverted: 0, personIds: [] };
+
+  const folk = await lockPeople(tx, gone.map((r) => r.personId));
+  const personIds = folk.map((p) => p.id);
+  const remaining = await historyFor(tx, personIds);
+
+  /* One row per person. keep_derived says "leave flags and reliability as they
+     are" (a failing `derivedFor`), which a null cannot say: null is a value to
+     WRITE for reliability — a person with nothing left on record. Every value
+     is cast, so PGlite and postgres-js read the batch alike. */
+  const rows = folk.map((person) => {
+    const s = revertedState(person, gone.filter((g) => g.personId === person.id), remaining, now);
+    return {
+      id: person.id,
+      rise_ratings: s.riseRatings,
+      rise_best: s.riseBest,
+      match_count: s.matchCount,
+      partner_stats: s.partnerStats,
+      last_played_at: s.lastPlayedAt ? s.lastPlayedAt.toISOString() : null,
+      keep_derived: s.derived === null,
+      flags: s.derived?.flags ?? {},
+      reliability: s.derived?.reliability ?? null,
+    };
+  });
+  await tx.execute(sql`
+    update ${people} set
+      rise_ratings = v.rise_ratings,
+      rise_best = v.rise_best,
+      match_count = v.match_count,
+      partner_stats = v.partner_stats,
+      last_played_at = v.last_played_at,
+      flags = case when v.keep_derived then ${people}.flags else v.flags end,
+      reliability = case when v.keep_derived then ${people}.reliability else v.reliability end
+    from jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) as v(
+      id text, rise_ratings jsonb, rise_best integer, match_count jsonb, partner_stats jsonb,
+      last_played_at timestamptz, keep_derived boolean, flags jsonb, reliability integer
+    )
+    where ${people}.id = v.id`);
+
+  return { reverted: gone.length, personIds };
 }
 
 /** Undo a tournament match's effect inside the caller's transaction. */

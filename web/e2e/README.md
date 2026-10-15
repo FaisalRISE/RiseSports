@@ -1,6 +1,6 @@
 # End-to-end tests
 
-Twelve scripts, all driving the real app in a real browser (`npm run …` works the same as
+Thirteen scripts, all driving the real app in a real browser (`npm run …` works the same as
 `pnpm …` — this machine has npm):
 
 | Script | What it covers |
@@ -16,6 +16,7 @@ Twelve scripts, all driving the real app in a real browser (`npm run …` works 
 | `pnpm e2e:skills` | peer ratings: who may rate whom, and rating twice replaces rather than stacks |
 | `pnpm e2e:eligibility` | category rules: every refusal has an accepted twin — gender, Mixed, age on the day, DUPR, a capped rating by phone, approval re-checking, "add anyway", flags that remove nobody, and a category with no rules unchanged |
 | `pnpm e2e:redraw` | a first draw is one tap, a redraw asks twice and replaces the fixtures, and one scored point locks the draw with the reason shown; removing a category is refused once played, one tap when empty, two with teams, and refused from a page opened before a team was added |
+| `pnpm e2e:clear` | clearing a finished match takes its rating changes back (the ratings page shows nobody moved); a match being played resets to 0–0; a referee's phone holding rallies is told they were not kept, and its next rally lands from 0–0 — in the send loop and after a reload |
 | `pnpm e2e:scoring` | changing an event's scoring keeps finished results and says so; carrom's card does not offer a set number of boards until results can be typed in; tennis offers no live court and promises no control that is not there |
 
 Playwright is a devDependency. Once per machine:

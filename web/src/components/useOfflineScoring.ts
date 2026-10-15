@@ -21,8 +21,8 @@ import { rewindIndex } from "@/lib/scoring/rewind";
 import type { MatchClock } from "./useMatchClock";
 import type { Tick } from "@/lib/scoring/clock";
 import {
-  classify, flushMatch, loadQueued, saveQueued, clearQueued, clearIfLanded, settleReply, knownToPhone, removedElsewhere,
-  removedHere, sameLog, withSent,
+  classify, flushMatch, loadQueued, saveQueued, clearQueued, clearIfLanded, dropForReset, unkeptRallies, settleReply, knownToPhone,
+  removedElsewhere, removedHere, sameLog, withSent,
   type FlushOutcome, type PushResult, type QueuedMatch, type TypedOutcome,
 } from "@/lib/offline/queue";
 
@@ -40,6 +40,8 @@ function subscribeOnline(cb: () => void) {
 export type Conflict = { serverLog: Side[]; localLog: Side[]; rev: number };
 
 /* A reply that never came is not a refusal: the request may have landed. */
+/* Thrown by livePush for a console that has been replaced; nothing acts on it. */
+const REPLACED = "This console was replaced by a newer one.";
 const NO_SIGNAL = "The signal dropped before the server answered, so this may or may not have been saved. Try again when the signal is back.";
 
 /** The match holds a typed result, and this phone holds rallies it never sent. */
@@ -47,6 +49,10 @@ export type Held = { a: number; b: number; rev: number; outcome: TypedOutcome | 
 
 /** The server will never take this phone's rallies; they are gone, and why. */
 export type Refused = { title: string; error: string; rallies: number };
+
+/** The organiser reset this match (step 8), and this phone's rallies from
+ *  before it were not kept — `rallies` of them. */
+export type ResetNotice = { rallies: number };
 
 type Push = (
   matchId: string, log: Side[], baseRev: number, tick?: Tick, opts?: { replaceTyped?: boolean },
@@ -87,6 +93,16 @@ export type OfflineScoring = {
   /** False until the queue a previous session left has been read; the court
    *  takes no tap before then. */
   ready: boolean;
+  /** The server answered "reset" (step 8): the organiser reset this match after
+   *  this phone's base. Nothing more is sent and no tap is taken; the console
+   *  fetches the page again, which remounts it at 0–0. */
+  resetting: ResetNotice | null;
+  /** This page found rallies from before a reset on the phone and dropped them. */
+  dropped: ResetNotice | null;
+  /** The newest reset this phone KNOWS of — the page's, or, on a page served
+   *  from the cache, the later one its stored record was built under. The
+   *  console does not announce a reset it already knew about. */
+  knownReset: number;
 };
 
 export type UseOfflineArgs = {
@@ -103,6 +119,9 @@ export type UseOfflineArgs = {
   typed: { a: number; b: number; outcome: TypedOutcome | null } | null;
   /** The two team ids this console shows, stored with every queued batch. */
   sides: [string, string];
+  /** The match's reset_rev on this render (step 8). The console is keyed on it,
+   *  so it is fixed for the life of this hook. */
+  resetRev: number;
   push: Push;
   onSynced: () => void;
   /** Where the milliseconds are measured and split. See useMatchClock. */
@@ -111,7 +130,7 @@ export type UseOfflineArgs = {
 
 
 export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
-  const { matchId, rules, format, serverLog, serverRev, push, onSynced, sides } = args;
+  const { matchId, rules, format, serverLog, serverRev, push, onSynced, sides, resetRev } = args;
   /* Pulled out of the clock object rather than used through it. The object is
      rebuilt every render — it carries a clock that changes every second — so
      depending on it would rebuild `flush` a second at a time. These are
@@ -147,6 +166,31 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
   const setHeld = useCallback((h: Held | null) => { heldRef.current = h; setHeldState(h); }, []);
   /* Refused for good: nothing is sent after it, not even a pause. */
   const refusedRef = useRef<Refused | null>(null);
+  /* The server said "reset": nothing is sent after it either, at any rev, and
+     the timer and the online event fetch the page again instead (the render
+     that remounts this console may not have arrived — the signal can drop
+     between the reply and it). */
+  const resettingRef = useRef<ResetNotice | null>(null);
+  const [resetting, setResettingState] = useState<ResetNotice | null>(null);
+  const [dropped, setDropped] = useState<ResetNotice | null>(null);
+  /* The page this console was rendered from is OLDER than the record on the
+     phone — a cold load served from the cache with no signal. Nothing is judged
+     against it; the record's own base stands until a fresh render arrives. */
+  const staleRender = useRef<number | null>(null);
+  /* The reset this phone works under. Normally the page's; on a page OLDER
+     than the stored record (a cold load from the cache after a reset), the
+     record's. Every record this console writes is stamped with it, and every
+     clear it makes is judged by it — stamped with the cached page's older
+     reset, every save was refused as "from before the reset" (`olderThan`),
+     so the court showed taps the phone never kept and a second cold load lost
+     them; and the record from before the cold load was never cleared, so it
+     came back after the refresh and was resumed as this phone's next step. */
+  const workingReset = useRef(resetRev);
+  const [knownReset, setKnownReset] = useState(resetRev);
+  /* What the court shows on such a page once nothing is queued: what the server
+     is known to hold, not the cached render, which may be from before a reset.
+     It stands until a render at least as new as it arrives. */
+  const [staleShown, setStaleShown] = useState<{ log: Side[]; rev: number } | null>(null);
   /* The NEWEST log on this phone, readable the instant a tap makes it, or null
      when nothing is queued. A push carries a snapshot; when it lands, anything
      newer is sent straight after. Without this a rally tapped while the
@@ -168,10 +212,37 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
     baseRev.current = rev;
     baseLog.current = log;
     sent.current = [];
+    /* On a page older than what the phone knows, what the court shows moves
+       with what the server is known to hold — after a send, a conflict choice,
+       Keep or Use — not with the cached render. Never set from the effect
+       below: there a page at least as new has just ended the staleness. */
+    if (staleRender.current !== null) setStaleShown({ log, rev });
   }, []);
+
+  /* False once this console has been REPLACED — a reset remounts the court
+     (it is keyed on reset_rev), and so does the fresh page arriving after one
+     served from the cache. Its sends and replies may still be on the wire, and
+     the replaced console must not act on them: it once saved its older log over
+     the new console's record, deleted it as "landed", and wrote a rally the
+     referee had just taken off back onto the server. Every send goes through
+     `livePush`, which refuses to start, or to deliver its reply, for a console
+     that is gone — so nothing after it writes either. Set in the effect body
+     (StrictMode runs effects twice in development) and cleared in its cleanup. */
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+  const livePush = useCallback<Push>(async (...a) => {
+    if (!alive.current) throw new Error(REPLACED);
+    const res = await push(...a);
+    if (!alive.current) throw new Error(REPLACED);
+    return res;
+  }, [push]);
   /* True while a push is on the wire — see the guard in `flush`. */
   const inFlight = useRef(false);
   useEffect(() => {
+    if (staleRender.current !== null && serverRev >= staleRender.current) staleRender.current = null;
     /* A render at least as new as anything this phone knows, with nothing
        queued: that is the base now. Never an older one — a write that has just
        landed is newer than the render still on its way, and falling back to
@@ -196,6 +267,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
      can still tell this phone's own next step from another device's work. */
   const recordOf = useCallback((log: Side[]): QueuedMatch => ({
     matchId, log, baseRev: baseRev.current, baseLog: baseLog.current, sent: sent.current, queuedAt: Date.now(), sides,
+    resetRev: workingReset.current,
   }), [matchId, sides]);
 
   /* The two replies that are neither "saved" nor "try again": the match was
@@ -210,12 +282,24 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
       else onSynced();
     }
     if (out.status === "refused" && !refusedRef.current) {
-      const r = { title: out.title, error: out.error, rallies: Math.max(0, log.length - serverLog.length) };
+      const r = { title: out.title, error: out.error, rallies: unkeptRallies({ log: latestRef.current ?? log, baseLog: baseLog.current }) };
       refusedRef.current = r;
       setRefused(r);
       setLog(null);
       setStalled(false);
       setConflict(null);
+    }
+    if (out.status === "reset" && !resettingRef.current) {
+      /* The record stays where it is: the page that renders the reset drops it
+         (and leaves a tombstone). Everything on screen that offered to send
+         these rallies goes, and the page is fetched again. */
+      const r = { rallies: unkeptRallies({ log: latestRef.current ?? log, baseLog: baseLog.current }) };
+      resettingRef.current = r;
+      setResettingState(r);
+      setStalled(false);
+      setConflict(null);
+      setHeld(null);
+      onSynced();
     }
   };
 
@@ -229,6 +313,10 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
     /* Held for the referee (the match was typed in, and only their choice
        sends these rallies), or refused for good. The fifteen-second retry
        would otherwise send them straight back into the same answer. */
+    if (resettingRef.current) {
+      onSynced();
+      return;
+    }
     if (heldRef.current || refusedRef.current || conflictRef.current) return;
     /* A ref, not the `syncing` state: the retry timer and a tap can both call
        this within the same tick, before any re-render has happened, and two
@@ -237,7 +325,13 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
        newest log once it lands (below), so nothing is dropped here. */
     if (inFlight.current) return;
     const queued = latestRef.current;
-    if (!queued && !opts?.clock) return;
+    if (!queued && !opts?.clock) {
+      /* Nothing to send, on a page older than what the phone knows: ask for
+         the page again. A refresh that failed (one bar of signal) was never
+         retried, and the court went on showing the cached score. */
+      if (staleRender.current !== null) onSynced();
+      return;
+    }
     /* The phone's log this flush is about: the queue, or — for a pause with
        nothing queued — the log the server is known to hold. */
     let log: Side[] = queued ?? baseLog.current;
@@ -247,8 +341,8 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
        raised would stay up over a queue with nothing in it. An undo back to
        0–0 is NOT this when the server holds a rally, and is sent like any
        other log, from the tap, the timer or a reload alike. */
-    if (queued && !opts?.clock && sameLog(queued, baseLog.current) && sent.current.length === 0) {
-      void clearIfLanded(matchId, queued);
+    if (queued && !opts?.clock && sameLog(queued, baseLog.current) && sent.current.length === 0 && staleRender.current === null) {
+      void clearIfLanded(matchId, queued, workingReset.current);
       setLog(null);
       setStalled(false);
       return;
@@ -274,12 +368,13 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
         try {
           out = await flushMatch(rec, (id, l, rev) => {
             if (!asClock) sent.current = withSent(sent.current, l);
-            return push(id, l, rev, claimed);
+            return livePush(id, l, rev, claimed);
           }, 3, { clockOnly: asClock });
         } catch (e) {
           restore(claimed);
           throw e;
         }
+        if (!alive.current) return;
         /* Anything short of THIS write landing puts the measurement back —
            including a log the server already held, which wrote nothing. */
         if (out.status !== "flushed" || !out.landed) restore(claimed);
@@ -350,7 +445,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
        online event both try again. */
     if (out.status === "failed") setStalled(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- settleSideways only calls stable setters and onSynced
-  }, [serverLog, matchId, push, onSynced, claim, restore, hasPending, setLog, learn, recordOf]);
+  }, [serverLog, matchId, livePush, onSynced, claim, restore, hasPending, setLog, learn, recordOf]);
 
   /* Rallies this phone holds, against a server state it has just learnt:
      send them, ask, or let them go. ONE decision, for a reload, for a hold
@@ -363,7 +458,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
     (log: Side[], server: { log: Side[]; rev: number }, known: Pick<QueuedMatch, "baseRev" | "baseLog" | "sent">) => {
       const relation = classify(server.log, log);
       if (relation === "same") {
-        void clearIfLanded(matchId, log);
+        void clearIfLanded(matchId, log, workingReset.current);
         learn(server.rev, server.log);
         setLog(null);
         setStalled(false);
@@ -401,7 +496,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
         return;
       }
       /* Another device has everything this phone had, and more. */
-      void clearIfLanded(matchId, log);
+      void clearIfLanded(matchId, log, workingReset.current);
       setLog(null);
       setStalled(false);
     },
@@ -412,11 +507,48 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
      mid-match must not lose the rallies it already took. */
   useEffect(() => {
     let cancelled = false;
-    void loadQueued(matchId).then((rec) => {
+    void loadQueued(matchId).then(async (rec) => {
       if (cancelled) return;
+      /* Built before the organiser's reset (step 8): its rallies are never put
+         back — not sent, held or asked about. Dropped BEFORE anything else
+         reads it, leaving a tombstone, and the console says how many. */
+      if (rec && rec.baseRev < resetRev) {
+        const rallies = await dropForReset(matchId, resetRev);
+        if (cancelled) return;
+        loadedRef.current = true;
+        setReady(true);
+        if (rallies > 0) setDropped({ rallies });
+        return;
+      }
       loadedRef.current = true;
       setReady(true);
       if (!rec) return;
+      /* The page is OLDER than the record: the service worker serves the last
+         full page load when a cold load has no signal, which is often from
+         before a reset or a write this phone made since. Judged against it, a
+         reset made the real log SHORTER than the cached one, so post-reset
+         rallies read as "behind" and were deleted with no question. So nothing
+         is judged: the record's own base stands, its log is what the court
+         shows, and the next push — or a fresh render — decides. */
+      if ((rec.resetRev ?? 0) > resetRev || serverRev < rec.baseRev) {
+        baseRev.current = rec.baseRev;
+        baseLog.current = rec.baseLog ?? [];
+        sent.current = rec.sent ?? [];
+        staleRender.current = rec.baseRev;
+        workingReset.current = Math.max(resetRev, rec.resetRev ?? 0);
+        setKnownReset(workingReset.current);
+        setStaleShown({ log: rec.baseLog ?? [], rev: rec.baseRev });
+        /* A tombstone, or a record that holds exactly what the server is known
+           to hold with nothing sent unheard, has nothing to send. Queued, it
+           went out as a no-op write — and on a match typed in since, the
+           "typed" answer filed the tombstone as held rallies the referee then
+           had to dismiss on every load. */
+        const nothing = rec.tombstone || (sameLog(rec.log, rec.baseLog ?? []) && (rec.sent ?? []).length === 0);
+        if (nothing) return;
+        setLog(rec.log);
+        if (!rec.tombstone && !sameLog(rec.log, rec.baseLog ?? [])) setStalled(true);
+        return;
+      }
       /* Rallies on a match that is typed in: show the choice — keep the typed
          result, or use this phone's — and send nothing. Whether or not a push
          had come back "typed" before the reload: the organiser may have typed
@@ -530,7 +662,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
      rally that had just been saved. */
   const scoreOffline = useCallback(
     (side: Side) => {
-      if (!canScoreOffline || heldRef.current || !loadedRef.current) return;
+      if (!canScoreOffline || heldRef.current || resettingRef.current || !loadedRef.current) return;
       const base = latestRef.current ?? baseLog.current;
       /* A finished game takes no more rallies. The court is locked once the
          phone's own replay says it is over, but a tap already on its way (a
@@ -545,7 +677,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
   );
 
   const undoOffline = useCallback(() => {
-    if (heldRef.current || !loadedRef.current) return;
+    if (heldRef.current || resettingRef.current || !loadedRef.current) return;
     const base = latestRef.current ?? baseLog.current;
     if (base.length === 0) return;
     append(base.slice(0, -1));
@@ -556,7 +688,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
      One search, two engines — see lib/scoring/rewind. */
   const minusOffline = useCallback(
     (side: Side) => {
-      if (!canScoreOffline || heldRef.current || !loadedRef.current) return;
+      if (!canScoreOffline || heldRef.current || resettingRef.current || !loadedRef.current) return;
       const base = latestRef.current ?? baseLog.current;
       const cut = rewindIndex(base.length, (n) =>
         replayLite(
@@ -598,7 +730,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
           try {
             let rev = conflict.rev;
             for (let i = 0; i < 2; i++) {
-              const res = await push(matchId, conflict.serverLog, rev);
+              const res = await livePush(matchId, conflict.serverLog, rev);
               if (res.ok) {
                 settledAt = { rev: res.rev, log: conflict.serverLog };
                 break;
@@ -616,7 +748,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
                 return "The match changed again on another device — look at both scores before choosing.";
               }
               const out = await settleReply(res, { ...recordOf(conflict.serverLog), baseRev: rev });
-              if (out?.status === "typed" || out?.status === "refused") {
+              if (out?.status === "typed" || out?.status === "refused" || out?.status === "reset") {
                 setConflict(null);
                 settleSideways(out, latestRef.current ?? conflict.localLog);
                 return null;
@@ -630,7 +762,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
           }
           uncertainRef.current = null;
         }
-        await clearQueued(matchId);
+        await clearQueued(matchId, workingReset.current);
         setLog(null);
         setConflict(null);
         setStalled(false);
@@ -651,7 +783,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
           let res: PushResult;
           try {
             sent.current = withSent(sent.current, mine);
-            res = await push(matchId, mine, rev, claimed);
+            res = await livePush(matchId, mine, rev, claimed);
           } catch {
             restore(claimed);
             uncertainRef.current = mine;
@@ -690,7 +822,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
         onSynced();
         return null;
       }
-      if (out?.status === "typed" || out?.status === "refused") {
+      if (out?.status === "typed" || out?.status === "refused" || out?.status === "reset") {
         setConflict(null);
         settleSideways(out, mine);
         return null;
@@ -702,7 +834,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
       return null;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- settleSideways only calls stable setters and onSynced
-    [conflict, matchId, push, onSynced, claim, restore, setLog, learn, recordOf],
+    [conflict, matchId, livePush, onSynced, claim, restore, setLog, learn, recordOf],
   );
 
   /* The typed result stands: this phone's rallies go. Resolves to a sentence
@@ -720,15 +852,19 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
       let res: PushResult;
       setSyncing(true);
       try {
-        res = await push(matchId, maybe, h.rev);
+        res = await livePush(matchId, maybe, h.rev);
       } catch {
         return NO_SIGNAL;
       } finally {
         setSyncing(false);
       }
       uncertainRef.current = null;
+      if (!res.ok && res.reason === "reset") {
+        settleSideways({ status: "reset", matchId }, maybe);
+        return null;
+      }
       if (!res.ok && res.reason === "stale" && sameLog(res.serverLog, maybe)) {
-        await clearQueued(matchId);
+        await clearQueued(matchId, workingReset.current);
         setHeld(null);
         setLog(null);
         setStalled(false);
@@ -741,7 +877,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
         return "The match changed on another device — look at it again.";
       }
     }
-    await clearQueued(matchId);
+    await clearQueued(matchId, workingReset.current);
     setLog(null);
     setHeld(null);
     setStalled(false);
@@ -750,7 +886,8 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
     learn(h.rev, []);
     onSynced();
     return null;
-  }, [matchId, push, onSynced, setHeld, setLog, learn]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- settleSideways only calls stable setters and onSynced
+  }, [matchId, livePush, onSynced, setHeld, setLog, learn]);
 
   /* This phone's rallies replace the typed result — at the rev of the result
      the referee was shown. If it was typed AGAIN since, the server answers
@@ -760,6 +897,11 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
     const h = heldRef.current;
     const mine = latestRef.current;
     if (!h || !mine) return null;
+    /* Nothing to put in its place: replacing a typed result with no rallies
+       would CLEAR it, which is the organiser's alone (pushLog refuses it). Said
+       here, truly — the refusal used to come back as "the match changed on
+       another device". The card does not offer it. */
+    if (mine.length === 0) return "This phone has no rallies to put in place of the typed result — keep it, or ask the organiser to clear it.";
     setSyncing(true);
     let rev = h.rev;
     /* Run once the busy state is cleared: an ordinary send starts its own. */
@@ -770,7 +912,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
         let res: PushResult;
         try {
           sent.current = withSent(sent.current, mine);
-          res = await push(matchId, mine, rev, claimed, { replaceTyped: true });
+          res = await livePush(matchId, mine, rev, claimed, { replaceTyped: true });
         } catch {
           restore(claimed);
           uncertainRef.current = mine;
@@ -812,7 +954,7 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
           onSynced();
           return null;
         }
-        if (out?.status === "refused") {
+        if (out?.status === "refused" || out?.status === "reset") {
           setHeld(null);
           settleSideways(out, mine);
           return null;
@@ -826,16 +968,25 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
       after?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- settleSideways only calls stable setters and onSynced
-  }, [matchId, push, onSynced, claim, restore, setHeld, setLog, learn, recordOf, resume]);
+  }, [matchId, livePush, onSynced, claim, restore, setHeld, setLog, learn, recordOf, resume]);
 
+  /* On a page older than what the phone knows, what the server is known to
+     hold stands in for the render — for the court once nothing is queued, and
+     for counting what is not yet saved. Once a render at least that new
+     arrives, it is the render again. */
+  const shownBase = staleShown && serverRev < staleShown.rev ? staleShown.log : null;
+  const shownLog = localLog ?? shownBase;
+  /* Answered "reset": the rallies on this phone are not going anywhere. The
+     court is locked and shows the page until it is fetched again, and nothing
+     says they will save — the card has just said they were not kept. */
   const local =
-    localLog && canScoreOffline
-      ? replayLite({ log: localLog, server: args.server, posA: args.posA, posB: args.posB }, rules)
+    shownLog && canScoreOffline && !resetting
+      ? replayLite({ log: shownLog, server: args.server, posA: args.posA, posB: args.posB }, rules)
       : null;
 
   return {
     online,
-    queued: localLog ? Math.max(0, localLog.length - serverLog.length) : 0,
+    queued: localLog && !resetting ? Math.max(0, localLog.length - (shownBase ?? serverLog).length) : 0,
     local,
     canScoreOffline,
     conflict,
@@ -851,5 +1002,8 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
     replaceTyped,
     refused,
     ready,
+    resetting,
+    dropped,
+    knownReset,
   };
 }

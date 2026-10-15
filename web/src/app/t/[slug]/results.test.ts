@@ -835,3 +835,155 @@ describe("corrections and sets, from either side", () => {
     expect(await history(matchId)).toHaveLength(4);
   });
 });
+
+/* ── A reset is final for every phone (step 8) ───────────────────────────────
+ * The organiser clears a result or resets a match being played, and a phone
+ * still holds rallies from before it. The rule: a push from before the reset
+ * never gets a reply carrying a post-reset rev — so the phone cannot learn
+ * one and land its old rallies over the new match. It learns the new rev only
+ * from a render (step 8, lib/offline/queue). */
+
+/** The organiser presses "Clear result…" / "Reset to 0–0…" on the manage page. */
+async function organiserClears(matchId: string) {
+  const m = await stored(matchId);
+  const f = new FormData();
+  f.set("confirm", String(m.rev));
+  await expect(manage.clearResult(m.tournamentId, matchId, f)).rejects.toThrow("redirect");
+  const after = await stored(matchId);
+  expect([after.rev, after.resetRev]).toEqual([m.rev + 1, m.rev + 1]);
+  return after.rev;
+}
+
+describe("a phone's rallies from before the organiser reset the match", () => {
+  it("are answered 'reset' — before the typed result and the rev are looked at", async () => {
+    const { matchId } = await setup();
+    expect(await actions.pushLog(matchId, ["a", "a"], 0)).toEqual({ ok: true, rev: 1 });
+    const cleared = await organiserClears(matchId);
+    expect(await actions.recordResult(matchId, { a: 11, b: 7, expectedRev: cleared })).toMatchObject({ ok: true });
+    const typed = await stored(matchId);
+
+    expect(await actions.pushLog(matchId, ["a", "a", "b"], 1)).toEqual({ ok: false, reason: "reset" });
+    expect(await actions.pushLog(matchId, ["a", "a", "b"], 1, undefined, { replaceTyped: true })).toEqual({ ok: false, reason: "reset" });
+    const after = await stored(matchId);
+    expect([after.rev, after.typedScoreA, after.log]).toEqual([typed.rev, 11, []]);
+  });
+
+  /* The push read the match before the clear and lost the guarded write to
+     it. It used to be told "stale" at the NEW rev, and its retry then landed
+     the old rallies over the cleared match. */
+  it("are answered 'reset' when the push lost the race to the clear", async () => {
+    const { matchId } = await setup();
+    expect(await actions.pushLog(matchId, ["a"], 0)).toEqual({ ok: true, rev: 1 });
+    race.next = () => organiserClears(matchId);
+    expect(await actions.pushLog(matchId, ["a", "b"], 1)).toEqual({ ok: false, reason: "reset" });
+    expect(race.next).toBeNull();
+    expect((await stored(matchId)).log).toEqual([]);
+  });
+
+  /* The same race, with the result typed in again straight after the clear:
+     the re-read used to answer "typed" at the newest rev first, and "Use this
+     phone's score" then put the pre-clear rallies over the new result. */
+  it("are answered 'reset', not 'typed', when the clear was followed by a new result", async () => {
+    const { matchId } = await setup();
+    expect(await actions.pushLog(matchId, ["a"], 0)).toEqual({ ok: true, rev: 1 });
+    race.next = async () => {
+      const rev = await organiserClears(matchId);
+      expect(await actions.recordResult(matchId, { a: 11, b: 3, expectedRev: rev })).toMatchObject({ ok: true });
+    };
+    expect(await actions.pushLog(matchId, ["a", "b"], 1, undefined, { replaceTyped: true })).toEqual({ ok: false, reason: "reset" });
+    expect(await actions.pushLog(matchId, ["a", "b"], 1, undefined, { replaceTyped: true })).toEqual({ ok: false, reason: "reset" });
+    const m = await stored(matchId);
+    expect([m.typedScoreA, m.typedScoreB, m.log]).toEqual([11, 3, []]);
+  });
+
+  it("does not stop a push made after the reset", async () => {
+    const { matchId } = await setup();
+    expect(await actions.pushLog(matchId, ["a", "a"], 0)).toEqual({ ok: true, rev: 1 });
+    const cleared = await organiserClears(matchId);
+    expect(await actions.pushLog(matchId, ["b"], cleared)).toEqual({ ok: true, rev: cleared + 1 });
+    expect((await stored(matchId)).log).toEqual(["b"]);
+  });
+
+  /* A pause sent with nothing queued carries the log the phone last knew. From
+     before the reset it moves nothing — no rev, no clock. */
+  it("a pause from before the reset moves neither the rev nor the clock", async () => {
+    const { matchId } = await setup();
+    expect(await actions.pushLog(matchId, ["a", "a"], 0)).toEqual({ ok: true, rev: 1 });
+    const cleared = await organiserClears(matchId);
+    expect(await actions.pushLog(matchId, ["a", "a"], 1, { playMs: 5_000, pausedMs: 0, pause: "injury" }))
+      .toEqual({ ok: false, reason: "reset" });
+    const m = await stored(matchId);
+    expect([m.rev, m.timing]).toEqual([cleared, null]);
+  });
+});
+
+/* Clearing a result is the organiser's alone (Faisal, 2026-10-10). A referee
+   could otherwise do it from the phone: undo to 0–0 with no signal, then "Use
+   this phone's score". */
+describe("an empty log never replaces a typed result", () => {
+  it("is answered with the typed result, which stands", async () => {
+    const { matchId } = await setup();
+    expect(await actions.recordResult(matchId, { a: 11, b: 7, expectedRev: 0 })).toEqual({ ok: true, rev: 1 });
+    expect(await actions.pushLog(matchId, [], 1, undefined, { replaceTyped: true }))
+      .toEqual({ ok: false, reason: "typed", a: 11, b: 7, outcome: null, rev: 1 });
+    const m = await stored(matchId);
+    expect([m.typedScoreA, m.typedScoreB, m.rev]).toEqual([11, 7, 1]);
+    expect(await history(matchId)).toHaveLength(4);
+  });
+});
+
+describe("one rally at a time from a console on an old view", () => {
+  it("is told the organiser reset the match, and reloads", async () => {
+    const { matchId } = await setup();
+    expect(await actions.scorePoint(matchId, "a", 0)).toEqual({ ok: true });
+    await organiserClears(matchId);
+    const reset = { ok: false, stale: true, error: "Not recorded — the organiser reset this match. It starts again at 0–0." };
+    expect(await actions.scorePoint(matchId, "a", 1)).toEqual(reset);
+    expect(await actions.undoPoint(matchId, 1)).toEqual(reset);
+    expect(await actions.minusPoint(matchId, "a", 1)).toEqual(reset);
+    expect(await actions.confirmRotation(matchId, 7, 1)).toEqual(reset);
+    expect((await stored(matchId)).log).toEqual([]);
+  });
+
+  /* The content checks read the match as it is NOW, and answered a stale
+     console in words only — "Nothing to undo", "That rotation is not due" —
+     leaving a console that cannot score offline on its old view. */
+  it("is told the match changed before anything about its content", async () => {
+    const { matchId } = await setup();
+    expect(await actions.pushLog(matchId, ["a"], 0)).toEqual({ ok: true, rev: 1 });
+    expect(await actions.pushLog(matchId, [], 1)).toEqual({ ok: true, rev: 2 });
+    for (const r of [
+      await actions.undoPoint(matchId, 1),
+      await actions.minusPoint(matchId, "a", 1),
+      await actions.confirmRotation(matchId, 7, 1),
+    ]) {
+      expect(r).toMatchObject({ ok: false, stale: true });
+    }
+  });
+});
+
+/* Round one of step 8's review: two halves of the one-rally rules no test held. */
+describe("one rally at a time, after a reset", () => {
+  /* At exactly the reset's rev the console is up to date. Refused there, a
+     carrom, chess or OSL console would reload into the same refusal for ever. */
+  it("is taken from a console that has seen the reset", async () => {
+    const { matchId } = await setup();
+    expect(await actions.scorePoint(matchId, "a", 0)).toEqual({ ok: true });
+    const reset = await organiserClears(matchId);
+    expect(await actions.scorePoint(matchId, "a", reset)).toEqual({ ok: true });
+    expect(await actions.minusPoint(matchId, "a", reset + 1)).toEqual({ ok: true });
+    expect(await actions.scorePoint(matchId, "b", reset + 2)).toEqual({ ok: true });
+    expect(await actions.undoPoint(matchId, reset + 3)).toEqual({ ok: true });
+    expect((await stored(matchId)).log).toEqual([]);
+  });
+
+  /* The plan's case: a carrom console on an old rev after the match was typed
+     in elsewhere. Answered about the CONTENT first ("the court is locked"), it
+     stayed on its old view; it must be told the match changed, and reload. */
+  it("from an old view of a match typed in since, is told the match changed", async () => {
+    const { matchId } = await setup({ sport: "cr" });
+    expect(await actions.scorePoint(matchId, "a", 0)).toEqual({ ok: true });
+    expect(await actions.recordResult(matchId, { a: 25, b: 3, expectedRev: 1, replaceLive: true })).toMatchObject({ ok: true });
+    expect(await actions.scorePoint(matchId, "a", 1)).toMatchObject({ ok: false, stale: true });
+  });
+});

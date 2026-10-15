@@ -385,7 +385,8 @@ export default async function RegistrationPage({
                       <span data-category-locked className="text-[11px] font-semibold text-amber-300">
                         Can’t remove — {r.played.slice(0, 3).join(", ")}{r.played.length > 3 ? `, and ${r.played.length - 3} more,` : ""}{" "}
                         {r.played.length === 1 ? "has" : "have"} been played or started, and removing the category would delete{" "}
-                        {r.played.length === 1 ? "it" : "them"}.
+                        {r.played.length === 1 ? "it" : "them"}. Clear {r.played.length === 1 ? "its result" : "their results"}, or start
+                        the category again, on the manage screen first.
                       </span>
                     ) : (
                       <form action={removeDivision.bind(null, t.id, d.id)} className="max-w-full">
