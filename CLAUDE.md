@@ -2443,6 +2443,17 @@ have taken seed 1. Tests: `manage/withdraw.test.ts`, the membership rules
 in `tournamentState.test.ts`, `migration-0023.test.ts`, the 8b blocks in `locks.test.ts` and
 `RefConsole.test.ts`, `e2e/withdraw.mjs`.
 
+**Shipped as `ca1c306` on 2026-10-23.** Migration 0023 was applied to production BEFORE the
+push and verified by query: both columns, the foreign key `confdeltype = 'n'`, the index, 2 teams
+placed by the backfill (the expected 2), RLS on with no policies, advisors unchanged. The
+deployment succeeded and the live pages carry the new controls; `/health` and `/api/health/db`
+answered. `scripts/0023-after-deploy.sql` was run after it: nothing to repair. All 14 e2e suites
+passed on a fresh database against the final build, and 1,616 unit tests in both timezones.
+- **The score page's not-found is filled in by the browser.** Fetched with curl, its 404 body
+  is an empty shell carrying Next's default text in the payload — the page's own not-found is a
+  client component and appears once the page's JavaScript runs. Check it in a browser, not by
+  grepping the HTML.
+
 ## Access: the site is deliberately open, and the switch is a trap
 
 `rise-sports.vercel.app` lets any visitor create events, manage them and enter scores that move
