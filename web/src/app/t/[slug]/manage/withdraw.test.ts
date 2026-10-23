@@ -1185,3 +1185,50 @@ describe("what the second review of 8b found", () => {
     expect(words).toContain("The only pair left after the rest withdrew.");
   });
 });
+
+/* ── Faisal, 2026-10-23: "close it" ──────────────────────────────────────────
+   A referee holding only a scoring PIN could clear the organiser's walkover —
+   or any typed result — in two pushes: "Use this phone's score instead" with
+   one rally, then undo that rally. Replacing a typed result is the
+   organiser's now, so the first push is refused and there is nothing to undo. */
+describe("putting a phone's rallies in place of a typed result", () => {
+  it("is the organiser's: a scorer's PIN is refused, and the walkover stands", async () => {
+    const t = await event({ teams: 2 });
+    await drawGroups(t, 1);
+    const [m] = await matchesOf(t.divisionId);
+    await walkover(t, m.id, "a");
+    const given = await stored(m.id);
+    who.pin = true;
+    try {
+      const r = await score.pushLog(m.id, ["b"], given.rev, undefined, { replaceTyped: true });
+      expect(r).toMatchObject({ ok: false, reason: "typed", a: 11, b: 0, outcome: "walkover", organiserOnly: true });
+      /* …so there is no rally of theirs to undo, and nothing is cleared. */
+      expect(await score.undoPoint(m.id, given.rev)).toMatchObject({ ok: false });
+      expect(await score.pushLog(m.id, [], given.rev, undefined, { replaceTyped: true })).toMatchObject({ reason: "typed", organiserOnly: true });
+    } finally {
+      who.pin = false;
+    }
+    const after = await stored(m.id);
+    expect([after.typedScoreA, after.typedScoreB, after.outcome, after.log, after.rev]).toEqual([11, 0, "walkover", [], given.rev]);
+    /* The organiser still may. */
+    expect(await score.pushLog(m.id, ["b"], given.rev, undefined, { replaceTyped: true })).toMatchObject({ ok: true });
+    expect((await stored(m.id)).outcome).toBeNull();
+  });
+
+  it("is the organiser's for a typed PLAYED result too", async () => {
+    const t = await event({ teams: 2 });
+    await drawGroups(t, 1);
+    const [m] = await matchesOf(t.divisionId);
+    await play(m.id, 11, 7);
+    const typed = await stored(m.id);
+    who.pin = true;
+    try {
+      expect(await score.pushLog(m.id, ["a"], typed.rev, undefined, { replaceTyped: true }))
+        .toMatchObject({ reason: "typed", a: 11, b: 7, organiserOnly: true });
+    } finally {
+      who.pin = false;
+    }
+    expect((await stored(m.id)).typedScoreA).toBe(11);
+    expect(await history(m.id)).toHaveLength(4);
+  });
+});

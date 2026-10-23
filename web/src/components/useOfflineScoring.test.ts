@@ -107,6 +107,17 @@ vi.mock("next/headers", () => ({
   cookies: async () => ({ get: () => undefined, set: () => {}, delete: () => {} }),
 }));
 vi.mock("next/navigation", () => ({ redirect: () => { throw new Error("redirect"); }, notFound: () => {} }));
+/* `pin`: the phone belongs to a referee holding only a scoring PIN — once
+   sign-in exists, everybody who is not the organiser. */
+const who = vi.hoisted(() => ({ pin: false }));
+vi.mock("@/lib/auth/guard", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/lib/auth/guard")>();
+  return {
+    ...orig,
+    principalFor: async (...a: Parameters<typeof orig.principalFor>) =>
+      who.pin ? { userId: null, role: null, hasScorerGrant: true, isOwner: false } : orig.principalFor(...a),
+  };
+});
 
 const dir = path.join(os.tmpdir(), `rise-phone-${randomUUID()}`);
 process.env.DATABASE_URL = `pglite://${dir.replace(/\\/g, "/")}`;
@@ -354,6 +365,29 @@ describe("a result typed in while the phone held rallies", () => {
     const m = await stored(id);
     expect([m.typedScoreA, m.log]).toEqual([null, ["a", "a"]]);
     expect(phone.now.held).toBeNull();
+  });
+
+  /* Faisal, 2026-10-23: replacing a typed result is the organiser's. A
+     referee's phone is told so, and keeps holding its rallies — Keep is still
+     theirs to press. */
+  it("Use this phone's score from a referee's PIN: refused, said, and the hold stays", async () => {
+    const { id, phone } = await heldAfterTyping();
+    who.pin = true;
+    try {
+      expect(await phone.now.replaceTyped()).toBe(
+        "Only the organiser can put this phone's score in place of the typed result — keep it, and tell the organiser if the phone's score is the right one.",
+      );
+      await settle();
+      expect(phone.now.held).toEqual({ a: 11, b: 7, rev: 1, outcome: null });
+      expect((await queue.loadQueued(id))?.held).toBe(true);
+      const m = await stored(id);
+      expect([m.typedScoreA, m.typedScoreB, m.log]).toEqual([11, 7, []]);
+      await phone.now.keepTyped();
+      await settle();
+      expect(phone.now.held).toBeNull();
+    } finally {
+      who.pin = false;
+    }
   });
 
   /* The result was typed AGAIN before the referee chose. The phone must show

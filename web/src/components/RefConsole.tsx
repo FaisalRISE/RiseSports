@@ -108,6 +108,9 @@ export type RefConsoleProps = {
   teamA: ConsoleTeam;
   teamB: ConsoleTeam;
   canScore: boolean;
+  /** May put this phone's rallies in place of a typed result — the organiser
+   *  alone (Faisal, 2026-10-23); pushLog refuses anybody else. */
+  canReplaceTyped: boolean;
   /** The rules in words, written on the server — see matchState.describeCourt. */
   notes: CourtNotes | null;
   actions: {
@@ -254,7 +257,7 @@ type CourtProps = RefConsoleProps & {
 };
 
 function RefConsoleCourt({
-  view, teamA, teamB, canScore, notes, actions, offline, eventHref,
+  view, teamA, teamB, canScore, canReplaceTyped, notes, actions, offline, eventHref,
   flipped, setFlipped, error, setError, resetShown, onReset, onKnownReset,
 }: CourtProps) {
   const [pending, start] = useTransition();
@@ -640,6 +643,12 @@ function RefConsoleCourt({
                 {off.queued === 1 ? "rally" : "rallies"} on this phone, {off.local.a}–{off.local.b}, {off.queued === 1 ? "was" : "were"} not
                 saved. Nothing is changed until you choose.
               </p>
+              {canScore && !canReplaceTyped && (
+                <p className="mt-2 text-sm text-neutral-400">
+                  Only the organiser can put this phone&apos;s score in place of the typed result. Keep it, and tell the
+                  organiser if the phone&apos;s score is the right one.
+                </p>
+              )}
               {canScore && (
                 <div className="mt-3 grid gap-2 sm:grid-cols-2">
                   <button
@@ -650,7 +659,7 @@ function RefConsoleCourt({
                   >
                     {typedWords(typedShown).keep}
                   </button>
-                  <button
+                  {canReplaceTyped && <button
                     type="button"
                     disabled={off.syncing}
                     onClick={() => {
@@ -663,7 +672,7 @@ function RefConsoleCourt({
                     <span className="mt-1 block text-xs font-semibold text-neutral-400">
                       {off.local.a}–{off.local.b} after {off.local.rallies} {off.local.rallies === 1 ? "rally" : "rallies"}. The match goes back to being played.
                     </span>
-                  </button>
+                  </button>}
                 </div>
               )}
             </>

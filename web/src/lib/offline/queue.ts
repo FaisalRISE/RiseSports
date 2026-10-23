@@ -48,8 +48,10 @@ export type PushResult =
   | { ok: false; reason: "stale"; serverLog: Side[]; rev: number }
   /** The match holds a TYPED result, which rallies never replace silently.
    *  The phone keeps its rallies and asks: keep the typed score, or replace it
-   *  (a push with `replaceTyped` at this rev). */
-  | { ok: false; reason: "typed"; a: number; b: number; rev: number; outcome?: TypedOutcome | null }
+   *  (a push with `replaceTyped` at this rev). `organiserOnly`: a replace was
+   *  asked for by somebody who may score but is not the organiser — only the
+   *  organiser may put rallies in place of a typed result (Faisal, 2026-10-23). */
+  | { ok: false; reason: "typed"; a: number; b: number; rev: number; outcome?: TypedOutcome | null; organiserOnly?: true }
   /** The server will never take this log — the match was deleted, or it has no
    *  live court. The phone drops the rallies and says why; it must not retry. */
   | { ok: false; reason: "refused"; title: string; error: string }

@@ -920,6 +920,11 @@ export function useOfflineScoring(args: UseOfflineArgs): OfflineScoring {
         }
         uncertainRef.current = null;
         if (!res.ok) restore(claimed);
+        /* Only the organiser may replace a typed result. The card does not
+           offer it to anybody else; this is the answer to a page that did. */
+        if (!res.ok && res.reason === "typed" && res.organiserOnly) {
+          return "Only the organiser can put this phone's score in place of the typed result — keep it, and tell the organiser if the phone's score is the right one.";
+        }
         if (!res.ok && res.reason === "typed") {
           /* The same result at a newer rev: nobody typed anything — a scoring
              change moves every match's rev. The referee has seen this result,

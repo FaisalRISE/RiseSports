@@ -2369,9 +2369,15 @@ score ("11–0 w/o", `walkoverScore`), moves no rating, freezes the rules, and i
 the winner on when "Fill resolved slots" is pressed. The same walkover again is done, not refused.
 - **Walkovers are the organiser's by every route**: `recordResult` (which a PIN reaches) refuses
   `outcome: "walkover"` without `canManage` (`organiser-only`). Typing a PLAYED result stays any
-  scorer's (step 7). A referee's phone holding rallies may still "Use this phone's score
-  instead" over a walkover — that is replacing a typed result, which step 7 allows. Decided for
-  Faisal; he may overrule.
+  scorer's (step 7). Decided for Faisal; he may overrule.
+- **Putting a phone's rallies in place of ANY typed result is the organiser's** (Faisal,
+  2026-10-23: "close it"). It was a way for a scorer's PIN to CLEAR a typed result in two
+  pushes — "Use this phone's score instead" with one rally, then undo it — and clearing is the
+  organiser's alone. `pushLog` answers a `replaceTyped` push from anybody else with the typed
+  result unchanged and `organiserOnly: true`; the phone says why and keeps its hold (Keep is
+  still theirs); the console shows the replace button only where `canReplaceTyped` (=
+  `canManage`). Typing a played result over one stays any scorer's (step 7). Nothing changes
+  while access is open: everybody is the organiser until sign-in exists.
 - **A walkover is not a match that was played.** `playedSql` (lib/results) — rallies, or a typed
   result that is not a walkover — is what "shared a court" means for skill ratings and what the
   home page counts. A retirement or a game stopped early WAS played.
@@ -2427,12 +2433,8 @@ STAY), the misfit flags, the category's count ("4 teams · 1 withdrawn"), the ra
 20 findings, 15 distinct, all fixed above — two of them events that could get stuck for good.
 Round two (three reviewers, on the fixes and on regressions): 10 findings — the `removePlayer`
 deadlock, six wording slips (a card naming "Clear Semi-Final 1" whose row refuses until the
-Final is cleared now names the whole chain), the deploy window above — all fixed; and one left
-for Faisal:
-- **A PIN referee can still clear a typed result, a walkover included, in two pushes**: "Use
-  this phone's score instead" with one rally, then undo. Possible since step 7, for every typed
-  result. Closing it means refusing `replaceTyped` to non-organisers, which changes what a
-  referee's phone offers — his call, asked in the 8b report.
+Final is cleared now names the whole chain), the deploy window above — all fixed; and one put
+to Faisal, who closed it (above: replacing a typed result is the organiser's).
 The regression lens ran the old `groupTables` beside the new as an oracle: for events with no
 withdrawals the tables are identical, drawn before 0023 or after. **90** plausible wrong versions of the 8b rules and the round-one fixes
 were applied one at a time; 88 are caught. The 2 left remove a check another line already makes:

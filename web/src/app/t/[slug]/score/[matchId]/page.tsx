@@ -6,7 +6,7 @@ import Link from "next/link";
 import { viewMatch, rulesFor, describeCourt, noLiveCourt, teamsNotIn } from "@/lib/matchState";
 import { matchResult, resultSentence } from "@/lib/results";
 import { principalFor } from "@/lib/auth/guard";
-import { canScore, canView } from "@/lib/auth/policy";
+import { canManage, canScore, canView } from "@/lib/auth/policy";
 import { RefConsole, type ConsoleTeam } from "@/components/RefConsole";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { ResetDrop } from "@/components/ResetDrop";
@@ -136,6 +136,7 @@ export default async function ScorePage({
         teamA={consoleTeam(row.match.teamAId, row.match.lineupA, "a")}
         teamB={consoleTeam(row.match.teamBId, row.match.lineupB, "b")}
         canScore={canScore(principal)}
+        canReplaceTyped={canManage(principal)}
         notes={describeCourt(row.tournament, row.match)}
         eventHref={`/t/${slug}`}
         actions={{

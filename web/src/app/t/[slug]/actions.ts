@@ -363,8 +363,9 @@ export async function setMatchSetup(
  * Two answers the phone must not retry (`PushResult` in lib/offline/queue):
  *   - "typed": the match holds a typed result. The phone keeps its rallies and
  *     asks the referee; only an explicit `replaceTyped` push, at the rev this
- *     returns, replaces it. Asked BEFORE the rev guard, so a stale push cannot
- *     slip past it by being retried at the new rev.
+ *     returns, replaces it — and only from the ORGANISER (Faisal, 2026-10-23).
+ *     Asked BEFORE the rev guard, so a stale push cannot slip past it by being
+ *     retried at the new rev.
  *   - "refused": the match was deleted, or has no live court. It used to come
  *     back as "error", which the phone retried every fifteen seconds for ever.
  *   - "reset": the organiser cleared or reset the match after the rev this push
@@ -399,8 +400,9 @@ export async function pushLog(
     };
   }
   const ctx: Ctx = found;
+  const principal = await principalFor(ctx.tournament.id);
   try {
-    assert(canScore(await principalFor(ctx.tournament.id)), "score this match");
+    assert(canScore(principal), "score this match");
   } catch (e) {
     return { ok: false, reason: "error", error: e instanceof Error ? e.message : "Not allowed" };
   }
@@ -417,6 +419,14 @@ export async function pushLog(
      again — a plain "stale" here left the card on the old score, and every
      replace went out at the old rev and failed for ever. */
   const typedNow = viewMatch(ctx.tournament, ctx.match);
+  /* Putting rallies in place of a typed result is the ORGANISER's (Faisal,
+     2026-10-23). From anybody else it was a way to CLEAR the result in two
+     pushes — replace it with one rally, then undo that rally — and clearing a
+     result is the organiser's alone. The typed result is answered back
+     unchanged, marked so the phone can say why. */
+  if (replaceTyped && typedNow.typedScore && !canManage(principal)) {
+    return { ok: false, reason: "typed", ...typedNow.typedScore, outcome: typedNow.outcome, rev: ctx.match.rev, organiserOnly: true };
+  }
   if (replaceTyped && typedNow.typedScore && rev !== ctx.match.rev) {
     return { ok: false, reason: "typed", ...typedNow.typedScore, outcome: typedNow.outcome, rev: ctx.match.rev };
   }
