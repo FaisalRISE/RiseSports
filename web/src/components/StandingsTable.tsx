@@ -1,16 +1,19 @@
-import type { GroupTable } from "@/lib/tournamentState";
+import { groupNote, PAIR, type EntrantNoun, type GroupTable } from "@/lib/tournamentState";
 
 /* A group table. Server-rendered: the sort, including every tie-break, has
  * already happened on the server. */
-export function StandingsTable({ table, allowDraws }: { table: GroupTable; allowDraws: boolean }) {
-  const { group, rows, complete } = table;
+export function StandingsTable({ table, allowDraws, noun = PAIR }: { table: GroupTable; allowDraws: boolean; noun?: EntrantNoun }) {
+  const { group, rows, complete, withdrawn } = table;
+  const note = groupNote(table, noun);
+  /* A group every entrant left is neither complete nor in progress. */
+  const emptied = rows.length === 0 && withdrawn.length > 0;
   return (
     <section className="rounded-xl border border-neutral-800 bg-neutral-900/60">
       <header className="flex items-baseline gap-2 border-b border-neutral-800 px-4 py-3">
         <h3 className="font-bold">{group.name ?? `Group ${group.key}`}</h3>
         {group.court && <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-500">{group.court}</span>}
         <span className={`ml-auto text-[10px] font-bold uppercase tracking-widest ${complete ? "text-emerald-400" : "text-neutral-500"}`}>
-          {complete ? "complete" : "in progress"}
+          {complete ? "complete" : emptied ? "withdrawn" : "in progress"}
         </span>
       </header>
       <div className="overflow-x-auto">
@@ -44,12 +47,15 @@ export function StandingsTable({ table, allowDraws }: { table: GroupTable; allow
                 <td className="px-2 py-2 text-right font-mono font-black">{r.points}</td>
               </tr>
             ))}
-            {rows.length === 0 && (
+            {rows.length === 0 && !note && (
               <tr><td colSpan={9} className="px-4 py-6 text-center text-neutral-500">No teams drawn yet.</td></tr>
             )}
           </tbody>
         </table>
       </div>
+      {note && (
+        <p className="border-t border-neutral-800 px-4 py-3 text-xs text-neutral-400" data-group-note>{note}</p>
+      )}
     </section>
   );
 }

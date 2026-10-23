@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: () => {} }) }));
 
-const { typedHeading, sendTap, conflictWords, resetWords, pageReset, courtReset, readCard } = await import("./RefConsole");
+const { typedHeading, typedWords, sendTap, conflictWords, resetWords, pageReset, courtReset, readCard } = await import("./RefConsole");
 
 /* The heading on the referee's card when a result was typed in. A walkover or
    a retirement says so, as every other screen does, rather than reading as a
@@ -17,13 +17,21 @@ describe("the typed result on the referee's card", () => {
   });
 
   it("says why a result moves no rating", () => {
-    expect(say(0, 11, "walkover")).toBe("Typed in: walkover to Bees");
+    /* A walkover is the organiser's (step 8b), never "typed in". */
+    expect(say(0, 11, "walkover")).toBe("Walkover to Bees — given by the organiser");
     expect(say(9, 7, "retired")).toBe("Typed in: Aces win 9–7 — the other side retired");
     expect(say(9, 7, "unrated")).toBe("Typed in: Aces win 9–7 — stopped early, no rating change");
   });
 
   it("a level score is just the score", () => {
     expect(say(1, 1)).toBe("Typed in: 1–1");
+  });
+
+  /* "Keep 0–11" named a game nobody played, in the court's order. */
+  it("keeps a walkover as a walkover, and a score as the score", () => {
+    expect(typedWords({ a: 0, b: 11, outcome: "walkover" })).toEqual({ happened: "The organiser gave this walkover", keep: "Keep the walkover" });
+    expect(typedWords({ a: 11, b: 7, outcome: null })).toEqual({ happened: "The result was typed in", keep: "Keep 11–7" });
+    expect(typedWords({ a: 9, b: 7, outcome: "retired" }).keep).toBe("Keep 9–7");
   });
 });
 

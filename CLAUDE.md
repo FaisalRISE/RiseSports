@@ -2330,6 +2330,119 @@ until the first tap) carrying the match's rev as the page saw it.
   on a changed reset_rev and can load a cached render), `e2e/clear.mjs`, and the match-row
   checks in `e2e/redraw.mjs`.
 
+### Step 8b — a pair pulls out: walkovers, removing a pair, group membership (migration `0023`)
+
+Faisal approved both screens on 2026-10-15 (the "Clearing Results" picture, version 7: "Yes,
+build both"; Remove the pair confirmed by two taps, as drawn). His answer to "a group too small
+for its knockout places": **walkovers only** — removing the pair is refused there.
+
+**Group membership is recorded** (`teams.group_id`, ON DELETE SET NULL, written by
+`generateGroups` in the draw's transaction). A group's table is its MEMBERS, not whoever is in
+its fixtures — which is what lets a pair left alone in a group of two still win it.
+
+- ONE definition, in lib/tournamentState: `groupMembers` (members by `group_id`, plus fixture
+  teams with NO membership recorded — groups drawn before 0023 — minus withdrawn, sorted seed /
+  created / id, because the standings' last tie-break is input order and teams load in none);
+  `groupDecided` (exactly one active member, or fixtures > 0, all played, and every member in
+  one — a member with no match would otherwise sit at nought played above pairs who lost);
+  `fixtureDeletionProblem`, `pairRemovalProblem`, `groupNote`. The tables, the print pack, the
+  manage page and the server's refusals all read these.
+- **Deleting a group fixture** is refused when it is the group's only match (`group-short`) or a
+  pair's last (`pair-stranded`). The old "fewer teams than the knockout asks" clause went:
+  deleting a fixture no longer takes a pair out of the table.
+- `generateKnockout` refuses to ask more of a group than it has members (`knockout-too-many`).
+- 0023 backfills membership from fixtures: a team in the fixtures of exactly ONE group of its OWN
+  category. `migration-0023.test.ts` builds groups at 0022 and applies it twice.
+- **Run `web/scripts/0023-after-deploy.sql` once the new code is live.** 0023 goes in before the
+  push, so for a few minutes the OLD code serves on the new columns: a group it DRAWS gets no
+  membership (part 1 is the backfill again), and a fixture it DELETES can leave a backfilled
+  member with no match — under the new rules that group could never be decided (part 2 takes
+  that membership off, which is the table the old code showed). The new code cannot produce
+  that state, so the script undoes nothing it did; it is idempotent, and pinned by the
+  migration test.
+
+**Walkover** (`giveWalkover`, manage/actions.ts): organiser only, on a match nobody has played
+with both teams known; the second tap is one button per side (`ConfirmButton` `choices`). It
+goes through `recordTypedResult` (lib/results/write.ts) — `recordResult`'s rules, extracted
+unchanged, so a typed result and a walkover are judged by one set. Counts as the full winning
+score ("11–0 w/o", `walkoverScore`), moves no rating, freezes the rules, and in a knockout sends
+the winner on when "Fill resolved slots" is pressed. The same walkover again is done, not refused.
+- **Walkovers are the organiser's by every route**: `recordResult` (which a PIN reaches) refuses
+  `outcome: "walkover"` without `canManage` (`organiser-only`). Typing a PLAYED result stays any
+  scorer's (step 7). A referee's phone holding rallies may still "Use this phone's score
+  instead" over a walkover — that is replacing a typed result, which step 7 allows. Decided for
+  Faisal; he may overrule.
+- **A walkover is not a match that was played.** `playedSql` (lib/results) — rallies, or a typed
+  result that is not a walkover — is what "shared a court" means for skill ratings and what the
+  home page counts. A retirement or a game stopped early WAS played.
+
+**Remove the pair** (`pairPlan`, `pairSignature`, `removePairIn` in lib/results/clear.ts):
+every match of theirs goes, played ones too, with the rating changes they made; the team stays,
+`withdrawn_at` set, marked Withdrawn; an approved online entry is withdrawn with a note and KEEPS
+its team (the team still exists, unlike removing a category).
+- `pairPlan` is ONE reading for the card (reason in place of a button the server would refuse,
+  and the question's counts) and the server. Refused: in ANY match outside a group, drawn or
+  hand-added (`pair-in-knockout` — a hand-added row can be a Final or a `W:` feeder); a knockout
+  match fed by their GROUP has play (`pair-blocked` — found by the group's KEY over every slot,
+  not through their fixtures, which may be gone); fewer members left than the places asked
+  (`pair-group-short`, Faisal's "walkovers only"); members left with no match between them
+  (`pair-strands-group`).
+- **A groups-then-knockout category asks at least one place of every group, even before the
+  knockout is drawn** (`knockoutToCome`). Without it both pairs of a group could be removed, and
+  then every "Draw knockout" was refused and the groups could not be redrawn without throwing
+  away every result. A LEAGUE may lose every pair; its table says so.
+- **The removal writes down the membership it relied on** before deleting: in a group drawn
+  before 0023 the members are known only through fixtures, and deleting the removed pair's
+  fixture would drop the pair left out of its own table — undecidable for ever.
+- ONE transaction, lock order: event row → the TEAM `FOR UPDATE` (so an add to it waits, then
+  reads it withdrawn) → category reads → their matches AND every match fed by their group in ONE
+  sorted statement → people once (inside `revertTournamentResultsIn`). Played matches are cleared
+  in one statement, then go through `deleteUnplayed` like every other delete. Filled, unstarted
+  sides fed by the group are emptied (`emptySides`) and the organiser is told to press "Fill
+  resolved slots" (`refill=1`).
+- The token signs their matches (unplayed by id, live as `id:live`, finished by rev), the sides
+  it empties and their approved entries — the page's own token is what the tests post.
+
+**Left out of everything, and refused at every door** (Server Actions are public): draws, seeding
+(seeds stay 1..N), the add-match lists and `addMatch` (teams `FOR KEY SHARE` after the category,
+then re-read), `addPlayer`/`insertPlayer` (same), `removePlayer` (a removed pair's players
+STAY), the misfit flags, the category's count ("4 teams · 1 withdrawn"), the ratings page.
+- **`removePlayer` takes the CATEGORY first, then the team, then deletes.** Its first version
+  took the team first, and removing a category deletes the players before the teams — a circle
+  (round two of the review). Every writer on a category: category KEY SHARE, then team.
+- **Their players stay in `categoryRoster` and in every other roster that decides a category's
+  rating key** (insertPlayer, approval, seedByRating's `formatOf`, `tournamentRatings`): a
+  mixed pair leaving an open category would otherwise flip `od` to `md` mid-event. That is also
+  why `removePlayer` refuses them.
+- `fillKnockoutSlots` runs in ONE transaction behind the event row and reads the event, groups,
+  teams and matches after it. Unlocked, it could deadlock with a removal (its UPDATE checks the
+  team after holding the match) and write a removed pair into a slot.
+- A tap on a deleted match answers `GONE` (stale) instead of throwing, and the score page has its
+  own `not-found.tsx` with a way back — a console reloading onto a deleted match used to land
+  on a bare 404.
+- One noun per event (`entrantNoun`): "player" in singles, "team" when a side is more than two
+  (OSL), "pair" otherwise — in every sentence about an entrant, the group note and the podium.
+
+**Reviewed adversarially twice.** Round one (four reviewers and a critic, every finding proved):
+20 findings, 15 distinct, all fixed above — two of them events that could get stuck for good.
+Round two (three reviewers, on the fixes and on regressions): 10 findings — the `removePlayer`
+deadlock, six wording slips (a card naming "Clear Semi-Final 1" whose row refuses until the
+Final is cleared now names the whole chain), the deploy window above — all fixed; and one left
+for Faisal:
+- **A PIN referee can still clear a typed result, a walkover included, in two pushes**: "Use
+  this phone's score instead" with one rally, then undo. Possible since step 7, for every typed
+  result. Closing it means refusing `replaceTyped` to non-organisers, which changes what a
+  referee's phone offers — his call, asked in the 8b report.
+The regression lens ran the old `groupTables` beside the new as an oracle: for events with no
+withdrawals the tables are identical, drawn before 0023 or after. **90** plausible wrong versions of the 8b rules and the round-one fixes
+were applied one at a time; 88 are caught. The 2 left remove a check another line already makes:
+`groupDecided`'s "no fixtures" guard (the every-member clause implies it) and the walkover
+button's "not recorded" test (its only caller has already made it). Two first survived and
+gained tests: an online entry approved after the page opened, and a removed pair that would
+have taken seed 1. Tests: `manage/withdraw.test.ts`, the membership rules
+in `tournamentState.test.ts`, `migration-0023.test.ts`, the 8b blocks in `locks.test.ts` and
+`RefConsole.test.ts`, `e2e/withdraw.mjs`.
+
 ## Access: the site is deliberately open, and the switch is a trap
 
 `rise-sports.vercel.app` lets any visitor create events, manage them and enter scores that move

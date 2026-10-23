@@ -6,6 +6,7 @@ import { matches, people, tournaments } from "@/lib/db/schema";
 import { DEFAULT_SPORT, SPORTS, SPORT_IDS, sportOf, type SportId } from "@/lib/sports/registry";
 import { getTier, sportRating } from "@/lib/rating";
 import { sportRatingSql } from "@/lib/people";
+import { playedSql } from "@/lib/results";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
 import { PersonLink } from "@/components/PersonLink";
 
@@ -34,11 +35,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ s
     const [pc, mc, best] = await Promise.all([
       db.select({ n: count() }).from(people),
       /* Played, not drawn: a fixture nobody has turned up for is not a match
-         that happened. */
+         that happened — nor is a walkover, which is exactly that fixture. */
       db
         .select({ n: count() })
         .from(matches)
-        .where(sql`(${matches.typedScoreA} is not null or jsonb_array_length(${matches.log}) > 0)`),
+        .where(playedSql),
       /* Ranked by the rating in THIS sport, in the database; the number shown is
          worked out again from the row by `sportRating`, the one definition —
          see lib/people `sportRatingSql`. */

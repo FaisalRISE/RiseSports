@@ -35,7 +35,8 @@ export type Podium = {
   silver: string | null;
   bronze: string | null;
   /** How it was decided, for wording on screen. */
-  via: "final" | "table";
+  /** "alone": a table won by the only pair left after the others withdrew. */
+  via: "final" | "table" | "alone";
 };
 
 /** A finished match's winner and loser, or null while it is still in play. */
@@ -65,7 +66,10 @@ const THIRD = "Third Place";
  * inventing a result. The organiser who wants a bronze turns the playoff on.
  *
  * A category with no final at all — a league, or a single group — is decided by
- * its table, but only once every match in it has been played.
+ * its table, but only once every match in it has been played. A league whose
+ * other pairs all withdrew is won by the pair left (step 8b; the default Faisal
+ * was told on 2026-10-15) — with no match left to play, so the table, not the
+ * matches, says whether the category exists to be decided.
  */
 export function podiumFor(
   loaded: LoadedTournament,
@@ -74,9 +78,8 @@ export function podiumFor(
 ): Podium | null {
   const t = loaded.tournament;
   const mine = loaded.matches.filter((m) => m.divisionId === divisionId);
-  if (mine.length === 0) return null;
 
-  const final = decider(mine, FINAL);
+  const final = mine.length > 0 ? decider(mine, FINAL) : undefined;
   if (final) {
     const decided = settled(t, final);
     if (!decided) return null;
@@ -100,7 +103,7 @@ export function podiumFor(
     silver: second?.teamId ?? null,
     /* Only where a third place exists to take: a table of two has no bronze. */
     bronze: third?.teamId ?? null,
-    via: "table",
+    via: only.rows.length === 1 && only.withdrawn.length > 0 ? "alone" : "table",
   };
 }
 
@@ -123,7 +126,9 @@ function decider(mine: Match[], name: string): Match | undefined {
 
 /** Every category's podium, skipping the ones not yet decided. */
 export function podiums(loaded: LoadedTournament, tables: GroupTable[]): Podium[] {
-  const ids = [...new Set(loaded.matches.map((m) => m.divisionId))];
+  /* The categories with matches, and those with a table: a league whose
+     other pairs all withdrew has a table and no match left. */
+  const ids = [...new Set([...loaded.matches.map((m) => m.divisionId), ...tables.map((x) => x.group.divisionId)])];
   return ids.map((id) => podiumFor(loaded, tables, id)).filter((p): p is Podium => p !== null);
 }
 

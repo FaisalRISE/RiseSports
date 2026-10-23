@@ -237,7 +237,9 @@ describe("match actions stay inside their event", () => {
     await actions.generateGroups(b.id, await form({ divisionId: b.divisionId, groups: "1" }));
     const [target] = await matchesOf(b.divisionId);
 
-    await actions.removeMatch(a.id, target.id);
+    /* Refused and SAID (step 8b): a match that is not this event's is answered
+       as one no longer in it, and left exactly as it is. */
+    await expect(actions.removeMatch(a.id, target.id)).rejects.toThrow("problem=match-gone");
     const res = await actions.setLineup(a.id, target.id, "a", []);
 
     expect(res.ok).toBe(false);

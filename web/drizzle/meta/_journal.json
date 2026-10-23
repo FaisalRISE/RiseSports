@@ -162,6 +162,13 @@
       "when": 1791698738462,
       "tag": "0022_reset_and_restrict",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792080922351,
+      "tag": "0023_group_membership",
+      "breakpoints": true
     }
   ]
 }

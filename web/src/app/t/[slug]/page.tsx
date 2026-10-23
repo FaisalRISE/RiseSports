@@ -8,7 +8,7 @@ import { StandingsTable } from "@/components/StandingsTable";
 import { viewMatch, allowsDraws } from "@/lib/matchState";
 import { matchResult } from "@/lib/results";
 import { floatingTime } from "@/lib/schedule";
-import { loadTournament, groupTables, resolverFactory, resolveSlots } from "@/lib/tournamentState";
+import { loadTournament, groupTables, resolverFactory, resolveSlots, entrantNoun } from "@/lib/tournamentState";
 import { podiums, PLACING_MEDAL } from "@/lib/placings";
 import { divisionsOf } from "@/lib/divisions";
 
@@ -120,7 +120,7 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
                       claim from one won in a final and organisers are asked
                       about it. */}
                   <p className="mt-2 text-[11px] text-neutral-500">
-                    {p.via === "final" ? "Decided in the final." : "Top of the table, all matches played."}
+                    {p.via === "final" ? "Decided in the final." : p.via === "alone" ? `The only ${entrantNoun(t).one} left after the rest withdrew.` : "Top of the table, all matches played."}
                     {p.via === "final" && !p.bronze && " No third-place playoff was run."}
                   </p>
                 </div>
@@ -133,7 +133,7 @@ export default async function TournamentPage({ params }: { params: Promise<{ slu
           <section className="space-y-4">
             <h2 className="text-lg font-black">Standings</h2>
             {tables.map((table) => (
-              <StandingsTable key={table.group.id} table={table} allowDraws={allowsDraws(t.sport)} />
+              <StandingsTable key={table.group.id} table={table} allowDraws={allowsDraws(t.sport)} noun={entrantNoun(t)} />
             ))}
           </section>
         )}

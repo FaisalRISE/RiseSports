@@ -122,11 +122,25 @@ export const teams = pgTable(
        (a rule tightened later) still flags the team: a waiver covers what was
        waived, not whatever comes next. */
     rulesWaived: text("rules_waived"),
+    /* Which group the TEAM was drawn into (step 8b). `matches.group_id` says
+       which group a FIXTURE is in; this says which group a team is in, so a
+       group's table is its MEMBERS — a pair left alone in a group of two after
+       the other pair was removed is still in it, and wins it (Faisal). The draw
+       writes both in one transaction; deleting the groups (a redraw, a straight
+       knockout, the category) clears it through SET NULL, as it clears the
+       fixtures'. Kept when the pair withdraws, so the list can say where from. */
+    groupId: text("group_id").references(() => groups.id, { onDelete: "set null" }),
+    /* The pair pulled out and the organiser removed them (step 8b): their
+       matches are gone and their ratings taken back, and they are left out of
+       every table, draw, seeding, order of play and add-match list — but stay
+       on the team list, marked Withdrawn. Null for every team still playing. */
+    withdrawnAt: timestamp("withdrawn_at", { withTimezone: true }),
     createdAt: created(),
   },
   (t) => [
     index("teams_tournament_idx").on(t.tournamentId),
     index("teams_division_idx").on(t.divisionId),
+    index("teams_group_idx").on(t.groupId),
   ],
 );
 

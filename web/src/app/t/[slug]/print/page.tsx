@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { loadTournament, resolverFactory, groupTables, resolveSlots } from "@/lib/tournamentState";
+import { loadTournament, resolverFactory, groupTables, groupNote, entrantNoun, resolveSlots } from "@/lib/tournamentState";
 import { principalFor } from "@/lib/auth/guard";
 import { canView } from "@/lib/auth/policy";
 import { PrintButton } from "@/components/PrintButton";
@@ -54,17 +54,13 @@ export default async function PrintPage({
     return toPrintMatch(t, m, [a.label, b.label], withData);
   };
 
-  /* One sheet per group, carrying that group's own teams so the margin grid
-     axes match the fixtures on the same page. */
-  const groupSheets = loaded.groups.map((g) => {
-    const ms = loaded.matches.filter((m) => m.groupId === g.id);
-    const ids = new Set<string>();
-    for (const m of ms) {
-      if (m.teamAId) ids.add(m.teamAId);
-      if (m.teamBId) ids.add(m.teamBId);
-    }
-    const teams = [...ids].map((id) => byId.get(id)).filter((x): x is Team => !!x);
-    return { group: g, teams, matches: ms.map(asPrint) };
+  /* One sheet per group, carrying that group's MEMBERS — the same teams, in
+     the same order, as its table on screen — so the margin grid's axes match
+     the table. A pair removed from the group is on neither. */
+  const groupSheets = tables.map((tb) => {
+    const ms = loaded.matches.filter((m) => m.groupId === tb.group.id);
+    const teams = tb.members.map((id) => byId.get(id)).filter((x): x is Team => !!x);
+    return { group: tb.group, teams, matches: ms.map(asPrint), note: groupNote(tb, entrantNoun(t)) };
   });
 
   /* The order of play, across every category. First in the pack because it is
@@ -163,6 +159,7 @@ export default async function PrintPage({
             group={s.group}
             teams={s.teams}
             matches={s.matches}
+            note={s.note}
             withData={withData}
             printedAt={printedAt}
           />

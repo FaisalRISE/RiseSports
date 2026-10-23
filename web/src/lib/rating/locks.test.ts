@@ -703,3 +703,68 @@ describe("clearing, deleting and restarting lock as every other writer does", { 
     expect(await count(10)).toBe(await count(2));
   }, 120_000);
 });
+
+/* ── Step 8b: removing a pair, and filling the knockout ─────────────────── */
+
+describe("removing a pair and filling the knockout lock as every other writer does", { timeout: 30_000 }, () => {
+  /** A played, rated group fixture between two pairs, each a member. */
+  async function groupMatch() {
+    const [a, b, c, d] = await four();
+    const m = await match([a, b], [c, d]);
+    await apply.applyMatchRatings(m);
+    const [row] = await testDb.select().from(schema.matches).where(eq(schema.matches.id, m));
+    const groupId = randomUUID();
+    await testDb.insert(schema.groups).values({ id: groupId, tournamentId: row.tournamentId, divisionId: row.divisionId, key: "A" });
+    await testDb.update(schema.matches).set({ groupId }).where(eq(schema.matches.id, m));
+    await testDb.update(schema.teams).set({ groupId }).where(eq(schema.teams.divisionId, row.divisionId));
+    const [t] = await testDb.select().from(schema.tournaments).where(eq(schema.tournaments.id, row.tournamentId));
+    return { t, row: { ...row, groupId }, groupId };
+  }
+
+  it("removing a pair: the event, the team FOR UPDATE, their matches in one sorted statement, the people once", async () => {
+    const { t, row } = await groupMatch();
+    const { removePairIn, pairPlan, pairSignature } = await import("@/lib/results/clear");
+    const rows = await testDb.select().from(schema.matches).where(eq(schema.matches.divisionId, row.divisionId));
+    const gs = await testDb.select().from(schema.groups).where(eq(schema.groups.divisionId, row.divisionId));
+    const ts = await testDb.select().from(schema.teams).where(eq(schema.teams.divisionId, row.divisionId));
+    const plan = pairPlan(row.teamAId!, rows, gs, ts, () => true);
+    const token = pairSignature(t, rows, () => true, plan.emptied, []);
+    const { txs, bare } = await recorded(() => removePairIn(t, row.teamAId!, token));
+
+    expect(txs).toHaveLength(1);
+    const tx = txs[0];
+    expect(tx[0], "the event row first").toMatch(EVENT_LOCK);
+    expect(tx[1], "then the team, so an add to it waits").toMatch(/^select .* from "teams" .* for update$/);
+    const matchLock = tx.findIndex((s) => s.includes('from "matches"') && / for (no key )?update$/.test(s));
+    expect(tx[matchLock], "their matches in one sorted statement").toMatch(SORTED_MATCHES);
+    expect(tx.slice(0, matchLock).some((s) => s.includes('"people"') || s.includes('"rating_history"')),
+      "nothing about a rating before the matches are locked").toBe(false);
+    assertPeopleLockedOnce(tx);
+    expect(tx.some((s) => s.startsWith('delete from "matches"'))).toBe(true);
+    expect(tx.some((s) => s.startsWith('update "teams"'))).toBe(true);
+    expect(bare.filter((s) => s.startsWith("update") || s.startsWith("delete")), "nothing written outside it").toEqual([]);
+    const [team] = await testDb.select().from(schema.teams).where(eq(schema.teams.id, row.teamAId!));
+    expect(team.withdrawnAt).not.toBeNull();
+  });
+
+  /* It used to read with no lock and write one match at a time — against a
+     removal that holds the team and then wants the match, a deadlock; and a
+     read from before a removal could write the removed pair into a slot. */
+  it("filling the knockout: the event row first, the tables read after it, every write inside", async () => {
+    const { t, row } = await groupMatch();
+    const ko = randomUUID();
+    await testDb.insert(schema.matches).values({
+      id: ko, tournamentId: t.id, divisionId: row.divisionId, round: "Final", bracket: "main", slotA: "A1", slotB: "A2",
+      log: [], lineupA: [], lineupB: [], ackedGates: [],
+    });
+    const { fillKnockoutSlots } = await import("@/app/t/[slug]/manage/actions");
+    const { txs, bare } = await recorded(() => fillKnockoutSlots(t.id));
+    expect(txs).toHaveLength(1);
+    expect(txs[0][0]).toMatch(EVENT_LOCK);
+    expect(txs[0].findIndex((s) => s.includes('from "matches"'))).toBeGreaterThan(0);
+    expect(txs[0].some((s) => s.startsWith('update "matches"')), "it filled the Final").toBe(true);
+    expect(bare.filter((s) => s.includes('"matches"') || s.includes('"groups"')), "nothing read or written outside it").toEqual([]);
+    const [final] = await testDb.select().from(schema.matches).where(eq(schema.matches.id, ko));
+    expect([final.teamAId, final.teamBId].sort()).toEqual([row.teamAId, row.teamBId].sort());
+  });
+});

@@ -12,7 +12,8 @@ import { revalidatePath } from "next/cache";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { matches, type Match, type Outcome, type Tournament } from "@/lib/db/schema";
-import { eventRules } from "@/lib/matchState";
+import { allowsDraws, endingOf, eventRules, viewMatch } from "@/lib/matchState";
+import { normaliseResult, resultProblem, type ResultRefusalCode } from "@/lib/results/record";
 import { matchResult, hasPlay, type MatchResult } from "@/lib/results";
 import { applyMatchRatings, revertMatchRatingsIn } from "@/lib/rating/apply";
 import type { Side } from "@/lib/scoring/replay";
@@ -155,6 +156,79 @@ export async function rate(matchId: string) {
   } catch (e) {
     console.error("rating apply failed for match", matchId, e);
   }
+}
+
+/* ── A result typed in ─────────────────────────────────────────────── */
+
+export type RecordReply =
+  | { ok: true; rev: number }
+  | {
+      ok: false;
+      code: ResultRefusalCode | "live" | "stale" | "organiser-only";
+      /** One plain sentence for whoever typed it. */
+      error: string;
+      /** The score they probably meant, in the order they typed it. */
+      suggestion?: { a: number; b: number };
+      /** Code "live": the rallies that typing would replace. */
+      live?: { a: number; b: number; rallies: number };
+    };
+
+export type TypedResult = {
+  a: number; b: number; expectedRev: number;
+  outcome: Outcome | null; sets: [number, number][] | null; replaceLive: boolean;
+};
+
+/**
+ * Record a result typed in — the final score, a walkover, or a game that did
+ * not finish normally. ONE set of rules for every way in: a PIN referee's typed
+ * result (`recordResult`) and the organiser's Walkover button (`giveWalkover`).
+ * The caller has authorised `ctx` and parsed the input.
+ *
+ * Idempotent: the same result again is ok at the current rev, even from an
+ * older one. Replacing live rallies is a choice (`replaceLive`), never a side
+ * effect: without it a match with rallies answers "live".
+ */
+export async function recordTypedResult(ctx: MatchCtx, v: TypedResult): Promise<RecordReply> {
+  const { tournament: t, match: m } = ctx;
+
+  const ending = endingOf(t, m);
+  const r = normaliseResult(ending, { a: v.a, b: v.b, outcome: v.outcome, sets: v.sets });
+
+  const log = (m.log as Side[]) ?? [];
+  const same =
+    m.typedScoreA === r.a && m.typedScoreB === r.b && (m.outcome ?? null) === r.outcome &&
+    JSON.stringify(m.sets ?? null) === JSON.stringify(r.sets) && log.length === 0;
+  if (same) {
+    /* The same result again — a retry after a lost reply, or somebody saving
+       it twice. Also the way to repair a finished match that has no rating:
+       the engine answers "already" in two queries when it has one. */
+    if (r.a !== r.b && !r.outcome) await rate(m.id);
+    return { ok: true, rev: m.rev };
+  }
+
+  const problem = resultProblem(m, ending, r, allowsDraws(t.sport));
+  if (problem) return { ok: false, ...problem };
+
+  if (log.length > 0 && !v.replaceLive) {
+    const view = viewMatch(t, m);
+    return {
+      ok: false, code: "live",
+      error: `This match is being refereed live — ${view.a}–${view.b} after ${log.length} ${log.length === 1 ? "rally" : "rallies"}. Typing a result replaces those rallies.`,
+      live: { a: view.a, b: view.b, rallies: log.length },
+    };
+  }
+
+  const res = await writeResult(
+    ctx,
+    {
+      log: [], ackedGates: [],   // an OSL rotation re-arms if the match is ever refereed again
+      typedScoreA: r.a, typedScoreB: r.b, outcome: r.outcome, sets: r.sets,
+      timing: null,              // a typed result has no play time to report
+    },
+    v.expectedRev,
+  );
+  if (res.ok) return res;
+  return { ok: false, code: "stale", error: "This match changed on another device a moment ago — look at it again before saving." };
 }
 
 /** Every page that shows a match's score. */

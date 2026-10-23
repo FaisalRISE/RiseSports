@@ -7,12 +7,11 @@ import { z } from "zod";
 
 import { db } from "@/lib/db";
 import { matches, tournaments, scorerGrants, OUTCOMES, type Outcome } from "@/lib/db/schema";
-import { writeResult, rate } from "@/lib/results/write";
+import { writeResult, recordTypedResult, type RecordReply } from "@/lib/results/write";
 import { principalFor, grantCookieName, GRANT_COOKIE_OPTIONS } from "@/lib/auth/guard";
 import { canScore, canManage, assert } from "@/lib/auth/policy";
 import { verifyPin, generateGrantToken } from "@/lib/auth/pin";
-import { rulesFor, viewMatch, endingOf, noLiveCourt, teamsNotIn, allowsDraws } from "@/lib/matchState";
-import { normaliseResult, resultProblem, type ResultRefusalCode } from "@/lib/results/record";
+import { rulesFor, viewMatch, noLiveCourt, teamsNotIn } from "@/lib/matchState";
 import { oslPruneAcks } from "@/lib/formats/osl";
 import { rewindIndex } from "@/lib/scoring/rewind";
 import { MAX_SCORE } from "@/lib/scoring/final";
@@ -52,7 +51,7 @@ const tickSchema = z
   })
   .default({ playMs: 0, pausedMs: 0 });
 
-type Ctx = Awaited<ReturnType<typeof loadMatch>>;
+type Ctx = NonNullable<Awaited<ReturnType<typeof findMatch>>>;
 
 async function findMatch(matchId: string) {
   const [row] = await db
@@ -64,14 +63,12 @@ async function findMatch(matchId: string) {
   return row ?? null;
 }
 
-async function loadMatch(matchId: string) {
-  const row = await findMatch(matchId);
-  if (!row) throw new Error("Match not found");
-  return row;
-}
-
-async function requireScorer(matchId: string): Promise<Ctx> {
-  const ctx = await loadMatch(matchId);
+/** The match and its event, authorised for scoring — or null when the match
+    is not there: deleted on the manage screen (a pair removed, step 8b), so a
+    console still open on it is answered GONE rather than with an error. */
+async function requireScorer(matchId: string): Promise<Ctx | null> {
+  const ctx = await findMatch(matchId);
+  if (!ctx) return null;
   const principal = await principalFor(ctx.tournament.id);
   assert(canScore(principal), "score this match");
   return ctx;
@@ -145,6 +142,8 @@ async function commitLog(
  *  single-rally action; `pushLog` answers the same cases in its own words. */
 function courtRefusal(ctx: Ctx): string | null {
   const typed = viewMatch(ctx.tournament, ctx.match).typedScore;
+  /* A walkover is nobody's score — the organiser gave it (step 8b). */
+  if (typed && ctx.match.outcome === "walkover") return "This match was given as a walkover on the manage screen, so the court is locked.";
   if (typed) return `This match's result was typed in as ${typed.a}–${typed.b}, so the court is locked.`;
   const notIn = teamsNotIn(ctx.match);
   if (notIn) return `${notIn.title}. ${notIn.body}`;
@@ -166,6 +165,15 @@ const EMPTY: Tick = { playMs: 0, pausedMs: 0 };
 const STALE = {
   ok: false,
   error: "Not recorded — the match had just changed (on another device, or the scoring was changed). It shows the latest now: try again.",
+  stale: true,
+} as const;
+/* The match is not there any more — deleted on the manage screen, which a
+   pair being removed does to a match being played (step 8b). The console
+   reloads (stale) and meets the score page saying so. It used to throw, and
+   the referee was told the server had not answered, and to try again. */
+const GONE = {
+  ok: false,
+  error: "Not recorded — this match was deleted on the manage screen.",
   stale: true,
 } as const;
 /* A tap from a console that last saw the match BEFORE the organiser cleared or
@@ -200,6 +208,7 @@ export async function scorePoint(
   const clock = tickSchema.parse(tick);
   const rev = revSchema.parse(expectedRev);
   const ctx = await requireScorer(id);
+  if (!ctx) return GONE;
 
   const old = revRefusal(ctx, rev);
   if (old) return old;
@@ -233,6 +242,7 @@ export async function undoPoint(
   const clock = tickSchema.parse(tick);
   const rev = revSchema.parse(expectedRev);
   const ctx = await requireScorer(id);
+  if (!ctx) return GONE;
 
   const old = revRefusal(ctx, rev);
   if (old) return old;
@@ -267,6 +277,7 @@ export async function minusPoint(
   const clock = tickSchema.parse(tick);
   const rev = revSchema.parse(expectedRev);
   const ctx = await requireScorer(id);
+  if (!ctx) return GONE;
 
   const old = revRefusal(ctx, rev);
   if (old) return old;
@@ -304,6 +315,7 @@ export async function setMatchSetup(
     })
     .parse(setup);
   const ctx = await requireScorer(id);
+  if (!ctx) return GONE;
 
   if ((ctx.match.log as Side[]).length > 0) {
     return { ok: false, error: "The match has started — undo back to 0–0 to change this." };
@@ -461,6 +473,7 @@ export async function confirmRotation(matchId: string, gate: number, expectedRev
   const g = z.union([z.literal(7), z.literal(14)]).parse(gate);
   const rev = revSchema.parse(expectedRev);
   const ctx = await requireScorer(id);
+  if (!ctx) return GONE;
 
   const old = revRefusal(ctx, rev);
   if (old) return old;
@@ -489,18 +502,7 @@ const recordSchema = z.object({
 
 export type RecordInput = z.input<typeof recordSchema>;
 
-export type RecordReply =
-  | { ok: true; rev: number }
-  | {
-      ok: false;
-      code: ResultRefusalCode | "live" | "stale";
-      /** One plain sentence for whoever typed it. */
-      error: string;
-      /** The score they probably meant, in the order they typed it. */
-      suggestion?: { a: number; b: number };
-      /** Code "live": the rallies that typing would replace. */
-      live?: { a: number; b: number; rallies: number };
-    };
+export type { RecordReply };
 
 /**
  * Record a result typed in rather than scored rally by rally — the final
@@ -518,52 +520,25 @@ export type RecordReply =
  *
  * Idempotent: the same result again returns ok at the current rev, even from
  * an older rev, so a retry after a reply lost on a bad connection is not an
- * error.
+ * error. The rules themselves are `recordTypedResult` (lib/results/write),
+ * which the organiser's Walkover button goes through too.
  */
 export async function recordResult(matchId: string, input: RecordInput): Promise<RecordReply> {
   const id = idSchema.parse(matchId);
   const v = recordSchema.parse(input);
   const ctx = await requireScorer(id);
-  const { tournament: t, match: m } = ctx;
-
-  const ending = endingOf(t, m);
-  const r = normaliseResult(ending, { a: v.a, b: v.b, outcome: v.outcome ?? null, sets: v.sets ?? null });
-
-  const log = (m.log as Side[]) ?? [];
-  const same =
-    m.typedScoreA === r.a && m.typedScoreB === r.b && (m.outcome ?? null) === r.outcome &&
-    JSON.stringify(m.sets ?? null) === JSON.stringify(r.sets) && log.length === 0;
-  if (same) {
-    /* The same result again — a retry after a lost reply, or somebody saving
-       it twice. Also the way to repair a finished match that has no rating:
-       the engine answers "already" in two queries when it has one. */
-    if (r.a !== r.b && !r.outcome) await rate(m.id);
-    return { ok: true, rev: m.rev };
+  if (!ctx) return { ok: false, code: "stale", error: "This match was deleted on the manage screen." };
+  /* Giving a walkover is the organiser's (Faisal, step 8b) — the "Walkover…"
+     button is on the manage screen, and this is a public endpoint a scorer's
+     PIN reaches. Typing a played result stays anybody's who may score (step
+     7, "either, freely"); a retirement or a game stopped early was played. */
+  if (v.outcome === "walkover" && !canManage(await principalFor(ctx.tournament.id))) {
+    return { ok: false, code: "organiser-only", error: "Only the organiser can give a walkover — on the manage screen." };
   }
-
-  const problem = resultProblem(m, ending, r, allowsDraws(t.sport));
-  if (problem) return { ok: false, ...problem };
-
-  if (log.length > 0 && !v.replaceLive) {
-    const view = viewMatch(t, m);
-    return {
-      ok: false, code: "live",
-      error: `This match is being refereed live — ${view.a}–${view.b} after ${log.length} ${log.length === 1 ? "rally" : "rallies"}. Typing a result replaces those rallies.`,
-      live: { a: view.a, b: view.b, rallies: log.length },
-    };
-  }
-
-  const res = await writeResult(
-    ctx,
-    {
-      log: [], ackedGates: [],   // an OSL rotation re-arms if the match is ever refereed again
-      typedScoreA: r.a, typedScoreB: r.b, outcome: r.outcome, sets: r.sets,
-      timing: null,              // a typed result has no play time to report
-    },
-    v.expectedRev,
-  );
-  if (res.ok) return res;
-  return { ok: false, code: "stale", error: "This match changed on another device a moment ago — look at it again before saving." };
+  return recordTypedResult(ctx, {
+    a: v.a, b: v.b, expectedRev: v.expectedRev, outcome: v.outcome ?? null, sets: v.sets ?? null,
+    replaceLive: v.replaceLive ?? false,
+  });
 }
 
 /** Redeem a scorer PIN. Grants scoring rights for THIS tournament only. */

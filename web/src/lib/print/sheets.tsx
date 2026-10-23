@@ -269,6 +269,7 @@ export function GroupSheet({
   group,
   teams,
   matches,
+  note,
   withData,
   printedAt,
 }: {
@@ -276,6 +277,8 @@ export function GroupSheet({
   group: Group;
   teams: Team[];
   matches: PrintMatch[];
+  /** Pairs removed from the group — the table on screen says the same. */
+  note?: string | null;
   withData: boolean;
   printedAt: string;
 }) {
@@ -295,6 +298,7 @@ export function GroupSheet({
         sub={sub}
         printedAt={printedAt}
       />
+      {note && <div className="rules" data-group-note>{note}</div>}
       <div className="sub">Fixtures</div>
       <FixtureTable matches={matches} />
       <MarginGrid label={group.key} teams={teams} matches={matches} withData={withData} />

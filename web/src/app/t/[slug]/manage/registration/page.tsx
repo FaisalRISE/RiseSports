@@ -272,6 +272,10 @@ export default async function RegistrationPage({
                       ))}
                     </ul>
 
+                    {/* Why an entry was withdrawn: its category removed, or the pair removed
+                        from the event. Written by those actions and shown nowhere until now. */}
+                    {e.note && <p data-entry-note className="mt-1 text-[11px] text-neutral-500">{e.note}</p>}
+
                     {(() => {
                       const fit = fitOf.get(e.id);
                       if (!fit || (fit.reasons.length === 0 && fit.notes.length === 0)) return null;

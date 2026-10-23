@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
-import { countDistinct, eq } from "drizzle-orm";
+import { and, countDistinct, eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { matches, players, ratingHistory, teams, tournaments } from "@/lib/db/schema";
+import { matches, players, ratingHistory, registrations, teams, tournaments } from "@/lib/db/schema";
 import { DrawButton } from "./DrawButton";
 import { ConfirmButton } from "./ConfirmButton";
 import { RestartCategory } from "./RestartCategory";
@@ -12,25 +12,25 @@ import { drawSignature, lockedIds } from "@/lib/draw/guard";
 import { ProblemNotice } from "./ProblemNotice";
 import { viewMatch } from "@/lib/matchState";
 import { hasPlay, matchLine, matchResult } from "@/lib/results";
-import { restartSignature } from "@/lib/results/clear";
-import { dependentsByTarget, groupSlot } from "@/lib/brackets";
+import { pairPlan, pairSignature, restartSignature } from "@/lib/results/clear";
+import { dependentsByTarget } from "@/lib/brackets";
 import { principalFor } from "@/lib/auth/guard";
 import { canManage } from "@/lib/auth/policy";
-import { RESULT_ENTRY_ON_SCREEN } from "@/lib/results/record";
+import { RESULT_ENTRY_ON_SCREEN, walkoverScore } from "@/lib/results/record";
 import { sportOf, usesDupr } from "@/lib/sports/registry";
 import { oslLineupIssues } from "@/lib/formats/osl";
 import { OpenAccessBanner } from "@/components/OpenAccessBanner";
-import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, clearResult, startCategoryAgain, generateGroups, generateKnockout, generateSingleElim, fillKnockoutSlots, seedByRating, searchRoster, addDivision, setDivisionShape, generateSchedule, dropSchedule } from "./actions";
+import { addTeam, addPlayer, removePlayer, addMatch, removeMatch, clearResult, giveWalkover, removePair, startCategoryAgain, generateGroups, generateKnockout, generateSingleElim, fillKnockoutSlots, seedByRating, searchRoster, addDivision, setDivisionShape, generateSchedule, dropSchedule } from "./actions";
 import { floatingTime, floatingDay, floatingInputValue } from "@/lib/schedule";
 import { scheduleRows, scheduleText, whatsappHref } from "@/lib/schedule/share";
 import { divisionsOf } from "@/lib/divisions";
 import { SEED_BANDS } from "@/lib/rating";
-import { loadTournament, groupTables, resolverFactory, resolveSlots } from "@/lib/tournamentState";
+import { loadTournament, groupTables, resolverFactory, resolveSlots, groupMembers, fixtureDeletionProblem, entrantNoun } from "@/lib/tournamentState";
 import { StandingsTable } from "@/components/StandingsTable";
 import { ScoringControls, type ScoringState } from "./ScoringControls";
 import { maxGroupsFor } from "@/lib/formats/pickleboss";
 import { resolveRules } from "@/lib/scoring/rules";
-import { allowsDraws, boardsOf } from "@/lib/matchState";
+import { allowsDraws, boardsOf, endingOf } from "@/lib/matchState";
 import { PersonLink } from "@/components/PersonLink";
 import { AddPlayerForm } from "./AddPlayerForm";
 import { DivisionRulesForm } from "./DivisionRulesForm";
@@ -48,10 +48,10 @@ export default async function ManagePage({
   searchParams,
 }: {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ problem?: string; category?: string; match?: string; done?: string }>;
+  searchParams: Promise<{ problem?: string; category?: string; match?: string; team?: string; done?: string; refill?: string }>;
 }) {
   const { slug } = await params;
-  const { problem, category: problemCategory, match: problemMatch, done } = await searchParams;
+  const { problem, category: problemCategory, match: problemMatch, team: problemTeam, done, refill } = await searchParams;
   const [t] = await db.select().from(tournaments).where(eq(tournaments.slug, slug)).limit(1);
   if (!t) notFound();
   /* The organiser's screen — as the registration screen already was. While
@@ -69,10 +69,16 @@ export default async function ManagePage({
   const byTeam = new Map(teamRows.map((x) => [x.id, x]));
   const playerNameOf = new Map(playerRows.map((p) => [p.id, p.name]));
   const isOsl = t.format === "osl";
+  /* "pair", "player" or "team" — one noun for every sentence about an entrant. */
+  const noun = entrantNoun(t);
 
   const squadOf = (teamId: string) => playerRows.filter((p) => p.teamId === teamId);
+  /* A pair that was removed stays on the team list, marked Withdrawn, and is
+     counted nowhere else: not in "N teams", not in what a draw may split, not
+     in the lists a match is added from (step 8b). */
+  const activeTeams = teamRows.filter((x) => !x.withdrawnAt);
   const teamsIn = (divisionId: string) =>
-    teamRows.filter((x) => x.divisionId === divisionId).length;
+    activeTeams.filter((x) => x.divisionId === divisionId).length;
 
   const divisionName = new Map(divisionRows.map((d) => [d.id, d.name]));
 
@@ -101,6 +107,27 @@ export default async function ManagePage({
       .where(eq(matches.tournamentId, t.id))
       .groupBy(matches.divisionId)).map((r) => [r.id, Number(r.n)]),
   );
+  /* Who each match's rating moved, so "Remove the pair" can say how many
+     DIFFERENT people its matches moved — a sum per match counts a partner
+     once per match. And each team's approved online entries, which the
+     removal withdraws. Two more queries, sequential. */
+  const ratedBy = new Map<string, Set<string>>();
+  for (const r of await db
+    .select({ matchId: ratingHistory.matchId, personId: ratingHistory.personId })
+    .from(ratingHistory)
+    .innerJoin(matches, eq(ratingHistory.matchId, matches.id))
+    .where(eq(matches.tournamentId, t.id))) {
+    if (!r.matchId) continue;
+    if (!ratedBy.has(r.matchId)) ratedBy.set(r.matchId, new Set());
+    ratedBy.get(r.matchId)!.add(r.personId);
+  }
+  const entriesOf = new Map<string, string[]>();
+  for (const e of await db
+    .select({ id: registrations.id, teamId: registrations.teamId })
+    .from(registrations)
+    .where(and(eq(registrations.tournamentId, t.id), eq(registrations.status, "approved")))) {
+    if (e.teamId) entriesOf.set(e.teamId, [...(entriesOf.get(e.teamId) ?? []), e.id]);
+  }
 
   /* What each draw would replace, and whether any of it has a result. A draw
      with a result in it is refused on the server (lib/draw/guard), so the page
@@ -138,6 +165,10 @@ export default async function ManagePage({
       <DrawButton key={`${label}:${token}`} token={token} label={label} replaces={count > 0 ? replaces : null} />
     );
   const fixtures = (n: number) => `${n} ${n === 1 ? "match" : "matches"}`;
+  /* "Qualify per group" can ask no more of a group than the pairs it has left
+     — the server refuses more (`knockout-too-many`). Four at most, as before. */
+  const qualifyMax = (divisionId: string) =>
+    Math.max(1, Math.min(4, ...tables.filter((tb) => tb.group.divisionId === divisionId).map((tb) => tb.members.length)));
 
   /* A refusal comes back as a CODE (see runDraw); the sentence is built here,
      from the database, never carried in the URL. */
@@ -149,6 +180,9 @@ export default async function ManagePage({
     : problem === "restart-gone" ? "That category is no longer part of this event — it was removed — so there was nothing to start again."
     : problem === "confirm-needed" ? `Nothing in ${problemName} was redrawn: a redraw replaces its fixtures, so it needs “Yes, redraw”.`
     : problem === "draw-stale" ? `${problemName} changed since this page was opened, so nothing was redrawn. Look at it again, then redraw if you still want to.`
+    : problem === "knockout-too-many" ? `The knockout for ${problemName} was not drawn: a group there has fewer ${noun.many} left than the number asked to qualify from each group.`
+    : problem === "match-gone" ? "That match is not part of this event any more — it may have been deleted, for example with a pair that was removed — so nothing was done to it."
+    : problem === "team-gone" ? "That team is no longer in this event, so nothing was removed."
     : null;
 
   /* ── Who can enter each category ──────────────────────────────────────
@@ -246,24 +280,58 @@ export default async function ManagePage({
   const labelOf = (m: (typeof matchRows)[number]) =>
     `${m.round} — ${slotLabel(m, "a", m.teamAId ? byTeam.get(m.teamAId)?.name : undefined)} v ${slotLabel(m, "b", m.teamBId ? byTeam.get(m.teamBId)?.name : undefined)}`;
 
-  /** Why a group fixture cannot go: the group would be left unable to fill a
-      place the knockout asks of it — the server's `group-short`. */
+  /** What removing a team would do — `pairPlan`, the server's own reading. */
+  const planFor = (teamId: string) => {
+    const team = byTeam.get(teamId)!;
+    const rows = matchRows.filter((r) => r.divisionId === team.divisionId);
+    const gs = (loaded?.groups ?? []).filter((g) => g.divisionId === team.divisionId);
+    const shape = divisionRows.find((d) => d.id === team.divisionId)?.shape;
+    return pairPlan(teamId, rows, gs, teamRows.filter((x) => x.divisionId === team.divisionId), (id) => locked.has(id), shape === "groups_ko");
+  };
+  const joinNames = (names: string[]) =>
+    names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+
+  /** Why a group fixture cannot go — the server's `fixtureDeletionProblem`,
+      read from the same members: the group's only match, or a pair's last. */
   const groupShort = (m: (typeof matchRows)[number]): string | null => {
     if (!m.groupId) return null;
     const key = groupKeyOf.get(m.groupId) ?? "";
-    const left = matchRows.filter((r) => r.groupId === m.groupId && r.id !== m.id);
-    if (left.length === 0) {
+    const fixtures = matchRows.filter((r) => r.groupId === m.groupId);
+    const members = groupMembers(teamRows, fixtures, m.groupId).map((x) => x.id);
+    const p = fixtureDeletionProblem(members, fixtures, m.id);
+    if (!p) return null;
+    if (p.code === "group-short") {
       return `Can’t delete — it’s Group ${key}’s only match. Without it Group ${key} could never finish, and nobody from it would reach the knockout.`;
     }
-    const teamsLeft = new Set(left.flatMap((r) => [r.teamAId, r.teamBId]).filter(Boolean)).size;
-    const asking = matchRows
-      .filter((r) => r.divisionId === m.divisionId)
-      .flatMap((r) => [[r, r.slotA], [r, r.slotB]] as const)
-      .map(([r, ref]) => ({ r, s: groupSlot(ref) }))
-      .filter((x) => x.s && x.s.key === key && x.s.rank > teamsLeft);
-    if (asking.length === 0) return null;
-    const first = asking.sort((x, y) => y.s!.rank - x.s!.rank)[0];
-    return `Can’t delete — ${first.r.round} waits on ${key}${first.s!.rank}, and Group ${key} would be left with ${plural(teamsLeft, "team", "teams")}.`;
+    /* "…or remove the pair" only where their card offers it — the card may
+       refuse (a knockout match, or a group too small without them). */
+    const theirs = planFor(p.teamId);
+    const removable = !theirs.knockout && !theirs.blocks && !theirs.groupProblem;
+    return `Can’t delete — it’s ${byTeam.get(p.teamId)?.name ?? `a ${noun.one}`}’s last match in Group ${key}, and the table would show them at nought played. If they pulled out, give the walkover${removable ? `, or remove the ${noun.one}` : ""}.`;
+  };
+
+  /** "Walkover…" on a match nobody has played, with both teams known. Asks
+      who gets it; the question says what it counts as and where it sends them. */
+  const walkoverControl = (m: (typeof matchRows)[number]) => {
+    if (!m.teamAId || !m.teamBId || recorded(m)) return null;
+    const a = byTeam.get(m.teamAId)?.name ?? "Team A";
+    const b = byTeam.get(m.teamBId)?.name ?? "Team B";
+    const score = `${walkoverScore(endingOf(t, m))}–0`;
+    const key = m.groupId ? groupKeyOf.get(m.groupId) : null;
+    const waits = (dependents.get(m.id) ?? []).map((d) => ({ d, row: matchById.get(d.id) })).filter((x) => x.row && x.d.kind === "tie");
+    const onward = [...new Set(waits.filter((x) => !(x.d.side === "a" ? x.row!.slotA : x.row!.slotB)?.startsWith("L:")).map((x) => x.row!.round))];
+    const loserTo = [...new Set(waits.filter((x) => (x.d.side === "a" ? x.row!.slotA : x.row!.slotB)?.startsWith("L:")).map((x) => x.row!.round))];
+    const question = [
+      `Who gets the walkover? It counts as ${score}${key ? ` in the Group ${key} table` : ""}, and nobody’s rating changes.`,
+      onward.length ? `The winner goes through to ${onward.join(" and ")} — press “Fill resolved slots” afterwards.` : "",
+      loserTo.length ? `The side walked over still goes to ${loserTo.join(" and ")}; if they have left, give a walkover there too.` : "",
+    ].filter(Boolean).join(" ");
+    return (
+      <form action={giveWalkover.bind(null, t.id, m.id)} className="flex max-w-full flex-wrap items-center gap-2">
+        <ConfirmButton key={m.rev} token={m.rev} hook="walkover" label="Walkover…" yes="" question={question}
+          choices={[{ value: "a", label: `Walkover to ${a}` }, { value: "b", label: `Walkover to ${b}` }]} />
+      </form>
+    );
   };
 
   /** The control at the end of a match's row: a form, or the reason there is none. */
@@ -308,33 +376,53 @@ export default async function ManagePage({
         </form>
       );
     }
-    const feeds = deps.find((x) => x.d.kind === "tie");
-    if (feeds) {
+    /* Not played: "Walkover…" whenever both teams are known — even where a
+       delete is refused, because a semi-final the Final waits on is exactly
+       where a pair pulls out — and beside it the delete, or why not. */
+    const deleteControl = (() => {
+      const feeds = deps.find((x) => x.d.kind === "tie");
+      if (feeds) {
+        return (
+          <p data-row-locked className="basis-full text-[11px] font-semibold text-amber-300">
+            Can’t delete — {feeds.row!.round} waits on the{" "}
+            {(feeds.d.side === "a" ? feeds.row!.slotA : feeds.row!.slotB)?.startsWith("L:") ? "loser" : "winner"} of this
+            match. To change the knockout, redraw it while none of it has been played.
+          </p>
+        );
+      }
+      const short = groupShort(m);
+      if (short) return <p data-row-locked className="basis-full text-[11px] font-semibold text-amber-300">{short}</p>;
+      const key = m.groupId ? groupKeyOf.get(m.groupId) : null;
+      const a = slotLabel(m, "a", m.teamAId ? byTeam.get(m.teamAId)?.name : undefined);
+      const b = slotLabel(m, "b", m.teamBId ? byTeam.get(m.teamBId)?.name : undefined);
+      const question = `Delete ${m.round} — ${a} v ${b}? It hasn’t been played.${key ? ` Group ${key} will finish without it, and ${a} and ${b} will each play one match fewer than the rest of the group.` : ""}`;
       return (
-        <p data-row-locked className="basis-full text-[11px] font-semibold text-amber-300">
-          Can’t delete — {feeds.row!.round} waits on the{" "}
-          {(feeds.d.side === "a" ? feeds.row!.slotA : feeds.row!.slotB)?.startsWith("L:") ? "loser" : "winner"} of this
-          match. To change the knockout, redraw it while none of it has been played.
-        </p>
+        <form action={removeMatch.bind(null, t.id, m.id)} className="flex max-w-full flex-wrap items-center gap-2">
+          <ConfirmButton key={m.rev} token={m.rev} hook="delete" label="Delete match…" yes="Yes, delete" question={question} />
+        </form>
       );
-    }
-    const short = groupShort(m);
-    if (short) return <p data-row-locked className="basis-full text-[11px] font-semibold text-amber-300">{short}</p>;
-    const key = m.groupId ? groupKeyOf.get(m.groupId) : null;
-    const a = slotLabel(m, "a", m.teamAId ? byTeam.get(m.teamAId)?.name : undefined);
-    const b = slotLabel(m, "b", m.teamBId ? byTeam.get(m.teamBId)?.name : undefined);
-    const question = `Delete ${m.round} — ${a} v ${b}? It hasn’t been played.${key ? ` Group ${key} will finish without it, and ${a} and ${b} will each play one match fewer than the rest of the group.` : ""}`;
-    return (
-      <form action={removeMatch.bind(null, t.id, m.id)} className="flex max-w-full flex-wrap items-center gap-2">
-        <ConfirmButton key={m.rev} token={m.rev} hook="delete" label="Delete match…" yes="Yes, delete" question={question} />
-      </form>
-    );
+    })();
+    return <>{walkoverControl(m)}{deleteControl}</>;
   };
 
   /** A refusal or a done message for one match, said in that match's row. */
   const rowNotice = (m: (typeof matchRows)[number]): { code: string; text: string; done: boolean } | null => {
     if (problemMatch !== m.id) return null;
     const label = labelOf(m);
+    if (done === "walkover") {
+      const res = matchResult(t, m);
+      const winner = res?.winner ? byTeam.get((res.winner === "a" ? m.teamAId : m.teamBId) ?? "")?.name : null;
+      const onward = (dependents.get(m.id) ?? [])
+        .filter((d) => d.kind === "tie" && !(d.side === "a" ? matchById.get(d.id)?.slotA : matchById.get(d.id)?.slotB)?.startsWith("L:"))
+        .map((d) => matchById.get(d.id)?.round).filter(Boolean);
+      const hi = res ? Math.max(res.a, res.b) : null;
+      return {
+        code: done, done: true,
+        text: winner && hi !== null
+          ? `Walkover to ${winner}, ${hi}–0. Nobody’s rating changed.${onward.length ? ` Press “Fill resolved slots” to put ${winner} into ${[...new Set(onward)].join(" and ")}.` : ""}`
+          : `${label}: the walkover was recorded.`,
+      };
+    }
     if (done === "cleared") {
       return { code: done, done: true, text: `Done — ${label} is back to not played, and any rating changes it made were taken back.` };
     }
@@ -351,7 +439,14 @@ export default async function ManagePage({
       : problem === "match-started" ? `${label} was not deleted: it has been started. Reset it to 0–0 first.`
       : problem === "match-stale" ? `${label} changed since this page was opened, so nothing was done. Look at it again.`
       : problem === "match-feeds" ? `${label} was not deleted: a later match waits on its result.`
-      : problem === "group-short" ? `${label} was not deleted: without it its group could not fill every place the knockout needs.`
+      : problem === "group-short" ? `${label} was not deleted: it is its group’s only match, and the group could not finish without it.`
+      : problem === "pair-stranded" ? `${label} was not deleted: it is the last match in the group for one of its ${noun.many}. If they pulled out, give the walkover.`
+      : problem === "walkover-confirm" ? `${label}: no walkover was given — choose who gets it.`
+      : problem === "walkover-played" ? `${label}: no walkover was given — it already has a result. Clear it first.`
+      : problem === "walkover-started" ? `${label}: no walkover was given — it has been started. Reset it to 0–0 first.`
+      : problem === "walkover-stale" ? `${label} changed since this page was opened, so no walkover was given. Look at it again.`
+      : problem === "walkover-teams" ? `${label}: no walkover was given — both teams must be known first.`
+      : problem === "walkover-refused" ? `${label}: the walkover was not recorded.`
       : problem === "match-changed" ? `${label} got a score while it was being deleted, so it was kept.`
       : problem === "match-confirm" ? `${label} was not changed: it needs the second tap.`
       : problem === "clear-stale" ? `${label} changed since this page was opened (it is now ${matchLine(t, m, viewMatch(t, m)).score}), so it was not cleared. Look at it again — if it is being scored, ask the referee to stop first.`
@@ -404,6 +499,130 @@ export default async function ManagePage({
     );
   };
 
+  /* ── A pair that pulled out (step 8b) ──────────────────────────────────
+     "Remove the pair…" on each team's card: the question says exactly what
+     goes, or the card says why it cannot — the reason the server would give,
+     read from the same plan (`pairPlan`). */
+  const removeControl = (team: (typeof teamRows)[number]) => {
+    const plan = planFor(team.id);
+    const word = noun.one;
+    const key = plan.groupKey;
+    const reason = (text: string) => (
+      <p data-row-locked className="text-[11px] font-semibold text-amber-300">{text}</p>
+    );
+    if (plan.knockout) {
+      const k = matchById.get(plan.knockout.id)!;
+      const ko = plan.mine.filter((r) => r.groupId === null).map((r) => matchById.get(r.id)!);
+      const open = ko.find((r) => !recorded(r)) ?? null;
+      if (open && open.teamAId && open.teamBId) {
+        return reason(`Can’t remove — this ${word} is in ${open.round}. If they pull out, give the walkover there.`);
+      }
+      if (open) {
+        return reason(`Can’t remove — this ${word} is in ${open.round}. If they pull out, give the walkover there once both sides are filled in — “Fill resolved slots” fills the other side when it is decided.`);
+      }
+      const live = ko.find((r) => hasPlay(r) && !hasResult(r));
+      if (live) return reason(`Can’t remove — this ${word} is playing ${live.round}. If they pull out, reset it to 0–0, then give the walkover.`);
+      return reason(`Can’t remove — this ${word} has played in the knockout (${k.round}), and removing them would delete it.`);
+    }
+    if (plan.blocks) {
+      const r = matchById.get(plan.blocks.id)!;
+      const isLive = hasPlay(r) && !hasResult(r);
+      /* Name every match to undo, in the order their rows allow it: a match a
+         later one waits on refuses to clear until that one is cleared. */
+      const chain = [r];
+      for (let cur = r; ;) {
+        const next = (dependents.get(cur.id) ?? []).map((d) => matchById.get(d.id)).find((x) => x && recorded(x) && !chain.includes(x));
+        if (!next) break;
+        chain.push(next);
+        cur = next;
+      }
+      const steps = [...chain].reverse().map((x) => `${hasPlay(x) && !hasResult(x) ? "reset" : "clear"} ${x.round}`).join(", then ");
+      return reason(`Can’t remove — ${r.round} waits on Group ${key}’s table and ${isLive ? "has already started" : hasResult(r) ? "has a result" : "has a rating on record"}. ${steps[0].toUpperCase()}${steps.slice(1)} first.`);
+    }
+    if (plan.groupProblem) {
+      const unplayed = plan.mine.some((r) => !recorded(matchById.get(r.id)!));
+      const played = plan.mine.some((r) => recorded(matchById.get(r.id)!));
+      if (plan.groupProblem.code === "pair-group-short") {
+        const { asked, left } = plan.groupProblem;
+        const instead = unplayed
+          ? "Give walkovers against them in their remaining matches instead, so the group still fills its places."
+          : `${played ? "Their results stand; i" : "I"}f they reach the knockout and pull out, give the walkover there.`;
+        /* The last one left: a groups-then-knockout category takes at least
+           the winner of every group, so a group is never emptied. */
+        if (left === 0) {
+          return reason(`Can’t remove — they are the only ${word} left in Group ${key}, and the knockout ${plan.fed.length ? "takes" : "will take"} its winner. If they pull out, give the walkover in the knockout once they are in it — “Fill resolved slots” puts them there.`);
+        }
+        return reason(`Can’t remove — the knockout takes ${plural(asked, noun.one, noun.many)} from Group ${key}, and only ${left} would be left. ${instead}`);
+      }
+      return reason(`Can’t remove — the ${noun.many} left in Group ${key} would have no match to play between them. ${unplayed ? `Give walkovers against this ${word} instead.` : ""}`.trim());
+    }
+
+    const mine = plan.mine.map((r) => matchById.get(r.id)!);
+    const rec = mine.filter(recorded);
+    const live = rec.filter((m) => hasPlay(m) && !hasResult(m)).length;
+    const finished = rec.length - live;
+    const people = new Set(mine.flatMap((m) => [...(ratedBy.get(m.id) ?? [])])).size;
+    const entries = entriesOf.get(team.id) ?? [];
+    const token = pairSignature(t, mine, (id) => locked.has(id), plan.emptied, entries);
+    const cat = divisionRows.length > 1 ? divisionName.get(team.divisionId) : null;
+    const detail = [
+      finished > 0 ? `${finished} with ${finished === 1 ? "a result" : "results"}` : null,
+      live > 0 ? `${live} being played right now` : null,
+    ].filter(Boolean).join(" and ");
+    const left = plan.members.filter((id) => id !== team.id);
+    /* Who loses a match: only those who had one with them. A fixture deleted
+       earlier means somebody may not. */
+    const met = new Set(mine.filter((m) => m.groupId).map((m) => (m.teamAId === team.id ? m.teamBId : m.teamAId)));
+    const fewer = left.filter((id) => met.has(id));
+    const fewerLine = !key || left.length < 2 || fewer.length === 0 ? ""
+      : fewer.length === left.length ? ` The other ${noun.many} in Group ${key} play one match fewer.`
+      : ` One match fewer for ${joinNames(fewer.map((id) => byTeam.get(id)?.name ?? "—"))}.`;
+    const first = mine.length === 0
+      ? `This ${word} has no matches to remove.`
+      : `This removes their ${plural(mine.length, "match", "matches")}${key ? ` in Group ${key}` : ""}${detail ? ` — ${detail}${people > 0 ? " —" : ""}` : ""}${people > 0 ? ` and takes back the rating changes those matches gave ${plural(people, "player", "players")}` : ""}.${fewerLine}${live > 0 ? " A referee scoring one of them now is told it was deleted." : ""}`;
+    const after = [
+      plan.emptied.length ? `${[...new Set(plan.emptied.map((d) => d.round))].join(" and ")} will lose the ${word} Group ${key}’s table put there — press “Fill resolved slots” afterwards to fill it again.` : "",
+      key && left.length === 1 ? `That leaves one ${word} in Group ${key}, and the group goes to ${byTeam.get(left[0])?.name ?? "them"}.` : "",
+      key && left.length === 0 ? `Group ${key} is left with no ${noun.many}.` : "",
+    ].filter(Boolean).join(" ");
+    const question = [
+      after ? `${first} ${after}` : first,
+      `The ${word} stays on the team list marked Withdrawn, and is left out of the tables, the draw and the order of play.${entries.length ? " Their online entry is marked withdrawn too." : ""}`,
+      "This can’t be undone.",
+    ].join("\n\n");
+    return (
+      <form action={removePair.bind(null, t.id, team.id)}>
+        <ConfirmButton key={token} token={token} hook="withdraw" label={`Remove the ${word}…`}
+          heading={`Remove ${team.name}${cat ? ` from ${cat}` : ""}?`}
+          yes={`Yes, remove ${team.name}`} question={question} />
+      </form>
+    );
+  };
+
+  /** A refusal or a done message for one team, said on its card. */
+  const teamNotice = (team: (typeof teamRows)[number]): { code: string; text: string; done: boolean } | null => {
+    if (problemTeam !== team.id) return null;
+    if (done === "withdrawn") {
+      return {
+        code: done, done: true,
+        text: `Done — ${team.name} was removed: their matches are gone, the rating changes those matches made were taken back, and the team list marks them Withdrawn.${refill ? " Press “Fill resolved slots” to fill the knockout place their group’s table decides." : ""}`,
+      };
+    }
+    if (done === "already") return { code: done, done: true, text: `${team.name} had already been removed.` };
+    const text =
+      /* What happened, never what to do instead: the card beside this says
+         that, from the page as it is now, and only where it is on screen. */
+      problem === "pair-in-knockout" ? `${team.name} was not removed: they are in a match outside the groups.`
+      : problem === "pair-blocked" ? `${team.name} was not removed: a knockout match waiting on their group has started or has a result.`
+      : problem === "pair-group-short" ? `${team.name} was not removed: their group would be left with fewer ${noun.many} than the knockout takes from it.`
+      : problem === "pair-strands-group" ? `${team.name} was not removed: the ${noun.many} left in their group would have no match between them.`
+      : problem === "pair-confirm" ? `${team.name} was not removed: it needs the second tap.`
+      : problem === "pair-stale" ? `${team.name}’s matches changed since this page was opened, so nothing was removed. Look at it again.`
+      : problem === "pair-changed" ? `A result came in for one of ${team.name}’s matches while they were being removed, so nothing was changed.`
+      : null;
+    return text && problem ? { code: problem, done: false, text } : null;
+  };
+
   return (
     <>
       <OpenAccessBanner />
@@ -441,7 +660,9 @@ export default async function ManagePage({
           <div className="space-y-3">
             {teamRows.map((team) => {
               const squad = squadOf(team.id);
-              const issues = isOsl && squad.length >= 6
+              const gone = !!team.withdrawnAt;
+              const notice = teamNotice(team);
+              const issues = !gone && isOsl && squad.length >= 6
                 ? oslLineupIssues(squad.slice(0, 6).map((p) => ({ id: p.id, name: p.name, gender: p.gender })))
                 : [];
               return (
@@ -449,11 +670,16 @@ export default async function ManagePage({
                    `data-category`: the e2e scripts have to address ONE team's
                    roster form, and every card is the same chain of utility
                    classes. */
-                <div key={team.id} data-team={team.name}
+                <div key={team.id} id={`team-${team.id}`} data-team={team.name} data-withdrawn={gone ? "" : undefined}
                   className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
                   <div className="mb-2 flex items-center gap-2">
                     <span className="h-3 w-3 rounded" style={{ background: team.colour ?? "#666" }} />
-                    <span className="font-bold">{team.name}</span>
+                    <span className={`font-bold ${gone ? "text-neutral-500" : ""}`}>{team.name}</span>
+                    {gone && (
+                      <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-neutral-400">
+                        Withdrawn
+                      </span>
+                    )}
                     {/* Which category, but only when there is more than one to
                         be in — otherwise it is the same word on every card. */}
                     {divisionRows.length > 1 && (
@@ -477,9 +703,11 @@ export default async function ManagePage({
                         <span className={`rounded px-1.5 text-[10px] font-bold ${p.gender === "F" ? "bg-violet-500/20 text-violet-300" : "bg-blue-500/20 text-blue-300"}`}>
                           {p.gender}
                         </span>
-                        <form action={removePlayer.bind(null, t.id, p.id)}>
-                          <button className="text-[11px] font-bold text-neutral-500 hover:text-rose-400">remove</button>
-                        </form>
+                        {!gone && (
+                          <form action={removePlayer.bind(null, t.id, p.id)}>
+                            <button className="text-[11px] font-bold text-neutral-500 hover:text-rose-400">remove</button>
+                          </form>
+                        )}
                       </li>
                     ))}
                   </ol>
@@ -494,7 +722,7 @@ export default async function ManagePage({
                       acted on: the draw still works, and what to do about it is
                       the organiser's call (Faisal, 2026-09-17). */}
                   {(() => {
-                    const m = misfitOf.get(team.id);
+                    const m = gone ? undefined : misfitOf.get(team.id);
                     if (!m) return null;
                     const cat = divisionName.get(team.divisionId) ?? "this category";
                     return (
@@ -526,7 +754,13 @@ export default async function ManagePage({
                       saying "same person as last week", which needs no OTP. If
                       the number already exists, that person's rating comes with
                       them; if not, DUPR or a placement band seeds a new one. */}
-                  {(() => {
+                  {gone && (
+                    <p className="text-[11px] text-neutral-500">
+                      Removed{divisionRows.length > 1 ? ` from ${divisionName.get(team.divisionId) ?? "its category"}` : ""}.
+                      Their matches were deleted and the rating changes from them taken back.
+                    </p>
+                  )}
+                  {!gone && (() => {
                     const need = needsFrom(rulesOf.get(team.divisionId));
                     return (
                       <AddPlayerForm
@@ -539,6 +773,12 @@ export default async function ManagePage({
                       />
                     );
                   })()}
+                  {!gone && <div className="mt-3 border-t border-neutral-800 pt-3">{removeControl(team)}</div>}
+                  {notice && (
+                    <div className="mt-2">
+                      <ProblemNotice code={notice.code} text={notice.text} done={notice.done} />
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -596,7 +836,8 @@ export default async function ManagePage({
 
           <div className="space-y-4">
             {divisionRows.map((d) => {
-              const entered = teamRows.filter((x) => x.divisionId === d.id).length;
+              const entered = teamsIn(d.id);
+              const withdrew = teamRows.filter((x) => x.divisionId === d.id && x.withdrawnAt).length;
               /* data-category is a stable hook for e2e: the draw controls are
                  identical across categories and differ only by a hidden
                  division id, so a test needs some way to say "the Mixed one"
@@ -616,6 +857,7 @@ export default async function ManagePage({
                         ) : null;
                       })()}
                       {entered} {entered === 1 ? "team" : "teams"}
+                      {withdrew > 0 ? ` · ${withdrew} withdrawn` : ""}
                     </span>
                   </div>
 
@@ -734,10 +976,21 @@ export default async function ManagePage({
                             <input type="hidden" name="divisionId" value={d.id} />
                             <label className="flex items-center gap-2 text-sm">
                               <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">Qualify per group</span>
-                              <input name="qualify" type="number" min={1} max={4} defaultValue={2}
+                              <input name="qualify" type="number" min={1} max={qualifyMax(d.id)} defaultValue={Math.min(2, qualifyMax(d.id))}
                                 className="w-16 rounded-lg border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm" />
                             </label>
                             {(() => {
+                              /* A group with nobody left can send nobody through,
+                                 whatever is asked — say so rather than offer a
+                                 draw the server refuses every time. */
+                              const empty = tables.find((tb) => tb.group.divisionId === d.id && tb.members.length === 0);
+                              if (empty) {
+                                return (
+                                  <p data-draw-locked className="self-center text-[11px] font-semibold text-amber-300">
+                                    Can’t draw the knockout — {empty.group.name ?? `Group ${empty.group.key}`} has no {noun.many} left.
+                                  </p>
+                                );
+                              }
                               const st = drawState(d.id);
                               return drawControl(st.bracketSig, "Draw knockout", st.bracketPlayed, st.bracketCount,
                                 `the ${fixtures(st.bracketCount)} of the knockout drawn before`);
@@ -812,7 +1065,7 @@ export default async function ManagePage({
           <section className="space-y-3">
             <h2 className="text-lg font-black">Standings</h2>
             {tables.map((table) => (
-              <StandingsTable key={table.group.id} table={table} allowDraws={allowsDraws(t.sport)} />
+              <StandingsTable key={table.group.id} table={table} allowDraws={allowsDraws(t.sport)} noun={noun} />
             ))}
           </section>
         )}
@@ -979,11 +1232,11 @@ export default async function ManagePage({
               className="rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm" />
             <select name="teamA" required className="rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm">
               <option value="">Team A…</option>
-              {teamRows.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+              {activeTeams.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
             </select>
             <select name="teamB" required className="rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm">
               <option value="">Team B…</option>
-              {teamRows.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+              {activeTeams.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
             </select>
             <button className="rounded-lg bg-neutral-200 px-4 py-2 text-xs font-black text-neutral-900">Add match</button>
           </form>

@@ -33,7 +33,13 @@ export default async function RatingsPage({ params }: { params: Promise<{ slug: 
   if (!canView(await principalFor(t.id), t.status)) notFound();
 
   const people = await db.select().from(playersTable).where(eq(playersTable.tournamentId, t.id));
-  const rows = await tournamentRatings(t, people);
+  /* EVERY player goes in — a removed pair's too — because the category's
+     rating key is decided from all of them, exactly as the engine decides it
+     (lib/rating/tournament `categoryRoster`). Only the rows SHOWN leave a
+     removed pair out (step 8b): their matches are gone, and a removed pair is
+     in no table. */
+  const withdrawn = new Set(loaded.teams.filter((x) => x.withdrawnAt).map((x) => x.id));
+  const rows = (await tournamentRatings(t, people)).filter((r) => !r.teamId || !withdrawn.has(r.teamId));
   const teamName = (id: string | null) => loaded.teams.find((x) => x.id === id)?.name ?? "—";
   const sport = sportOf(t.sport);
   /* DUPR is a pickleball rating; beside a badminton RISE number it would read

@@ -26,7 +26,9 @@ import { useKeepAwake } from "./useKeepAwake";
 export type ConsoleTeam = { id: string; name: string; colour: string | null; players: string[] };
 
 /** The typed result in a sentence — a walkover or a retirement says so, as it
- *  does on every other screen, rather than reading as a game played out. */
+ *  does on every other screen, rather than reading as a game played out. A
+ *  walkover is not "typed in" at all: only the organiser gives one, with the
+ *  manage screen's button (step 8b). */
 export function typedHeading(
   r: { a: number; b: number; outcome: "walkover" | "retired" | "unrated" | null },
   nameA: string, nameB: string,
@@ -34,10 +36,19 @@ export function typedHeading(
   if (r.a === r.b) return `Typed in: ${r.a}–${r.b}`;
   const winner = r.a > r.b ? nameA : nameB;
   const score = `${Math.max(r.a, r.b)}–${Math.min(r.a, r.b)}`;
-  if (r.outcome === "walkover") return `Typed in: walkover to ${winner}`;
+  if (r.outcome === "walkover") return `Walkover to ${winner} — given by the organiser`;
   if (r.outcome === "retired") return `Typed in: ${winner} win ${score} — the other side retired`;
   if (r.outcome === "unrated") return `Typed in: ${winner} win ${score} — stopped early, no rating change`;
   return `Typed in: ${winner} win ${score}`;
+}
+
+/** How the card's first sentence starts, and what its Keep button says. A
+ *  walkover is nobody's score: "Keep 0–11" named a game nobody played, in the
+ *  court's order rather than the winner's. */
+export function typedWords(r: { a: number; b: number; outcome: "walkover" | "retired" | "unrated" | null }) {
+  return r.outcome === "walkover"
+    ? { happened: "The organiser gave this walkover", keep: "Keep the walkover" }
+    : { happened: "The result was typed in", keep: `Keep ${r.a}–${r.b}` };
 }
 
 /** What the conflict dialog says, read off the two logs. Three situations
@@ -608,7 +619,7 @@ function RefConsoleCourt({
                alone. So only Keep. */
             <>
               <p className="mt-1 text-sm font-semibold text-neutral-300">
-                The result was typed in while this phone was taking the score back to 0–0. There is nothing on this
+                {typedWords(typedShown).happened} while this phone was taking the score back to 0–0. There is nothing on this
                 phone to put in its place.
               </p>
               {canScore && (
@@ -618,14 +629,14 @@ function RefConsoleCourt({
                   onClick={() => { setError(null); void off.keepTyped().then((e) => { if (e) setError(e); }); }}
                   className="mt-3 rounded-lg bg-emerald-400 p-3 text-left text-sm font-black text-emerald-950 disabled:opacity-40"
                 >
-                  Keep {typedShown.a}–{typedShown.b}
+                  {typedWords(typedShown).keep}
                 </button>
               )}
             </>
           ) : off.held && off.local ? (
             <>
               <p className="mt-1 text-sm font-semibold text-neutral-300">
-                The result was typed in while this phone&apos;s rallies were waiting to be sent. The {off.queued}{" "}
+                {typedWords(typedShown).happened} while this phone&apos;s rallies were waiting to be sent. The {off.queued}{" "}
                 {off.queued === 1 ? "rally" : "rallies"} on this phone, {off.local.a}–{off.local.b}, {off.queued === 1 ? "was" : "were"} not
                 saved. Nothing is changed until you choose.
               </p>
@@ -637,7 +648,7 @@ function RefConsoleCourt({
                     onClick={() => { setError(null); void off.keepTyped().then((e) => { if (e) setError(e); }); }}
                     className="rounded-lg bg-emerald-400 p-3 text-left text-sm font-black text-emerald-950 disabled:opacity-40"
                   >
-                    Keep {typedShown.a}–{typedShown.b}
+                    {typedWords(typedShown).keep}
                   </button>
                   <button
                     type="button"
@@ -658,7 +669,7 @@ function RefConsoleCourt({
             </>
           ) : (
             <p className="mt-1 text-sm font-semibold text-neutral-300">
-              The result was typed in, so the court is locked.
+              {typedWords(typedShown).happened}, so the court is locked.
             </p>
           )}
         </div>

@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { and, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/lib/db";
@@ -19,7 +19,7 @@ import { divisionsOf, resolveDivisionId } from "@/lib/divisions";
 import { planGroups, knockoutRefsFromGroups } from "@/lib/formats/pickleboss";
 import { singleElimMatches, thirdPlaceMatch } from "@/lib/formats/singleElim";
 import { resolveRef } from "@/lib/brackets";
-import { loadTournament, groupTables, resolverFactory } from "@/lib/tournamentState";
+import { groupMembers, groupTables, loadTournamentIn, resolverFactory } from "@/lib/tournamentState";
 import { findOrCreatePerson, findByPhone, carriedRating, peopleForTournament, searchPeople } from "@/lib/people";
 import { reliabilityForPerson } from "@/lib/rating/reliability";
 import type { PickerResult } from "@/components/PersonPicker";
@@ -28,8 +28,11 @@ import { seedFromDupr } from "@/lib/rating";
 import { DrawChanged, deleteUnplayed, drawSignature, lockedIds, requireDivision } from "@/lib/draw/guard";
 import { DEFAULT_SPORT, SPORTS, ratingKey, usesDupr } from "@/lib/sports/registry";
 import { changeScoring, type ScoringSaved } from "@/lib/scoring/change";
-import { RESULT_ENTRY_ON_SCREEN } from "@/lib/results/record";
-import { clearMatch, removeMatchIn, restartCategory } from "@/lib/results/clear";
+import { RESULT_ENTRY_ON_SCREEN, normaliseResult } from "@/lib/results/record";
+import { recordTypedResult } from "@/lib/results/write";
+import { hasPlay, matchResult } from "@/lib/results";
+import { endingOf } from "@/lib/matchState";
+import { clearMatch, removeMatchIn, removePairIn, restartCategory } from "@/lib/results/clear";
 import { sameCategoryName } from "./sameName";
 
 /* Same discipline as the scoring actions: load, authorize server-side, write.
@@ -125,6 +128,10 @@ export async function addPlayer(tournamentId: string, teamId: string, formData: 
     .where(and(eq(teams.id, teamId), eq(teams.tournamentId, t.id)))
     .limit(1);
   if (!team) return { ok: false, message: "That team is not part of this event." };
+  /* A pair that was removed is out of the event (step 8b): a player added to
+     it would land in the category's roster and could change which rating the
+     category moves. Hiding the form is not enough — this is a public endpoint. */
+  if (team.withdrawnAt) return { ok: false, message: TEAM_WITHDRAWN };
 
   const [division] = await db.select().from(divisions).where(eq(divisions.id, team.divisionId)).limit(1);
   const rules = division ? rulesOfDivision(division) : NO_RULES;
@@ -219,7 +226,7 @@ export async function addPlayer(tournamentId: string, teamId: string, formData: 
     }
 
     const added = await insertPlayer(t, team, division?.genderRule ?? null, parsed.data, gender, { pickedId, phone, duprRaw, bandRaw, dob, duprX100 });
-    if (!added) return { ok: false, message: TEAM_GONE };
+    if (typeof added !== "string") return { ok: false, message: added.refused };
 
     /* Let in anyway: what was waived is recorded on the team, so the card can
        say so — and a rule tightened later, which is a different rule, still
@@ -236,14 +243,14 @@ export async function addPlayer(tournamentId: string, teamId: string, formData: 
     return { ok: true, notes: mine.filter((f) => f.severity === "note").map((f) => `${parsed.data}: ${f.text}`) };
   }
 
-  if (!(await insertPlayer(t, team, division?.genderRule ?? null, parsed.data, gender, { pickedId, phone, duprRaw, bandRaw, dob, duprX100 }))) {
-    return { ok: false, message: TEAM_GONE };
-  }
+  const added = await insertPlayer(t, team, division?.genderRule ?? null, parsed.data, gender, { pickedId, phone, duprRaw, bandRaw, dob, duprX100 });
+  if (typeof added !== "string") return { ok: false, message: added.refused };
   revalidatePath(`/t/${t.slug}/manage`);
   return { ok: true, notes: [] };
 }
 
 const TEAM_GONE = "This team's category has just been removed, so the player was not added.";
+const TEAM_WITHDRAWN = "This team was removed from the event, so nobody can be added to it.";
 
 /* The write half of adding a player, unchanged in what it does for a category
    with no rules: link or create the person by phone, carry their rating in. */
@@ -254,7 +261,7 @@ async function insertPlayer(
   playerName: string,
   gender: "M" | "F",
   form: { pickedId: string; phone: string; duprRaw: string; bandRaw: string; dob: string | null; duprX100: number | null },
-): Promise<string | null> {
+): Promise<string | { refused: string }> {
   /* THIS CATEGORY's roster — a Men's Doubles add must not be filed as mixed
      because the event also runs Women's Doubles. */
   const roster = await categoryRoster(team.divisionId);
@@ -302,7 +309,13 @@ async function insertPlayer(
      delete of the teams, which left a players row with no team behind. */
   const added = await db.transaction(async (tx) => {
     const [cat] = await tx.select({ id: divisions.id }).from(divisions).where(eq(divisions.id, team.divisionId)).for("key share");
-    if (!cat) return false;
+    if (!cat) return TEAM_GONE;
+    /* Then the TEAM (KEY SHARE, which the insert's foreign key would take
+       anyway): removing a pair holds it FOR UPDATE, so this waits and then
+       reads it withdrawn, rather than adding a player to a pair just removed. */
+    const [mine] = await tx.select({ withdrawnAt: teams.withdrawnAt }).from(teams).where(eq(teams.id, team.id)).for("key share");
+    if (!mine) return TEAM_GONE;
+    if (mine.withdrawnAt) return TEAM_WITHDRAWN;
     await tx.insert(players).values({
       id,
       tournamentId: t.id,
@@ -318,9 +331,9 @@ async function insertPlayer(
       dob: form.dob,
       dupr: form.duprX100,
     });
-    return true;
+    return null;
   });
-  if (!added) return null;
+  if (added) return { refused: added };
 
   /* A typed date of birth also fills the person's record, but only where it is
      empty — never overwriting one that is already there. */
@@ -381,7 +394,12 @@ export async function seedByRating(tournamentId: string) {
     return ratings.reduce((s, n) => s + n, 0) / ratings.length;
   };
 
+  /* Only the teams still in: a removed pair takes no seed, so the active
+     seeds stay 1..N and the snake is not thrown by a gap. Their players still
+     count towards `formatOf` above — the category's rating key must not
+     change because a pair left (lib/rating/tournament `categoryRoster`). */
   const ranked = teamRows
+    .filter((tm) => !tm.withdrawnAt)
     .map((tm) => ({ id: tm.id, name: tm.name, strength: strengthOf(tm.id) }))
     .sort((a, b) => {
       if (a.strength == null && b.strength == null) return a.name.localeCompare(b.name);
@@ -399,8 +417,30 @@ export async function seedByRating(tournamentId: string) {
 export async function removePlayer(tournamentId: string, playerId: string) {
   const t = await requireManager(tournamentId);
   /* Only a player of THIS event — deleting by id alone let a manager of one
-     event remove players from another. */
-  await db.delete(players).where(and(eq(players.id, playerId), eq(players.tournamentId, t.id)));
+     event remove players from another. And never one of a pair that was
+     removed (step 8b): their players stay in the category's roster so its
+     rating key cannot change because a pair left, and deleting one would
+     change it — a mixed pair losing its woman turns an open category's
+     doubles into men's doubles mid-event.
+     Locks in the order every writer on a category takes them: the CATEGORY
+     (KEY SHARE) first, then the team (KEY SHARE), then the player. Taking the
+     team first closed a circle with removing the category, which deletes the
+     players before the teams (the review of 8b, round two). */
+  const [p] = await db
+    .select({ teamId: players.teamId, divisionId: teams.divisionId })
+    .from(players)
+    .leftJoin(teams, eq(players.teamId, teams.id))
+    .where(and(eq(players.id, playerId), eq(players.tournamentId, t.id)));
+  if (!p) return;
+  await db.transaction(async (tx) => {
+    if (p.teamId && p.divisionId) {
+      const [cat] = await tx.select({ id: divisions.id }).from(divisions).where(eq(divisions.id, p.divisionId)).for("key share");
+      if (!cat) return;
+      const [team] = await tx.select({ withdrawnAt: teams.withdrawnAt }).from(teams).where(eq(teams.id, p.teamId)).for("key share");
+      if (!team || team.withdrawnAt) return;
+    }
+    await tx.delete(players).where(and(eq(players.id, playerId), eq(players.tournamentId, t.id)));
+  });
   revalidatePath(`/t/${t.slug}/manage`);
 }
 
@@ -418,7 +458,7 @@ export async function addMatch(tournamentId: string, formData: FormData) {
   const sides = await db
     .select({ id: teams.id, divisionId: teams.divisionId })
     .from(teams)
-    .where(and(eq(teams.tournamentId, t.id), inArray(teams.id, [a, b])));
+    .where(and(eq(teams.tournamentId, t.id), inArray(teams.id, [a, b]), isNull(teams.withdrawnAt)));
   if (sides.length !== 2) return;
   const [first, second] = sides;
   if (first.divisionId !== second.divisionId) return;
@@ -437,6 +477,16 @@ export async function addMatch(tournamentId: string, formData: FormData) {
   await db.transaction(async (tx) => {
     const [cat] = await tx.select({ id: divisions.id }).from(divisions).where(eq(divisions.id, first.divisionId)).for("key share");
     if (!cat) return;
+    /* Then both teams, in one sorted statement: removing a pair holds its
+       team FOR UPDATE, so this waits and finds it withdrawn rather than giving
+       a removed pair a new fixture. */
+    const live = await tx
+      .select({ id: teams.id })
+      .from(teams)
+      .where(and(inArray(teams.id, [a, b]), isNull(teams.withdrawnAt)))
+      .orderBy(asc(teams.id))
+      .for("key share");
+    if (live.length !== 2) return;
     await tx.insert(matches).values({
       id: randomUUID(),
       tournamentId: t.id,
@@ -470,9 +520,10 @@ function postedRev(formData: FormData | undefined): number | null {
  */
 export async function removeMatch(tournamentId: string, matchId: string, formData?: FormData) {
   const t = await requireManager(tournamentId);
-  const { problem } = await removeMatchIn(t, matchId, postedRev(formData));
+  const { problem, gone } = await removeMatchIn(t, matchId, postedRev(formData));
   revalidatePath(`/t/${t.slug}/manage`);
   revalidatePath(`/t/${t.slug}`);
+  if (gone) redirect(`/t/${t.slug}/manage?problem=match-gone`);
   if (problem) redirect(`/t/${t.slug}/manage?problem=${problem}&match=${encodeURIComponent(matchId)}#match-${encodeURIComponent(matchId)}`);
 }
 
@@ -487,12 +538,84 @@ export async function clearResult(tournamentId: string, matchId: string, formDat
   const token = postedRev(formData);
   const id = encodeURIComponent(matchId);
   if (token === null) redirect(`/t/${t.slug}/manage?problem=match-confirm&match=${id}#match-${id}`);
-  const { problem, touched, already } = await clearMatch(t, matchId, token);
+  const { problem, touched, already, gone } = await clearMatch(t, matchId, token);
+  if (gone) redirect(`/t/${t.slug}/manage?problem=match-gone`);
   revalidatePath(`/t/${t.slug}`);
   revalidatePath(`/t/${t.slug}/manage`);
   revalidatePath(`/t/${t.slug}/ratings`);
   for (const m of touched) revalidatePath(`/t/${t.slug}/score/${m}`);
   redirect(`/t/${t.slug}/manage?${problem ? `problem=${problem}` : already ? "done=already" : "done=cleared"}&match=${id}#match-${id}`);
+}
+
+/**
+ * "Walkover…" — ORGANISER ONLY (Faisal, 2026-10-11): a pair that does not turn
+ * up loses the match at the full winning score, "11–0 w/o", which counts in the
+ * table and moves nobody's rating. Groups and knockout alike; in a knockout the
+ * winner goes through on "Fill resolved slots".
+ *
+ * Only on a match nobody has played, with both teams known, posted with the rev
+ * the page showed and the side chosen. ONE set of rules with a typed result
+ * (`recordTypedResult`). The same walkover again — a retry after a lost reply —
+ * is done, not refused. A refusal comes back as a CODE with the match's id.
+ */
+export async function giveWalkover(tournamentId: string, matchId: string, formData: FormData) {
+  const t = await requireManager(tournamentId);
+  const id = encodeURIComponent(matchId);
+  const back: (q: string) => never = (q) => redirect(`/t/${t.slug}/manage?${q}&match=${id}#match-${id}`);
+  const token = postedRev(formData);
+  const side = z.enum(["a", "b"]).safeParse(formData.get("side"));
+  if (token === null || !side.success) back("problem=walkover-confirm");
+
+  const load = async () =>
+    (await db.select().from(matches).where(and(eq(matches.id, matchId), eq(matches.tournamentId, t.id))).limit(1))[0];
+  const m = await load();
+  if (!m) redirect(`/t/${t.slug}/manage?problem=match-gone`);
+
+  const winner = side.data;
+  const wanted = { a: winner === "a" ? 1 : 0, b: winner === "b" ? 1 : 0, outcome: "walkover" as const, sets: null };
+  const r = normaliseResult(endingOf(t, m), wanted);
+  const already = m.outcome === "walkover" && m.typedScoreA === r.a && m.typedScoreB === r.b && (m.log ?? []).length === 0;
+  if (already) back("done=walkover");
+
+  if ((await lockedIds([m])).size > 0) back(`problem=${hasPlay(m) && !matchResult(t, m) ? "walkover-started" : "walkover-played"}`);
+  if (m.rev !== token) back("problem=walkover-stale");
+  if (!m.teamAId || !m.teamBId) back("problem=walkover-teams");
+
+  const reply = await recordTypedResult({ tournament: t, match: m }, { ...wanted, expectedRev: token, replaceLive: false });
+  if (reply.ok) back("done=walkover");
+  if (reply.code === "stale" && !(await load())) {
+    /* Deleted while it was being written — the pair was removed. */
+    redirect(`/t/${t.slug}/manage?problem=match-gone`);
+  }
+  back(`problem=${
+    reply.code === "teams" ? "walkover-teams"
+    : reply.code === "live" ? "walkover-started"
+    : reply.code === "stale" ? "walkover-stale"
+    : "walkover-refused"
+  }`);
+}
+
+/**
+ * "Remove the pair…" — ORGANISER ONLY (Faisal, 2026-10-11): a pair that pulled
+ * out. Every match of theirs goes, played ones too, with the rating changes
+ * they made; the pair stays on the list marked Withdrawn (lib/results/clear
+ * `removePairIn`). Confirmed by two taps carrying the page's fingerprint of
+ * what it would remove. A refusal comes back as a CODE with the team's id.
+ */
+export async function removePair(tournamentId: string, teamId: string, formData: FormData) {
+  const t = await requireManager(tournamentId);
+  const token = String(formData.get("confirm") ?? "").slice(0, 40);
+  const { problem, gone, already, touched, emptied } = await removePairIn(t, teamId, token);
+  revalidatePath(`/t/${t.slug}`);
+  revalidatePath(`/t/${t.slug}/manage`);
+  revalidatePath(`/t/${t.slug}/manage/registration`);
+  revalidatePath(`/t/${t.slug}/ratings`);
+  revalidatePath(`/e/${t.slug}`);
+  for (const m of touched) revalidatePath(`/t/${t.slug}/score/${m}`);
+  if (gone) redirect(`/t/${t.slug}/manage?problem=team-gone`);
+  const id = encodeURIComponent(teamId);
+  const outcome = problem ? `problem=${problem}` : already ? "done=already" : `done=withdrawn${emptied ? "&refill=1" : ""}`;
+  redirect(`/t/${t.slug}/manage?${outcome}&team=${id}#team-${id}`);
 }
 
 /**
@@ -713,7 +836,7 @@ export async function setDivisionShape(tournamentId: string, formData: FormData)
  * A refusal is a CODE carried back to the manage page, which builds the
  * sentence from the database — never a message in the URL, which anyone could
  * craft. */
-type DrawProblem = "unknown-category" | "draw-locked" | "draw-changed" | "confirm-needed" | "draw-stale";
+type DrawProblem = "unknown-category" | "draw-locked" | "draw-changed" | "confirm-needed" | "draw-stale" | "knockout-too-many";
 
 /* A draw that replaces fixtures must have been asked for by a page that SAW
    them. The draw's submit button carries `drawSignature` of the rows the page
@@ -797,10 +920,11 @@ export async function generateGroups(tournamentId: string, formData: FormData) {
        crafted post. */
     const count = division.shape === "league" ? 1 : asked;
 
+    /* The pairs still in: a removed pair is drawn into nothing (step 8b). */
     const teamRows = await tx
       .select()
       .from(teams)
-      .where(and(eq(teams.tournamentId, t.id), eq(teams.divisionId, division.id)));
+      .where(and(eq(teams.tournamentId, t.id), eq(teams.divisionId, division.id), isNull(teams.withdrawnAt)));
     if (teamRows.length < 2) return;
 
     /* Redraw THIS category only. Drawing Mixed must not wipe the Men's Doubles
@@ -825,6 +949,12 @@ export async function generateGroups(tournamentId: string, formData: FormData) {
         id: groupId, tournamentId: t.id, divisionId: division.id, key: plan.key,
         name: `Group ${plan.key}`, court: plan.court, position: i,
       });
+      /* Who is IN the group, beside the fixtures that say who plays whom: the
+         table is its members (lib/tournamentState `groupMembers`), so a pair
+         left alone after the other was removed still has a table to win. The
+         redraw's group delete above cleared the old membership (ON DELETE SET
+         NULL). One statement per group, in the draw's transaction. */
+      await tx.update(teams).set({ groupId }).where(inArray(teams.id, plan.entrants.map((e) => e.id)));
 
       const rows = plan.rounds.flatMap((round, ri) =>
         round.map(([a, b]) => {
@@ -871,7 +1001,7 @@ export async function generateSingleElim(tournamentId: string, formData: FormDat
     const teamRows = await tx
       .select()
       .from(teams)
-      .where(and(eq(teams.tournamentId, t.id), eq(teams.divisionId, division.id)));
+      .where(and(eq(teams.tournamentId, t.id), eq(teams.divisionId, division.id), isNull(teams.withdrawnAt)));
     if (teamRows.length < 2) return;
 
     const drawn = singleElimMatches(
@@ -936,6 +1066,21 @@ export async function generateKnockout(tournamentId: string, formData: FormData)
       .where(and(eq(groups.tournamentId, t.id), eq(groups.divisionId, division.id)));
     if (groupRows.length < 1) return;
 
+    /* A group cannot send more pairs through than it has left: "A3" from a
+       group of two would wait for ever, and nobody could be walked over in
+       its place. Refused, rather than quietly drawing fewer (step 8b). */
+    const members = await tx
+      .select({ id: teams.id, groupId: teams.groupId, withdrawnAt: teams.withdrawnAt, seed: teams.seed, createdAt: teams.createdAt })
+      .from(teams)
+      .where(eq(teams.divisionId, division.id));
+    const fixtures = await tx
+      .select({ teamAId: matches.teamAId, teamBId: matches.teamBId, groupId: matches.groupId })
+      .from(matches)
+      .where(and(eq(matches.divisionId, division.id), isNotNull(matches.groupId)));
+    const smallest = Math.min(...groupRows.map((g) =>
+      groupMembers(members, fixtures.filter((f) => f.groupId === g.id), g.id).length));
+    if (perGroup > smallest) return "knockout-too-many";
+
     /* The bracket rows only — the group stage it is drawn from stays. */
     const replaced = await tx.select().from(matches).where(and(
       eq(matches.tournamentId, t.id),
@@ -982,36 +1127,48 @@ export async function generateKnockout(tournamentId: string, formData: FormData)
   });
 }
 
-/** Lock a resolved seed reference into a real team once its group has finished. */
+/**
+ * Lock a resolved seed reference into a real team once its group has finished.
+ *
+ * In ONE transaction behind the event row, like every writer of many of an
+ * event's matches, and reading the tables after that lock. It used to read
+ * with no lock and write one match at a time: with "Remove the pair" that is a
+ * deadlock (its write checks the TEAM after holding the match; the removal
+ * holds the team, then wants the match), and a fill read before a removal
+ * could write the removed pair into a knockout match (step 8b).
+ */
 export async function fillKnockoutSlots(tournamentId: string) {
   const t = await requireManager(tournamentId);
-  const loaded = await loadTournament(t.slug);
-  if (!loaded) return;
+  await db.transaction(async (tx) => {
+    /* The event row as it is NOW, not the copy read before the lock: a
+       scoring change committed while this waited decides which games are over. */
+    const [now] = await tx.select().from(tournaments).where(eq(tournaments.id, t.id)).for("no key update");
+    const loaded = await loadTournamentIn(tx, now ?? t);
+    const tables = groupTables(loaded);
 
-  const tables = groupTables(loaded);
+    /* One resolver PER CATEGORY. A single shared resolver would read "A1" out
+       of whichever category happened to come back from the database last — see
+       refResolver's note. */
+    const resolverFor = resolverFactory(loaded, tables);
 
-  /* One resolver PER CATEGORY. A single shared resolver would read "A1" out of
-     whichever category happened to come back from the database last — see
-     refResolver's note. */
-  const resolverFor = resolverFactory(loaded, tables);
+    /* Hoisted out of the loop: it does not vary per match, and re-reading the
+       whole squad once per knockout slot was a query per match for no reason. */
+    const squads = await tx.select().from(players).where(eq(players.tournamentId, t.id));
+    const six = (teamId: string | null) =>
+      teamId ? squads.filter((p) => p.teamId === teamId).slice(0, 6).map((p) => p.id) : [];
 
-  /* Hoisted out of the loop: it does not vary per match, and re-reading the
-     whole squad once per knockout slot was a query per match for no reason. */
-  const squads = await db.select().from(players).where(eq(players.tournamentId, t.id));
-  const six = (teamId: string | null) =>
-    teamId ? squads.filter((p) => p.teamId === teamId).slice(0, 6).map((p) => p.id) : [];
+    for (const m of loaded.matches) {
+      if (m.groupId !== null) continue;
+      const resolver = resolverFor(m.divisionId);
+      const a = m.teamAId ?? (m.slotA ? resolveRef(m.slotA, resolver) : null);
+      const b = m.teamBId ?? (m.slotB ? resolveRef(m.slotB, resolver) : null);
+      if (a === m.teamAId && b === m.teamBId) continue;
 
-  for (const m of loaded.matches) {
-    if (m.groupId !== null) continue;
-    const resolver = resolverFor(m.divisionId);
-    const a = m.teamAId ?? (m.slotA ? resolveRef(m.slotA, resolver) : null);
-    const b = m.teamBId ?? (m.slotB ? resolveRef(m.slotB, resolver) : null);
-    if (a === m.teamAId && b === m.teamBId) continue;
-
-    await db.update(matches)
-      .set({ teamAId: a, teamBId: b, lineupA: six(a), lineupB: six(b) })
-      .where(eq(matches.id, m.id));
-  }
+      await tx.update(matches)
+        .set({ teamAId: a, teamBId: b, lineupA: six(a), lineupB: six(b) })
+        .where(eq(matches.id, m.id));
+    }
+  });
 
   revalidatePath(`/t/${t.slug}/manage`);
   revalidatePath(`/t/${t.slug}`);

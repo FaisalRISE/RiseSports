@@ -20,7 +20,7 @@ import "server-only";
  * moment two on one team share one.
  */
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { divisions, people, players, teams, tournaments } from "@/lib/db/schema";
 import { entryFailures, hasRules, playerEvidence, rulesOfDivision, squadIsComplete, waiverLine, type Rules } from "./index";
@@ -56,7 +56,9 @@ export async function divisionMisfits(tournamentId: string): Promise<Misfit[]> {
   const teamRows = await db
     .select()
     .from(teams)
-    .where(and(eq(teams.tournamentId, t.id), inArray(teams.divisionId, [...ruled.keys()])));
+    /* A pair that was removed is not playing: flagging it is noise, and it
+       would count in "N don’t fit" (step 8b). */
+    .where(and(eq(teams.tournamentId, t.id), inArray(teams.divisionId, [...ruled.keys()]), isNull(teams.withdrawnAt)));
   if (teamRows.length === 0) return [];
 
   const playerRows = await db.select().from(players).where(inArray(players.teamId, teamRows.map((x) => x.id)));

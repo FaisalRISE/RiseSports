@@ -44,9 +44,11 @@ import "server-only";
 import { and, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { communityMatches, matches, people, players } from "@/lib/db/schema";
+import { playedSql } from "@/lib/results";
 
-/** A match nobody has scored yet is not evidence that anybody played. */
-const SCORED = sql`(${matches.typedScoreA} is not null or jsonb_array_length(${matches.log}) > 0)`;
+/** A match nobody has scored yet is not evidence that anybody played — and
+    nor is a walkover, which two pairs never shared a court for (step 8b). */
+const SCORED = playedSql;
 
 /** Every person this one has shared a court with, from tournament play. */
 async function tournamentOpponents(personId: string): Promise<Set<string>> {

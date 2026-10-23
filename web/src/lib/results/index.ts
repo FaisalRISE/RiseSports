@@ -17,7 +17,18 @@ import "server-only";
  */
 
 import { viewMatch, allowsDraws, noLiveCourt, type MatchView } from "@/lib/matchState";
-import type { Match, Outcome } from "@/lib/db/schema";
+import { sql } from "drizzle-orm";
+import { matches, type Match, type Outcome } from "@/lib/db/schema";
+
+/**
+ * A match that was PLAYED, in SQL: rallies on the court, or a typed result that
+ * is not a walkover. A walkover is a fixture somebody did not turn up for — a
+ * result for the table, and nothing more: the two pairs never shared a court,
+ * so it is not evidence for "who may rate whom" (lib/skills), and it is not a
+ * match that happened (the home page's count). A retirement or a game stopped
+ * early WAS played. One definition, so the two cannot drift.
+ */
+export const playedSql = sql`((${matches.typedScoreA} is not null and ${matches.outcome} is distinct from 'walkover') or jsonb_array_length(${matches.log}) > 0)`;
 
 export type MatchResult = {
   a: number;

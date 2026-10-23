@@ -548,8 +548,8 @@ describe("deleting a match", () => {
     expect(await stored(m.id)).toBeUndefined();
   });
 
-  /* The way to drop a pair's remaining group matches once the knockout is
-     drawn: the group still finishes on the matches that were played. */
+  /* A group fixture can go while every pair keeps a match: the group still
+     finishes on the ones that were played. */
   it("takes a group fixture with others played, and the group then finishes", async () => {
     const t = await event({ teams: 3 });
     await drawGroups(t, 1);
@@ -572,9 +572,12 @@ describe("deleting a match", () => {
     expect(await stored(only.id)).toBeDefined();
   });
 
-  /* A knockout drawn with four through from one group of four: taking every
-     match of one pair would leave three teams for a slot that asks for A4. */
-  it("is refused when the group would have fewer teams than the knockout asks of it", async () => {
+  /* The table is the group's MEMBERS (step 8b), so taking a pair's last
+     match would leave them in it at nought played — ranked above pairs who
+     played and lost, and able to qualify without playing. Deleting fixtures
+     one at a time used to be how a pair that pulled out was dropped; that is
+     "Remove the pair" now, or walkovers. */
+  it("is refused for a pair's last match in the group", async () => {
     const t = await event({ teams: 4 });
     await drawGroups(t, 1);
     await drawKnockout(t, 4);
@@ -583,7 +586,10 @@ describe("deleting a match", () => {
     expect(theirs).toHaveLength(3);
     expect(await removeIt(t, theirs[0].id)).toBeNull();
     expect(await removeIt(t, theirs[1].id)).toBeNull();
-    expect(await removeIt(t, theirs[2].id)).toBe("group-short");
+    expect(await removeIt(t, theirs[2].id)).toBe("pair-stranded");
+    expect(await stored(theirs[2].id)).toBeDefined();
+    const [table] = state.groupTables((await state.loadTournament(t.slug))!);
+    expect(table.rows.map((r) => r.teamId)).toContain(last);
   });
 
   it("says the match changed when a result lands between its check and the delete", async () => {
